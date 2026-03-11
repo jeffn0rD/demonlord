@@ -1,7 +1,12 @@
 {
   "worktrees": {
     "directory": "../worktrees",
-    "prefix": "task-"
+    "prefix": "task-",
+    "approval_required": true,
+    "agent_approval": {
+      "minion": true,
+      "reviewer": false
+    }
   },
   "discord": {
     "enabled": true,
