@@ -1,0 +1,138 @@
+# Demonlord Autonomous Software Factory
+
+An autonomous software factory built on OpenCode that transforms your repository into an automated development pipeline with specialized AI agents, isolated worktrees, and deterministic quality gates.
+
+## Overview
+
+Demonlord replaces manual coding workflows with specialized AI agents that work in parallel, isolated environments to plan, implement, and review code changes while enforcing strict quality gates.
+
+### Key Features
+- **Specialized Agent Ecosystem**: Planner, Orchestrator, Minion, and Reviewer agents
+- **Isolated Worktrees**: Parallel execution without file-locking conflicts
+- **Deterministic Quality Gates**: All code must pass linting and testing before commit
+- **Discord Integration**: Two-way communication with approval workflows
+- **Event-Driven Orchestration**: Plugin-based coordination between pipeline stages
+
+## Quick Start
+
+1. **Clone this template** into your project root:
+   ```bash
+   git clone https://github.com/your-org/demonlord .opencode
+   ```
+
+2. **Install dependencies**:
+   ```bash
+   cd .opencode && npm install
+   ```
+
+3. **Configure environment**:
+   - Copy `.env.example` to `.env`
+   - Add your GitHub Personal Access Token and Discord credentials
+   - Review `demonlord.config.json` for worktree and Discord settings
+
+4. **Start OpenCode**:
+   ```bash
+   opencode
+   ```
+
+5. **Begin development**:
+   - Use `/triage` to analyze GitHub issues and generate implementation plans
+   - Use `/implement` to execute the generated plans
+
+## Architecture
+
+The system operates through a three-stage lifecycle:
+
+1. **Triage**: The Planner agent analyzes GitHub issues and generates atomic `.md` plan files
+2. **Implementation**: The Orchestrator spawns Minion agents in isolated worktrees to execute tasks
+3. **Review**: The Reviewer agent analyzes output and requests human approval via Discord
+
+All code changes must pass through the `submit_implementation` quality gate, which enforces your repository's linting and testing standards.
+
+## Configuration
+
+Key configuration files:
+
+- **`.env`**: Contains secrets (GitHub PAT, Discord tokens)
+- **`demonlord.config.json`**: Factory settings (worktree paths, Discord personas, approval settings)
+- **`.opencode/opencode.jsonc`**: Agent definitions, MCP servers, and permissions
+
+### Worktree Approval Settings
+
+The `demonlord.config.json` file includes worktree approval configuration:
+
+```json
+{
+  "worktrees": {
+    "directory": "../worktrees",
+    "prefix": "task-",
+    "approval_required": true,
+    "agent_approval": {
+      "minion": true,
+      "reviewer": false
+    }
+  }
+}
+```
+
+This allows you to require approval for specific agent types before worktree creation.
+
+## Usage
+
+### Commands
+- **`/triage`**: Analyze GitHub issues and generate implementation plans
+- **`/implement`**: Execute the next available subphase from the tasklist
+- **`/worktrees`**: (Future) List and manage active worktrees
+
+### Discord Integration
+Receive notifications and control agents via Discord slash commands:
+- **`/approve`**: Approve worktree creation or code changes
+- **`/reject`**: Reject and provide feedback
+- **`/park`**: Pause current work for later
+- **`/handoff`**: Transfer to a different agent skill
+
+## Quality Gates
+
+All implementation agents are restricted from using `git push` directly. Instead, they must use the `submit_implementation` tool which:
+
+1. Runs your repository's `npm run lint` and `npm run test`
+2. Returns errors to the agent for automatic fixing if tests fail  
+3. Only commits code after successful validation
+
+This ensures that all code meets your quality standards before being committed.
+
+## Troubleshooting
+
+- **OpenCode fails to start**: Restore from `.opencode/opencode.jsonc.known-good`
+- **Agents not appearing**: Verify `.opencode/opencode.jsonc` uses singular keys (`agent`, not `agents`)
+- **Permission errors**: Check `.env` contains required tokens
+- **Skill matching issues**: Ensure `SKILL.md` files have proper YAML frontmatter with `name` and `description`
+- **Worktree creation fails**: Verify sufficient disk space (minimum 2GB) and Git permissions
+- **Bootstrap takes too long**: Check network connectivity and npm registry access
+
+## Validation Requirements
+
+Before production deployment, verify:
+- **Environment**: Node.js v18+, Git v2.30+, Bun runtime available
+- **Bootstrap**: `cd .opencode && npm install` completes in <60 seconds
+- **End-to-end**: Simple "Hello World" task completes within 5 minutes
+- **Error handling**: System gracefully handles network timeouts and disk space issues
+
+## Customization
+
+- **Add Skills**: Create `.opencode/skills/<name>/SKILL.md` with proper frontmatter
+- **Custom Tools**: Add TypeScript tools to `.opencode/tools/` using Zod validation  
+- **Modify Behavior**: Extend plugins in `.opencode/plugins/` to handle additional events
+
+## Recovery
+
+If OpenCode configuration becomes corrupted, restore from the backup:
+```bash
+cp .opencode/opencode.jsonc.known-good .opencode/opencode.jsonc
+```
+
+This ensures you can always recover to a working state.
+
+---
+
+*Note: This is a template repository designed to be injected into other projects. Keep dependencies lightweight and ensure a smooth bootstrap process.*
