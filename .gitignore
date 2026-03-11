@@ -1,0 +1,13 @@
+# Local environment and editor files
+.env
+.env.local
+.DS_Store
+
+# Dependency directories
+node_modules/
+.opencode/node_modules/
+
+# Local scratch and generated artifacts
+temp.txt
+schema.json
+*.bak

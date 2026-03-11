@@ -1,0 +1,10 @@
+{
+  "dependencies": {
+    "@opencode-ai/plugin": "1.2.24",
+    "discord.js": "^14.22.1"
+  },
+  "devDependencies": {
+    "@types/node": "^25.4.0",
+    "typescript": "^5.9.3"
+  }
+}
