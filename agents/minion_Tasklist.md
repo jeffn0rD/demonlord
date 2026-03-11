@@ -65,13 +65,13 @@ Agents should execute one subphase at a time. To trigger implementation, the Lea
 **Goal:** Automate project board movement based on agent labels.
 **Entry criteria:** None.
 **Exit criteria / QA checklist:**
-- [ ] Valid GitHub Action YAML exists.
+- [x] Valid GitHub Action YAML exists.
 **Proposed PR title:** chore: add github kanban automation
 **Proposed commit message:** chore: implement label-based github project board routing (Refs #1)
 
 **Tasks:**
 <!-- TASK:T-2.2.1 -->
-- **T-2.2.1** (Refs #1): Create `.github/workflows/project-board.yml` to trigger on `issues: [labeled]` and move cards to respective columns. Touch points: `.github/workflows/project-board.yml`
+- [x] **T-2.2.1** (Refs #1): Create `.github/workflows/project-board.yml` to trigger on `issues: [labeled]` and move cards to respective columns. Touch points: `.github/workflows/project-board.yml`
 
 ---
 
