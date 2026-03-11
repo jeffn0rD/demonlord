@@ -1,0 +1,32 @@
+{
+  "agents": {
+    "planner": {
+      "mode": "primary",
+      "model": "openrouter/google/gemini-3.1-pro-preview"
+    },
+    "orchestrator": {
+      "mode": "primary",
+      "model": "openrouter/google/gemini-3.1-pro-preview"
+    },
+    "minion": {
+      "mode": "subagent",
+      "model": "openrouter/google/gemini-3.1-pro-preview"
+    },
+    "reviewer": {
+      "mode": "subagent",
+      "model": "openrouter/google/gemini-3.1-pro-preview"
+    }
+  },
+  "mcp": {
+    "github": {
+      "type": "local",
+      "command": ["npx", "-y", "@modelcontextprotocol/server-github"]
+    }
+  },
+  "permissions": {
+    "bash": {
+      "git push": "deny",
+      "git push *": "deny"
+    }
+  }
+}

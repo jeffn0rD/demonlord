@@ -1,0 +1,27 @@
+{
+  "worktrees": {
+    "directory": "../worktrees",
+    "prefix": "task-"
+  },
+  "discord": {
+    "enabled": true,
+    "personas": {
+      "planner": {
+        "name": "Planner",
+        "avatarUrl": ""
+      },
+      "orchestrator": {
+        "name": "Orchestrator",
+        "avatarUrl": ""
+      },
+      "minion": {
+        "name": "Minion",
+        "avatarUrl": ""
+      },
+      "reviewer": {
+        "name": "Reviewer",
+        "avatarUrl": ""
+      }
+    }
+  }
+}
