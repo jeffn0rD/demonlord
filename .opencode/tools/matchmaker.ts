@@ -46,7 +46,7 @@ const route_task = tool({
       .optional()
       .describe("Routing strategy. Defaults to llm with automatic heuristic fallback."),
   },
-  async execute(args, context) {
+  async execute(args: any, context: any) {
     try {
       const resolved = await resolveTaskRoute({
         taskDescription: args.task_description,

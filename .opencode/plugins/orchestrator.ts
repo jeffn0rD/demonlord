@@ -40,13 +40,13 @@ interface SessionPipelineState {
 
 const execFileAsync = promisify(execFile);
 
-const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
+const OrchestratorPlugin: any = async ({ client, worktree }: { client: any; worktree: any }) => {
   const pipelineBySession = new Map<string, SessionPipelineState>();
   const idleInFlight = new Set<string>();
   const spawnScriptPath = resolve(worktree, "agents", "tools", "spawn_worktree.sh");
 
   return {
-    event: async ({ event }) => {
+    event: async ({ event }: { event: any }) => {
       if (event.type === "session.created") {
         const session = event.properties.info;
         ensureSessionState(session.id, inferStageFromTitle(session.title), session.parentID, session.directory);

@@ -30,7 +30,7 @@ const partyModeTool = tool({
       .optional()
       .describe("Optional export path. Defaults to <worktree>/party-mode-<session_id>.md."),
   },
-  async execute(args, context) {
+  async execute(args: any, context: any) {
     const stateDirectory = resolve(context.worktree, ".opencode", ".party-mode");
     const statePath = resolve(stateDirectory, `${args.session_id}.json`);
 
