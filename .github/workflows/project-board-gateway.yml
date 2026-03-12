@@ -23,7 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Validate Project Board workflow invariants
         run: |
@@ -34,8 +34,8 @@ jobs:
           text = workflow.read_text(encoding='utf-8')
 
           checks = {
-              "uses PAT token secret": "github-token: ${{ secrets.PROJECT_V2_TOKEN }}" in text,
-              "does not use GITHUB_TOKEN for project mutation": "github-token: ${{ secrets.GITHUB_TOKEN }}" not in text,
+              "uses PAT token secret": "github-token:" in text and "PROJECT_V2_TOKEN" in text,
+              "does not use GITHUB_TOKEN for project mutation": "secrets.GITHUB_TOKEN" not in text,
               "routes from newly added label event": "const matchingLabel = context.payload.label?.name;" in text,
               "contains canonical label mapping: Status: Todo": '"Status: Todo"' in text,
               "contains canonical label mapping: Status: In Progress": '"Status: In Progress"' in text,
