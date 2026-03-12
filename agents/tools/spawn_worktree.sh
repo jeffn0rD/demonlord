@@ -4,7 +4,7 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: spawn_worktree.sh <task-id> [agent-type] [purpose]
+Usage: spawn_worktree.sh <task-id> [agent-type] [purpose] [parent-session-id] [skill-id]
 
 Creates an isolated git worktree and registers metadata for monitoring.
 
@@ -12,6 +12,8 @@ Arguments:
   task-id     Required task identifier used in worktree naming.
   agent-type  Optional agent type metadata (default: minion).
   purpose     Optional free-text purpose metadata.
+  parent-session-id Optional parent session identifier for traceability.
+  skill-id    Optional selected skill identifier for traceability.
 EOF
 }
 
@@ -28,6 +30,11 @@ fi
 
 AGENT_TYPE="${2:-minion}"
 PURPOSE="${3:-General task execution}"
+PARENT_SESSION_ID="${4:-}"
+SKILL_ID="${5:-}"
+
+PARENT_SESSION_VALUE="${PARENT_SESSION_ID:-unknown}"
+SKILL_ID_VALUE="${SKILL_ID:-unrouted}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -119,6 +126,8 @@ fi
 - Task ID: $SAFE_TASK_ID
 - Agent Type: $AGENT_TYPE
 - Purpose: $PURPOSE
+- Parent Session ID: $PARENT_SESSION_VALUE
+- Skill ID: $SKILL_ID_VALUE
 - Worktree Path: $WORKTREE_PATH
 - Branch: $BRANCH_NAME
 - Generated At: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
@@ -130,6 +139,8 @@ cat > "$METADATA_FILE" <<EOF
   "taskId": "$SAFE_TASK_ID",
   "agentType": "$AGENT_TYPE",
   "purpose": "${PURPOSE//"/\\"}",
+  "parentSessionID": "$PARENT_SESSION_VALUE",
+  "skillID": "$SKILL_ID_VALUE",
   "worktreePath": "$WORKTREE_PATH",
   "branchName": "$BRANCH_NAME",
   "projectContext": "$CONTEXT_FILE",
@@ -137,11 +148,11 @@ cat > "$METADATA_FILE" <<EOF
 }
 EOF
 
-node - "$REGISTRY_PATH" "$SAFE_TASK_ID" "$AGENT_TYPE" "$PURPOSE" "$WORKTREE_PATH" "$BRANCH_NAME" <<'NODE'
+node - "$REGISTRY_PATH" "$SAFE_TASK_ID" "$AGENT_TYPE" "$PURPOSE" "$WORKTREE_PATH" "$BRANCH_NAME" "$PARENT_SESSION_VALUE" "$SKILL_ID_VALUE" <<'NODE'
 const { existsSync, readFileSync, writeFileSync, mkdirSync } = require("node:fs");
 const { dirname } = require("node:path");
 
-const [registryPath, taskId, agentType, purpose, worktreePath, branchName] = process.argv.slice(2);
+const [registryPath, taskId, agentType, purpose, worktreePath, branchName, parentSessionID, skillID] = process.argv.slice(2);
 const now = new Date().toISOString();
 
 const emptyRegistry = {
@@ -170,6 +181,8 @@ const nextRecord = {
   taskId,
   agentType,
   purpose,
+  parentSessionID,
+  skillID,
   worktreePath,
   branchName,
   createdAt: now,
@@ -194,5 +207,7 @@ printf 'Created worktree: %s\n' "$WORKTREE_PATH"
 printf 'Branch: %s\n' "$BRANCH_NAME"
 printf 'Agent: %s\n' "$AGENT_TYPE"
 printf 'Purpose: %s\n' "$PURPOSE"
+printf 'Parent Session ID: %s\n' "$PARENT_SESSION_VALUE"
+printf 'Skill ID: %s\n' "$SKILL_ID_VALUE"
 printf 'Project context: %s\n' "$CONTEXT_FILE"
 printf 'Startup requirement: read `%s` before agent execution.\n' "$CONTEXT_FILE"

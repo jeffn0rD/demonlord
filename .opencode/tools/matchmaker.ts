@@ -1,19 +1,34 @@
 import { createOpencodeClient } from "@opencode-ai/sdk";
 import { tool } from "@opencode-ai/plugin/tool";
+import type { Dirent } from "fs";
 import { readdir, readFile } from "fs/promises";
 import { resolve } from "path";
 
-interface SkillDefinition {
+const SKILL_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+export interface SkillDefinition {
   id: string;
   description: string;
   filePath: string;
   body: string;
 }
 
-interface RouteResult {
+export interface RouteResult {
   skill_id: string;
   reason: string;
   mode: "llm" | "heuristic";
+}
+
+interface ResolveTaskRouteInput {
+  taskDescription: string;
+  directory: string;
+  worktree: string;
+  mode?: "llm" | "heuristic";
+}
+
+interface LlmRouteAttempt {
+  result: RouteResult | null;
+  failureReason?: string;
 }
 
 const DEFAULT_SERVER_URL = process.env.OPENCODE_SERVER_URL ?? "http://127.0.0.1:4096";
@@ -32,44 +47,61 @@ const route_task = tool({
       .describe("Routing strategy. Defaults to llm with automatic heuristic fallback."),
   },
   async execute(args, context) {
-    const skills = await loadSkillDefinitions(context.worktree);
-    if (skills.length === 0) {
+    try {
+      const resolved = await resolveTaskRoute({
+        taskDescription: args.task_description,
+        directory: context.directory,
+        worktree: context.worktree,
+        mode: args.mode,
+      });
+
+      return JSON.stringify(resolved, null, 2);
+    } catch (error) {
       return JSON.stringify(
         {
-          error: "No valid SKILL.md files found under .opencode/skills.",
+          error: formatUnknownError(error),
           skill_id: null,
         },
         null,
         2,
       );
     }
-
-    const requestedMode = args.mode ?? "llm";
-    if (requestedMode === "heuristic") {
-      const heuristicResult = routeHeuristically(args.task_description, skills);
-      return JSON.stringify(heuristicResult, null, 2);
-    }
-
-    const llmResult = await routeWithLlm(args.task_description, skills, context.directory, context.worktree);
-    if (llmResult) {
-      return JSON.stringify(llmResult, null, 2);
-    }
-
-    const fallbackResult = routeHeuristically(args.task_description, skills);
-    return JSON.stringify(fallbackResult, null, 2);
   },
 });
 
-async function loadSkillDefinitions(worktreeRoot: string): Promise<SkillDefinition[]> {
+export async function resolveTaskRoute(input: ResolveTaskRouteInput): Promise<RouteResult> {
+  const skills = await loadSkillDefinitions(input.worktree);
+  if (skills.length === 0) {
+    throw new Error("No valid SKILL.md files found under .opencode/skills.");
+  }
+
+  const requestedMode = input.mode ?? "llm";
+  if (requestedMode === "heuristic") {
+    return routeHeuristically(input.taskDescription, skills);
+  }
+
+  const llmAttempt = await routeWithLlm(input.taskDescription, skills, input.directory, input.worktree);
+  if (llmAttempt.result) {
+    return llmAttempt.result;
+  }
+
+  return routeHeuristically(input.taskDescription, skills, llmAttempt.failureReason);
+}
+
+export async function loadSkillDefinitions(worktreeRoot: string): Promise<SkillDefinition[]> {
   const skillsRoot = resolve(worktreeRoot, ".opencode", "skills");
-  const entries = await readdir(skillsRoot, { withFileTypes: true });
+
+  let entries: Dirent[];
+  try {
+    entries = await readdir(skillsRoot, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+
+  const directories = entries.filter((entry) => entry.isDirectory()).sort((left, right) => left.name.localeCompare(right.name));
   const skills: SkillDefinition[] = [];
 
-  for (const entry of entries) {
-    if (!entry.isDirectory()) {
-      continue;
-    }
-
+  for (const entry of directories) {
     const skillDirectory = entry.name;
     const skillPath = resolve(skillsRoot, skillDirectory, "SKILL.md");
 
@@ -77,6 +109,10 @@ async function loadSkillDefinitions(worktreeRoot: string): Promise<SkillDefiniti
       const raw = await readFile(skillPath, "utf-8");
       const parsed = parseSkillFrontmatter(raw);
       if (!parsed) {
+        continue;
+      }
+
+      if (!SKILL_NAME_PATTERN.test(parsed.name)) {
         continue;
       }
 
@@ -138,7 +174,7 @@ async function routeWithLlm(
   skills: SkillDefinition[],
   directory: string,
   worktree: string,
-): Promise<RouteResult | null> {
+): Promise<LlmRouteAttempt> {
   const client = createOpencodeClient({
     baseUrl: DEFAULT_SERVER_URL,
     directory,
@@ -157,7 +193,10 @@ async function routeWithLlm(
     });
 
     if (!created.data?.id) {
-      return null;
+      return {
+        result: null,
+        failureReason: "LLM routing session could not be created.",
+      };
     }
 
     ephemeralSessionID = created.data.id;
@@ -189,7 +228,10 @@ async function routeWithLlm(
     });
 
     if (!response.data?.parts) {
-      return null;
+      return {
+        result: null,
+        failureReason: "LLM routing response did not include any content.",
+      };
     }
 
     const responseTextParts: string[] = [];
@@ -204,21 +246,32 @@ async function routeWithLlm(
 
     const parsed = parseRouterOutput(responseText);
     if (!parsed) {
-      return null;
+      return {
+        result: null,
+        failureReason: "LLM routing response was not valid JSON.",
+      };
     }
 
     const matchingSkill = skills.find((skill) => skill.id === parsed.skill_id);
     if (!matchingSkill) {
-      return null;
+      return {
+        result: null,
+        failureReason: `LLM selected unknown skill '${parsed.skill_id}'.`,
+      };
     }
 
     return {
-      skill_id: matchingSkill.id,
-      reason: parsed.reason,
-      mode: "llm",
+      result: {
+        skill_id: matchingSkill.id,
+        reason: parsed.reason,
+        mode: "llm",
+      },
     };
-  } catch {
-    return null;
+  } catch (error) {
+    return {
+      result: null,
+      failureReason: `LLM routing request failed: ${formatUnknownError(error)}`,
+    };
   } finally {
     if (ephemeralSessionID) {
       await client.session
@@ -280,7 +333,11 @@ function tryParseJson(raw: string): { skill_id: string; reason: string } | null 
   }
 }
 
-function routeHeuristically(taskDescription: string, skills: SkillDefinition[]): RouteResult {
+function routeHeuristically(
+  taskDescription: string,
+  skills: SkillDefinition[],
+  fallbackReason?: string,
+): RouteResult {
   const taskTokens = tokenize(taskDescription);
 
   let bestSkill = skills[0];
@@ -304,10 +361,14 @@ function routeHeuristically(taskDescription: string, skills: SkillDefinition[]):
 
   return {
     skill_id: bestSkill.id,
-    reason:
+    reason: [
+      fallbackReason ? `Fallback activated: ${fallbackReason}` : null,
       bestScore > 0
         ? `Heuristic overlap score ${bestScore} selected ${bestSkill.id}.`
         : `No overlap found; defaulted to ${bestSkill.id}.`,
+    ]
+      .filter((item): item is string => Boolean(item))
+      .join(" "),
     mode: "heuristic",
   };
 }
@@ -320,6 +381,14 @@ function tokenize(input: string): Set<string> {
     .filter((token) => token.length >= 3);
 
   return new Set(tokens);
+}
+
+function formatUnknownError(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  return String(error);
 }
 
 export default route_task;
