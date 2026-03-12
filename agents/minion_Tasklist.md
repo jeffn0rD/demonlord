@@ -106,22 +106,22 @@ Agents should execute one subphase at a time. To trigger implementation, the Lea
 **Goal:** Build the tool that maps tasks to Agent Skills without requiring a Python vector DB, including Party Mode agent coordination.
 **Entry criteria:** PHASE-1 complete.
 **Exit criteria / QA checklist:**
-- [ ] `SKILL.md` files are properly formatted with required `name` and `description` frontmatter.
-- [ ] `matchmaker.ts` successfully parses skills and returns an ID.
-- [ ] `orchestrator.ts` plugin compiles and responds to session events.
-- [ ] Party Mode can coordinate multiple agents in shared worktree sessions.
+- [x] `SKILL.md` files are properly formatted with required `name` and `description` frontmatter.
+- [x] `matchmaker.ts` successfully parses skills and returns an ID.
+- [x] `orchestrator.ts` plugin compiles and responds to session events.
+- [x] Party Mode can coordinate multiple agents in shared worktree sessions.
 **Proposed PR title:** feat: implement dual-mode semantic matchmaker with party mode support
 **Proposed commit message:** feat: add route_task tool, structured agent skills, and party mode coordination (Refs #1)
 
 **Tasks:**
 <!-- TASK:T-3.2.1 -->
-- **T-3.2.1** (Refs #1): Create foundational specialized skills following OpenCode constraints. Create `.opencode/skills/frontend-specialist/SKILL.md` and `.opencode/skills/backend-specialist/SKILL.md` with detailed descriptions. Touch points: `.opencode/skills/*/SKILL.md`
+- [x] **T-3.2.1** (Refs #1): Create foundational specialized skills following OpenCode constraints. Create `.opencode/skills/frontend-specialist/SKILL.md` and `.opencode/skills/backend-specialist/SKILL.md` with detailed descriptions. Touch points: `.opencode/skills/*/SKILL.md`
 <!-- TASK:T-3.2.2 -->
-- **T-3.2.2** (Refs #1): Create `.opencode/tools/matchmaker.ts`. Implement "Mode 1" (LLM Routing) that reads all `SKILL.md` files and uses the OpenCode SDK to ask an LLM which skill best fits a given task description. Touch points: `.opencode/tools/matchmaker.ts`
+- [x] **T-3.2.2** (Refs #1): Create `.opencode/tools/matchmaker.ts`. Implement "Mode 1" (LLM Routing) that reads all `SKILL.md` files and uses the OpenCode SDK to ask an LLM which skill best fits a given task description. Touch points: `.opencode/tools/matchmaker.ts`
 <!-- TASK:T-3.2.3 -->
-- **T-3.2.3** (Refs #1): Implement event-driven orchestration by creating `.opencode/plugins/orchestrator.ts`. Use `session.idle` and `session.error` hooks to coordinate the Triage -> Implementation -> Review flow. The plugin should use the OpenCode SDK (`client.session.create()`, `client.session.prompt()`) to spawn and direct agent sessions. Touch points: `.opencode/plugins/orchestrator.ts`
+- [x] **T-3.2.3** (Refs #1): Implement event-driven orchestration by creating `.opencode/plugins/orchestrator.ts`. Use `session.idle` and `session.error` hooks to coordinate the Triage -> Implementation -> Review flow. The plugin should use the OpenCode SDK (`client.session.create()`, `client.session.prompt()`) to spawn and direct agent sessions. Touch points: `.opencode/plugins/orchestrator.ts`
 <!-- TASK:T-3.2.4 -->
-- **T-3.2.4** (Refs #1): Create `.opencode/tools/party_mode.ts` for multi-agent collaborative session orchestration. Implement round-based discussion management and agent coordination in shared worktrees. Touch points: `.opencode/tools/party_mode.ts`
+- [x] **T-3.2.4** (Refs #1): Create `.opencode/tools/party_mode.ts` for multi-agent collaborative session orchestration. Implement round-based discussion management and agent coordination in shared worktrees. Touch points: `.opencode/tools/party_mode.ts`
 
 ---
 
