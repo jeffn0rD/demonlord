@@ -166,6 +166,18 @@ Discord integration is configured in `demonlord.config.json`:
 - **Permission matrix**: Quality gate enforcement
 - **Recovery**: Always keep a backup at `.opencode/opencode.jsonc.known-good`
 
+### GitHub Project V2 Routing (`.github/workflows/project-board.yml`)
+- **Secret required**: `PROJECT_V2_TOKEN` (PAT classic with `project` scope; also add `repo` for private repositories)
+- **Repository vars required**:
+  - `PROJECT_V2_ID`
+  - `PROJECT_V2_STATUS_FIELD_ID`
+  - `PROJECT_V2_STATUS_TODO_OPTION_ID`
+  - `PROJECT_V2_STATUS_IN_PROGRESS_OPTION_ID`
+  - `PROJECT_V2_STATUS_REVIEW_OPTION_ID`
+  - `PROJECT_V2_STATUS_DONE_OPTION_ID`
+- **Routing labels** (canonical): `Status: Todo`, `Status: In Progress`, `Status: In Review`, `Status: Done`
+- **Compatibility labels**: `status:todo`, `status:in-progress`, `status:review`, `status:done`
+
 ## Troubleshooting
 
 ### Common Issues
@@ -185,6 +197,10 @@ Discord integration is configured in `demonlord.config.json`:
 **Discord messages not appearing**
 - **Solution**: Verify `.env` contains correct Discord webhook URLs
 - **Check**: Ensure `discord.enabled` is set to `true`
+
+**Issues are not moving on Project V2 board**
+- **Solution**: Verify `PROJECT_V2_TOKEN` secret and all `PROJECT_V2_*` repository variables are set
+- **Check**: Confirm the issue was labeled with a supported status label
 
 ### Debugging Tips
 

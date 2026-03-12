@@ -28,6 +28,7 @@ Demonlord replaces manual coding workflows with specialized AI agents that work 
 3. **Configure environment**:
    - Copy `.env.example` to `.env`
    - Add your GitHub Personal Access Token and Discord credentials
+   - Add a GitHub repository secret named `PROJECT_V2_TOKEN` for Project V2 automation
    - Review `demonlord.config.json` for worktree and Discord settings
 
 4. **Start OpenCode**:
@@ -56,6 +57,31 @@ Key configuration files:
 - **`.env`**: Contains secrets (GitHub PAT, Discord tokens)
 - **`demonlord.config.json`**: Factory settings (worktree paths, Discord personas, approval settings)
 - **`.opencode/opencode.jsonc`**: Agent definitions, MCP servers, and permissions
+- **`.github/workflows/project-board.yml`**: Label-based GitHub Project V2 status routing
+
+### Project Board Automation Setup
+
+To enable `SUBPHASE-2.2` workflow routing, configure these GitHub repository settings:
+
+1. **Create a PAT** for automation:
+   - Use a personal access token (classic)
+   - Scopes: `project` and `repo` (required for private repositories)
+2. **Add secret**:
+   - `PROJECT_V2_TOKEN` = your PAT
+3. **Add repository variables**:
+   - `PROJECT_V2_ID`
+   - `PROJECT_V2_STATUS_FIELD_ID`
+   - `PROJECT_V2_STATUS_TODO_OPTION_ID`
+   - `PROJECT_V2_STATUS_IN_PROGRESS_OPTION_ID`
+   - `PROJECT_V2_STATUS_REVIEW_OPTION_ID`
+   - `PROJECT_V2_STATUS_DONE_OPTION_ID`
+4. **Create status labels** (canonical):
+   - `Status: Todo`
+   - `Status: In Progress`
+   - `Status: In Review`
+   - `Status: Done`
+
+The workflow also accepts legacy compact labels (`status:todo`, `status:in-progress`, `status:review`, `status:done`) for compatibility.
 
 ### Worktree Approval Settings
 
