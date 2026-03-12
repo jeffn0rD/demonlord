@@ -1,0 +1,59 @@
+name: Gateway - Project Board Automation
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/project-board.yml
+      - .github/workflows/project-board-gateway.yml
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/project-board.yml
+      - .github/workflows/project-board-gateway.yml
+
+permissions:
+  contents: read
+
+jobs:
+  validate-project-board-workflow:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate Project Board workflow invariants
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          workflow = Path('.github/workflows/project-board.yml')
+          text = workflow.read_text(encoding='utf-8')
+
+          checks = {
+              "uses PAT token secret": "github-token: ${{ secrets.PROJECT_V2_TOKEN }}" in text,
+              "does not use GITHUB_TOKEN for project mutation": "github-token: ${{ secrets.GITHUB_TOKEN }}" not in text,
+              "routes from newly added label event": "const matchingLabel = context.payload.label?.name;" in text,
+              "contains canonical label mapping: Status: Todo": '"Status: Todo"' in text,
+              "contains canonical label mapping: Status: In Progress": '"Status: In Progress"' in text,
+              "contains canonical label mapping: Status: In Review": '"Status: In Review"' in text,
+              "contains canonical label mapping: Status: Done": '"Status: Done"' in text,
+              "contains legacy label mapping: status:todo": '"status:todo"' in text,
+              "contains legacy label mapping: status:in-progress": '"status:in-progress"' in text,
+              "contains legacy label mapping: status:review": '"status:review"' in text,
+              "contains legacy label mapping: status:done": '"status:done"' in text,
+              "uses supported issue project-items query": "query($issueId: ID!)" in text and "projectItems(first: 100)" in text,
+              "does not use unsupported project items filterBy argument": "filterBy:" not in text,
+              "adds issue to project when missing": "addProjectV2ItemById" in text,
+              "updates project status field": "updateProjectV2ItemFieldValue" in text,
+          }
+
+          failed = [name for name, ok in checks.items() if not ok]
+          if failed:
+              print("Project board workflow gateway check failed.")
+              for name in failed:
+                  print(f" - {name}")
+              raise SystemExit(1)
+
+          print("Project board workflow gateway check passed.")
+          PY
