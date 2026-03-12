@@ -73,7 +73,7 @@ jobs:
             const issueNodeId = context.payload.issue.node_id;
 
             const itemLookup = await github.graphql(
-              `query($issueId: ID!, $projectId: ID!) {
+              `query($issueId: ID!) {
                 node(id: $issueId) {
                   ... on Issue {
                     projectItems(first: 100) {
@@ -89,7 +89,6 @@ jobs:
               }`,
               {
                 issueId: issueNodeId,
-                projectId,
               }
             );
 
