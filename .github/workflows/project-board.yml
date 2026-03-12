@@ -73,22 +73,29 @@ jobs:
             const issueNodeId = context.payload.issue.node_id;
 
             const itemLookup = await github.graphql(
-              `query($projectId: ID!, $issueId: ID!) {
-                node(id: $projectId) {
-                  ... on ProjectV2 {
-                    items(first: 100, filterBy: {contentId: $issueId}) {
-                      nodes { id }
+              `query($issueId: ID!, $projectId: ID!) {
+                node(id: $issueId) {
+                  ... on Issue {
+                    projectItems(first: 100) {
+                      nodes {
+                        id
+                        project {
+                          id
+                        }
+                      }
                     }
                   }
                 }
               }`,
               {
-                projectId,
                 issueId: issueNodeId,
+                projectId,
               }
             );
 
-            let itemId = itemLookup.node.items.nodes[0]?.id;
+            let itemId = itemLookup.node.projectItems.nodes.find(
+              (item) => item.project?.id === projectId
+            )?.id;
 
             if (!itemId) {
               const addItem = await github.graphql(
