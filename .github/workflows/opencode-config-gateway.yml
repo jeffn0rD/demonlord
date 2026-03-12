@@ -1,0 +1,193 @@
+name: Gateway - OpenCode Config Safety
+
+on:
+  pull_request:
+    paths:
+      - .opencode/opencode.jsonc
+      - .opencode/opencode.jsonc.known-good
+      - .github/workflows/opencode-config-gateway.yml
+  push:
+    branches:
+      - main
+    paths:
+      - .opencode/opencode.jsonc
+      - .opencode/opencode.jsonc.known-good
+      - .github/workflows/opencode-config-gateway.yml
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  validate-opencode-config:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Validate OpenCode config invariants
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          FORBIDDEN_PLURALS = {
+              "agents": "agent",
+              "permissions": "permission",
+              "commands": "command",
+              "mcps": "mcp",
+              "plugins": "plugin",
+          }
+
+          REQUIRED_SCHEMA = "https://opencode.ai/config.json"
+
+
+          def strip_jsonc_comments(text: str) -> str:
+              out = []
+              i = 0
+              in_string = False
+              escape = False
+              while i < len(text):
+                  ch = text[i]
+                  if in_string:
+                      out.append(ch)
+                      if escape:
+                          escape = False
+                      elif ch == "\\":
+                          escape = True
+                      elif ch == '"':
+                          in_string = False
+                      i += 1
+                      continue
+
+                  if ch == '"':
+                      in_string = True
+                      out.append(ch)
+                      i += 1
+                      continue
+
+                  if ch == "/" and i + 1 < len(text):
+                      nxt = text[i + 1]
+                      if nxt == "/":
+                          i += 2
+                          while i < len(text) and text[i] not in "\r\n":
+                              i += 1
+                          continue
+                      if nxt == "*":
+                          i += 2
+                          while i + 1 < len(text) and not (text[i] == "*" and text[i + 1] == "/"):
+                              i += 1
+                          i += 2
+                          continue
+
+                  out.append(ch)
+                  i += 1
+              return "".join(out)
+
+
+          def strip_trailing_commas(text: str) -> str:
+              out = []
+              i = 0
+              in_string = False
+              escape = False
+              while i < len(text):
+                  ch = text[i]
+                  if in_string:
+                      out.append(ch)
+                      if escape:
+                          escape = False
+                      elif ch == "\\":
+                          escape = True
+                      elif ch == '"':
+                          in_string = False
+                      i += 1
+                      continue
+
+                  if ch == '"':
+                      in_string = True
+                      out.append(ch)
+                      i += 1
+                      continue
+
+                  if ch == ",":
+                      j = i + 1
+                      while j < len(text) and text[j].isspace():
+                          j += 1
+                      if j < len(text) and text[j] in "}]":
+                          i += 1
+                          continue
+
+                  out.append(ch)
+                  i += 1
+              return "".join(out)
+
+
+          def parse_jsonc(path: Path):
+              text = path.read_text(encoding="utf-8")
+              normalized = strip_trailing_commas(strip_jsonc_comments(text))
+              return json.loads(normalized)
+
+
+          def validate_config(config_name: str, config: dict):
+              errors = []
+
+              if not isinstance(config, dict):
+                  errors.append("Top-level config must be a JSON object.")
+                  return errors
+
+              if config.get("$schema") != REQUIRED_SCHEMA:
+                  errors.append(f"$schema must equal '{REQUIRED_SCHEMA}'.")
+
+              for bad_key, good_key in FORBIDDEN_PLURALS.items():
+                  if bad_key in config:
+                      errors.append(f"Use '{good_key}' instead of forbidden key '{bad_key}'.")
+
+              agents = config.get("agent")
+              if not isinstance(agents, dict) or not agents:
+                  errors.append("'agent' must exist and be a non-empty object.")
+              else:
+                  for agent_name, agent_cfg in agents.items():
+                      if not isinstance(agent_cfg, dict):
+                          errors.append(f"agent.{agent_name} must be an object.")
+                          continue
+                      description = agent_cfg.get("description")
+                      if not isinstance(description, str) or not description.strip():
+                          errors.append(f"agent.{agent_name}.description is required and must be a non-empty string.")
+
+              if errors:
+                  print(f"{config_name}: FAILED")
+                  for err in errors:
+                      print(f" - {err}")
+              else:
+                  print(f"{config_name}: OK")
+
+              return errors
+
+
+          targets = [
+              Path(".opencode/opencode.jsonc"),
+              Path(".opencode/opencode.jsonc.known-good"),
+          ]
+
+          all_errors = []
+          for target in targets:
+              if not target.exists():
+                  all_errors.append(f"Missing required file: {target}")
+                  continue
+              try:
+                  parsed = parse_jsonc(target)
+              except Exception as exc:
+                  all_errors.append(f"{target}: invalid JSONC ({exc})")
+                  continue
+              all_errors.extend([f"{target}: {e}" for e in validate_config(str(target), parsed)])
+
+          if all_errors:
+              print("OpenCode config gateway failed.")
+              for err in all_errors:
+                  print(f" - {err}")
+              raise SystemExit(1)
+
+          print("OpenCode config gateway passed.")
+          PY
