@@ -153,30 +153,30 @@ Agents should execute one subphase at a time. To trigger implementation, the Lea
 **Goal:** Make orchestration config-driven and manual-by-default by replacing title-inferred stage routing with explicit persisted pipeline state and operator-driven transitions.
 **Entry criteria:** SUBPHASE-3.3 complete.
 **Exit criteria / QA checklist:**
-- [ ] `demonlord.config.json` includes an `orchestration` section with defaults (`enabled=true`, `mode=manual`, `require_approval_before_spawn=true`, `ignore_aborted_messages=true`, `verbose_events=true`).
-- [ ] Stage transitions are sourced from explicit pipeline state, not session-title inference.
-- [ ] `/pipeline status`, `/pipeline advance`, `/pipeline stop`, and `/pipeline off` provide deterministic control/visibility without direct DB queries.
-- [ ] Child session spawn is blocked until explicit approval when `require_approval_before_spawn=true`, with a local command path that works without Discord.
-- [ ] `MessageAbortedError` is treated as non-fatal when configured, and recovery prompts are emitted once per real error signature.
-- [ ] Structured orchestration events are persisted for operational tracing.
+- [x] `demonlord.config.json` includes an `orchestration` section with defaults (`enabled=true`, `mode=manual`, `require_approval_before_spawn=true`, `ignore_aborted_messages=true`, `verbose_events=true`).
+- [x] Stage transitions are sourced from explicit pipeline state, not session-title inference.
+- [x] `/pipeline status`, `/pipeline advance`, `/pipeline stop`, and `/pipeline off` provide deterministic control/visibility without direct DB queries.
+- [x] Child session spawn is blocked until explicit approval when `require_approval_before_spawn=true`, with a local command path that works without Discord.
+- [x] `MessageAbortedError` is treated as non-fatal when configured, and recovery prompts are emitted once per real error signature.
+- [x] Structured orchestration events are persisted for operational tracing.
 **Proposed PR title:** feat: add manual orchestration controls and explicit pipeline state
 **Proposed commit message:** feat: add config-driven manual orchestration with explicit pipeline state and approval gates (Refs #1)
 
 **Tasks:**
 <!-- TASK:T-3.4.1 -->
-- **T-3.4.1** (Refs #1): Extend factory configuration handling to support `orchestration` controls with deterministic defaults and backward-compatible fallback behavior. Touch points: `demonlord.config.json`, `.opencode/plugins/orchestrator.ts`
+- [x] **T-3.4.1** (Refs #1): Extend factory configuration handling to support `orchestration` controls with deterministic defaults and backward-compatible fallback behavior. Touch points: `demonlord.config.json`, `.opencode/plugins/orchestrator.ts`
 <!-- TASK:T-3.4.2 -->
-- **T-3.4.2** (Refs #1): Refactor orchestration stage source-of-truth to persisted pipeline state (root session, current stage, children, worktree, routing context), removing title-text stage inference as authoritative input. Touch points: `.opencode/plugins/orchestrator.ts`
+- [x] **T-3.4.2** (Refs #1): Refactor orchestration stage source-of-truth to persisted pipeline state (root session, current stage, children, worktree, routing context), removing title-text stage inference as authoritative input. Touch points: `.opencode/plugins/orchestrator.ts`
 <!-- TASK:T-3.4.3 -->
-- **T-3.4.3** (Refs #1): Implement manual pipeline control commands for `status`, `advance <stage>`, `stop`, and global `off`, including tree-style session visibility and deterministic transition validation. Touch points: `.opencode/plugins/orchestrator.ts`, `.opencode/commands/`
+- [x] **T-3.4.3** (Refs #1): Implement manual pipeline control commands for `status`, `advance <stage>`, `stop`, and global `off`, including tree-style session visibility and deterministic transition validation. Touch points: `.opencode/plugins/orchestrator.ts`, `.opencode/commands/`
 <!-- TASK:T-3.4.4 -->
-- **T-3.4.4** (Refs #1): Add approval gating before child spawn with persisted pending-transition state and local command-based approval path that does not depend on Discord availability. Touch points: `.opencode/plugins/orchestrator.ts`, `.opencode/plugins/communication.ts`
+- [x] **T-3.4.4** (Refs #1): Add approval gating before child spawn with persisted pending-transition state and local command-based approval path that does not depend on Discord availability. Touch points: `.opencode/plugins/orchestrator.ts`, `.opencode/plugins/communication.ts`
 <!-- TASK:T-3.4.5 -->
-- **T-3.4.5** (Refs #1): Update error handling policy so `MessageAbortedError` is ignored in manual mode when configured, while real execution errors trigger one recovery prompt per normalized signature. Touch points: `.opencode/plugins/orchestrator.ts`
+- [x] **T-3.4.5** (Refs #1): Update error handling policy so `MessageAbortedError` is ignored in manual mode when configured, while real execution errors trigger one recovery prompt per normalized signature. Touch points: `.opencode/plugins/orchestrator.ts`
 <!-- TASK:T-3.4.6 -->
-- **T-3.4.6** (Refs #1): Add structured orchestration event logging (spawn requested/approved/blocked/completed/error) and concise status snapshots for operators. Touch points: `.opencode/plugins/orchestrator.ts`
+- [x] **T-3.4.6** (Refs #1): Add structured orchestration event logging (spawn requested/approved/blocked/completed/error) and concise status snapshots for operators. Touch points: `.opencode/plugins/orchestrator.ts`
 <!-- TASK:T-3.4.7 -->
-- **T-3.4.7** (Refs #1): Fix communication plugin load compatibility (export/runtime shape) so approval/visibility behavior is reliable alongside local pipeline controls. Touch points: `.opencode/plugins/communication.ts`
+- [x] **T-3.4.7** (Refs #1): Fix communication plugin load compatibility (export/runtime shape) so approval/visibility behavior is reliable alongside local pipeline controls. Touch points: `.opencode/plugins/communication.ts`
 
 ### SUBPHASE-3.5: Party Mode Security Hardening & State Convergence
 <!-- SUBPHASE:3.5 -->
