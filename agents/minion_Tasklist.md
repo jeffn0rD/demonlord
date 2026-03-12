@@ -84,22 +84,22 @@ Agents should execute one subphase at a time. To trigger implementation, the Lea
 **Goal:** Create scripts for headless isolation with tracking and approval, including project context management.
 **Entry criteria:** None.
 **Exit criteria / QA checklist:**
-- [ ] Script successfully executes `git worktree add`.
-- [ ] Worktree creation includes agent type and purpose metadata.
-- [ ] Worktree tracking is maintained for cleanup and monitoring.
-- [ ] `project-context.md` file is created/loaded in each worktree for agent consistency.
+- [x] Script successfully executes `git worktree add`.
+- [x] Worktree creation includes agent type and purpose metadata.
+- [x] Worktree tracking is maintained for cleanup and monitoring.
+- [x] `project-context.md` file is created/loaded in each worktree for agent consistency.
 **Proposed PR title:** feat: add git worktree provisioning with tracking and project context
 **Proposed commit message:** feat: implement spawn_worktree script with agent tracking, approval support, and project context management (Refs #1)
 
 **Tasks:**
 <!-- TASK:T-3.1.1 -->
-- **T-3.1.1** (Refs #1): Create `/agents/tools/spawn_worktree.sh` (or TS equivalent) taking a task ID to run `git worktree add ../worktrees/task-<id>`. Touch points: `/agents/tools/spawn_worktree.sh`
+- [x] **T-3.1.1** (Refs #1): Create `/agents/tools/spawn_worktree.sh` (or TS equivalent) taking a task ID to run `git worktree add ../worktrees/task-<id>`. Touch points: `/agents/tools/spawn_worktree.sh`
 <!-- TASK:T-3.1.2 -->
-- **T-3.1.2** (Refs #1): Create worktree tracking and cleanup mechanism. Maintain metadata about which agent is using each worktree and implement cleanup for orphaned worktrees. Touch points: `/agents/tools/worktree_manager.ts`
+- [x] **T-3.1.2** (Refs #1): Create worktree tracking and cleanup mechanism. Maintain metadata about which agent is using each worktree and implement cleanup for orphaned worktrees. Touch points: `/agents/tools/worktree_manager.ts`
 <!-- TASK:T-3.1.3 -->
-- **T-3.1.3** (Refs #1): Implement `project-context.md` generation and loading in worktrees. Create default context file and ensure agents load it before execution. Touch points: `/agents/tools/spawn_worktree.sh`, `_bmad-output/project-context.md`
+- [x] **T-3.1.3** (Refs #1): Implement `project-context.md` generation and loading in worktrees. Create default context file and ensure agents load it before execution. Touch points: `/agents/tools/spawn_worktree.sh`, `_bmad-output/project-context.md`
 <!-- TASK:T-3.1.3 -->
-- **T-3.1.3** (Refs #1): Implement `project-context.md` generation and loading in worktrees. Create default context file and ensure agents load it before execution. Touch points: `/agents/tools/spawn_worktree.sh`, `_bmad-output/project-context.md`
+- [x] **T-3.1.3** (Refs #1): Implement `project-context.md` generation and loading in worktrees. Create default context file and ensure agents load it before execution. Touch points: `/agents/tools/spawn_worktree.sh`, `_bmad-output/project-context.md`
 
 ### SUBPHASE-3.2: The Dual-Mode Matchmaker
 <!-- SUBPHASE:3.2 -->
