@@ -148,10 +148,40 @@ Agents should execute one subphase at a time. To trigger implementation, the Lea
 <!-- TASK:T-3.3.5 -->
 - [x] **T-3.3.5** (Refs #1): Add deterministic error recovery prompts and guard conditions for `session.error` handling to prevent recursive orchestration failures. Touch points: `.opencode/plugins/orchestrator.ts`
 
-### SUBPHASE-3.4: Party Mode Security Hardening & State Convergence
+### SUBPHASE-3.4: Manual Orchestration Controls & Explicit Pipeline State
 <!-- SUBPHASE:3.4 -->
-**Goal:** Eliminate path traversal/file safety risks in Party Mode and converge command handling onto a single source of truth.
+**Goal:** Make orchestration config-driven and manual-by-default by replacing title-inferred stage routing with explicit persisted pipeline state and operator-driven transitions.
 **Entry criteria:** SUBPHASE-3.3 complete.
+**Exit criteria / QA checklist:**
+- [ ] `demonlord.config.json` includes an `orchestration` section with defaults (`enabled=true`, `mode=manual`, `require_approval_before_spawn=true`, `ignore_aborted_messages=true`, `verbose_events=true`).
+- [ ] Stage transitions are sourced from explicit pipeline state, not session-title inference.
+- [ ] `/pipeline status`, `/pipeline advance`, `/pipeline stop`, and `/pipeline off` provide deterministic control/visibility without direct DB queries.
+- [ ] Child session spawn is blocked until explicit approval when `require_approval_before_spawn=true`, with a local command path that works without Discord.
+- [ ] `MessageAbortedError` is treated as non-fatal when configured, and recovery prompts are emitted once per real error signature.
+- [ ] Structured orchestration events are persisted for operational tracing.
+**Proposed PR title:** feat: add manual orchestration controls and explicit pipeline state
+**Proposed commit message:** feat: add config-driven manual orchestration with explicit pipeline state and approval gates (Refs #1)
+
+**Tasks:**
+<!-- TASK:T-3.4.1 -->
+- **T-3.4.1** (Refs #1): Extend factory configuration handling to support `orchestration` controls with deterministic defaults and backward-compatible fallback behavior. Touch points: `demonlord.config.json`, `.opencode/plugins/orchestrator.ts`
+<!-- TASK:T-3.4.2 -->
+- **T-3.4.2** (Refs #1): Refactor orchestration stage source-of-truth to persisted pipeline state (root session, current stage, children, worktree, routing context), removing title-text stage inference as authoritative input. Touch points: `.opencode/plugins/orchestrator.ts`
+<!-- TASK:T-3.4.3 -->
+- **T-3.4.3** (Refs #1): Implement manual pipeline control commands for `status`, `advance <stage>`, `stop`, and global `off`, including tree-style session visibility and deterministic transition validation. Touch points: `.opencode/plugins/orchestrator.ts`, `.opencode/commands/`
+<!-- TASK:T-3.4.4 -->
+- **T-3.4.4** (Refs #1): Add approval gating before child spawn with persisted pending-transition state and local command-based approval path that does not depend on Discord availability. Touch points: `.opencode/plugins/orchestrator.ts`, `.opencode/plugins/communication.ts`
+<!-- TASK:T-3.4.5 -->
+- **T-3.4.5** (Refs #1): Update error handling policy so `MessageAbortedError` is ignored in manual mode when configured, while real execution errors trigger one recovery prompt per normalized signature. Touch points: `.opencode/plugins/orchestrator.ts`
+<!-- TASK:T-3.4.6 -->
+- **T-3.4.6** (Refs #1): Add structured orchestration event logging (spawn requested/approved/blocked/completed/error) and concise status snapshots for operators. Touch points: `.opencode/plugins/orchestrator.ts`
+<!-- TASK:T-3.4.7 -->
+- **T-3.4.7** (Refs #1): Fix communication plugin load compatibility (export/runtime shape) so approval/visibility behavior is reliable alongside local pipeline controls. Touch points: `.opencode/plugins/communication.ts`
+
+### SUBPHASE-3.5: Party Mode Security Hardening & State Convergence
+<!-- SUBPHASE:3.5 -->
+**Goal:** Eliminate path traversal/file safety risks in Party Mode and converge command handling onto a single source of truth.
+**Entry criteria:** SUBPHASE-3.4 complete.
 **Exit criteria / QA checklist:**
 - [ ] `session_id` and export path inputs are validated/sanitized and cannot escape `context.worktree`.
 - [ ] Party Mode state is unified (no split-brain between plugin in-memory state and tool persisted state).
@@ -162,41 +192,41 @@ Agents should execute one subphase at a time. To trigger implementation, the Lea
 **Proposed commit message:** fix: harden party mode file safety and consolidate shared state orchestration (Refs #1)
 
 **Tasks:**
-<!-- TASK:T-3.4.1 -->
-- **T-3.4.1** (Refs #1): Add strict validation for Party Mode identifiers/inputs (including safe `session_id` constraints) before file access. Touch points: `.opencode/tools/party_mode.ts`
-<!-- TASK:T-3.4.2 -->
-- **T-3.4.2** (Refs #1): Enforce path containment for exports and state files so resolved paths remain under `context.worktree`; reject traversal attempts deterministically. Touch points: `.opencode/tools/party_mode.ts`
-<!-- TASK:T-3.4.3 -->
-- **T-3.4.3** (Refs #1): Refactor `.opencode/plugins/communication.ts` Party Mode slash-command handlers to use unified Party Mode state/tooling instead of separate in-memory control flow. Touch points: `.opencode/plugins/communication.ts`, `.opencode/tools/party_mode.ts`
-<!-- TASK:T-3.4.4 -->
-- **T-3.4.4** (Refs #1): Standardize transcript export naming/content and ensure command responses reflect persisted state transitions. Touch points: `.opencode/plugins/communication.ts`, `.opencode/tools/party_mode.ts`
+<!-- TASK:T-3.5.1 -->
+- **T-3.5.1** (Refs #1): Add strict validation for Party Mode identifiers/inputs (including safe `session_id` constraints) before file access. Touch points: `.opencode/tools/party_mode.ts`
+<!-- TASK:T-3.5.2 -->
+- **T-3.5.2** (Refs #1): Enforce path containment for exports and state files so resolved paths remain under `context.worktree`; reject traversal attempts deterministically. Touch points: `.opencode/tools/party_mode.ts`
+<!-- TASK:T-3.5.3 -->
+- **T-3.5.3** (Refs #1): Refactor `.opencode/plugins/communication.ts` Party Mode slash-command handlers to use unified Party Mode state/tooling instead of separate in-memory control flow. Touch points: `.opencode/plugins/communication.ts`, `.opencode/tools/party_mode.ts`
+<!-- TASK:T-3.5.4 -->
+- **T-3.5.4** (Refs #1): Standardize transcript export naming/content and ensure command responses reflect persisted state transitions. Touch points: `.opencode/plugins/communication.ts`, `.opencode/tools/party_mode.ts`
 
-### SUBPHASE-3.5: Type Safety, Test Coverage & Pre-Push Verification
-<!-- SUBPHASE:3.5 -->
-**Goal:** Make Phase-3.2+ hardening push-ready with strict type safety, test coverage, and deterministic verification.
-**Entry criteria:** SUBPHASE-3.4 complete.
+### SUBPHASE-3.6: Type Safety, Test Coverage & Pre-Push Verification
+<!-- SUBPHASE:3.6 -->
+**Goal:** Make Phase-3.4+ hardening push-ready with strict type safety, test coverage, and deterministic verification.
+**Entry criteria:** SUBPHASE-3.5 complete.
 **Exit criteria / QA checklist:**
 - [ ] TypeScript validation for `.opencode` passes with strict settings.
 - [ ] Unit tests cover Matchmaker parsing/routing, Party Mode state transitions, and path safety controls.
 - [ ] Integration tests validate orchestrator lifecycle transitions and duplicate-spawn prevention.
 - [ ] Error-path tests cover invalid router output, session errors, and Party Mode invalid input handling.
 - [ ] Pre-push verification commands run successfully and results are documented in commit/PR notes.
-**Proposed PR title:** test: add orchestration hardening coverage and type-safe pre-push gates
+**Proposed PR title:** test: add phase 3 hardening coverage and type-safe pre-push gates
 **Proposed commit message:** test: add tool/plugin coverage and enforce type-safe pre-push verification for phase 3 hardening (Refs #1)
 
 **Tasks:**
-<!-- TASK:T-3.5.1 -->
-- **T-3.5.1** (Refs #1): Resolve `.opencode` TypeScript compatibility issues (module resolution/import typings/strictness) and ensure all new plugin/tool files typecheck cleanly. Touch points: `.opencode/tsconfig.json`, `.opencode/plugins/orchestrator.ts`, `.opencode/tools/matchmaker.ts`, `.opencode/tools/party_mode.ts`, `.opencode/plugins/communication.ts`
-<!-- TASK:T-3.5.2 -->
-- **T-3.5.2** (Refs #1): Create unit tests for Matchmaker skill parsing, naming validation, JSON parse fallback behavior, and deterministic heuristic fallback. Touch points: `.opencode/tests/tools/matchmaker.test.ts`
-<!-- TASK:T-3.5.3 -->
-- **T-3.5.3** (Refs #1): Create unit tests for Party Mode actions (`start`, `continue`, `halt`, `focus`, `add-agent`, `note`, `export`) including path traversal rejection. Touch points: `.opencode/tests/tools/party_mode.test.ts`
-<!-- TASK:T-3.5.4 -->
-- **T-3.5.4** (Refs #1): Add orchestrator plugin tests for idle/error lifecycle transitions, idempotency guards, and terminal stage behavior. Touch points: `.opencode/tests/plugins/orchestrator.test.ts`
-<!-- TASK:T-3.5.5 -->
-- **T-3.5.5** (Refs #1): Add integration-style verification for end-to-end stage transitions and no-duplicate spawn behavior under repeated idle events. Touch points: `.opencode/tests/integration/orchestration-flow.test.ts`
-<!-- TASK:T-3.5.6 -->
-- **T-3.5.6** (Refs #1): Execute pre-push validation suite (`typecheck`, tool/plugin tests, integration tests) and record pass/fail evidence. (Manual Execution Task). Touch points: `.opencode/package.json`, `.opencode/tests/`
+<!-- TASK:T-3.6.1 -->
+- **T-3.6.1** (Refs #1): Resolve `.opencode` TypeScript compatibility issues (module resolution/import typings/strictness) and ensure all new plugin/tool files typecheck cleanly. Touch points: `.opencode/tsconfig.json`, `.opencode/plugins/orchestrator.ts`, `.opencode/tools/matchmaker.ts`, `.opencode/tools/party_mode.ts`, `.opencode/plugins/communication.ts`
+<!-- TASK:T-3.6.2 -->
+- **T-3.6.2** (Refs #1): Create unit tests for Matchmaker skill parsing, naming validation, JSON parse fallback behavior, and deterministic heuristic fallback. Touch points: `.opencode/tests/tools/matchmaker.test.ts`
+<!-- TASK:T-3.6.3 -->
+- **T-3.6.3** (Refs #1): Create unit tests for Party Mode actions (`start`, `continue`, `halt`, `focus`, `add-agent`, `note`, `export`) including path traversal rejection. Touch points: `.opencode/tests/tools/party_mode.test.ts`
+<!-- TASK:T-3.6.4 -->
+- **T-3.6.4** (Refs #1): Add orchestrator plugin tests for idle/error lifecycle transitions, idempotency guards, terminal stage behavior, manual mode transitions, and approval gating. Touch points: `.opencode/tests/plugins/orchestrator.test.ts`
+<!-- TASK:T-3.6.5 -->
+- **T-3.6.5** (Refs #1): Add integration-style verification for end-to-end stage transitions, no-duplicate spawn behavior under repeated idle events, and local command-driven progression. Touch points: `.opencode/tests/integration/orchestration-flow.test.ts`
+<!-- TASK:T-3.6.6 -->
+- **T-3.6.6** (Refs #1): Execute pre-push validation suite (`typecheck`, tool/plugin tests, integration tests) and record pass/fail evidence. (Manual Execution Task). Touch points: `.opencode/package.json`, `.opencode/tests/`
 
 ---
 

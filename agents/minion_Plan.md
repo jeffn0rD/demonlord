@@ -45,18 +45,22 @@ This document outlines the architecture and phased implementation plan for "Demo
   - Implement user control commands (`/continue`, `/halt`, `/focus`, `/add-agent`, `/export`)
   - Support round-based discussion management with user intervention points
 
-## PHASE 3: Matchmaker, Worktree Isolation & Event Orchestration
+## PHASE 3: Matchmaker, Worktree Isolation & Event Orchestration Hardening
 <!-- PHASE:3 -->
-**Goal:** Implement the dual-mode semantic routing tool, define specialized agent skills, build the worktree spawning script, create the event-driven orchestration plugin, and implement project context management.
+**Goal:** Implement deterministic routing/worktree orchestration and harden the pipeline with explicit state persistence, manual-first controls, approval gates, and resilient error handling.
 - **Included Issues:** Refs #1
 - **Dependencies:** Phase 1 completion.
 - **Risks:** 
   - LLM routing (Mode 1) may occasionally hallucinate incorrect skill IDs if the `SKILL.md` descriptions are not highly specific. **Mitigation**: Implement strict validation that skill names must exactly match directory names and use regex validation for naming conventions.
   - Plugin event handling requires careful error boundaries to prevent cascade failures. **Mitigation**: Implement try-catch blocks with proper logging and graceful degradation to primary agent mode.
+  - Stage inference from session metadata/title text can cause misrouted transitions. **Mitigation**: Persist explicit pipeline state keyed by root session and require deterministic transition checks.
+  - Auto-progress behavior can be noisy during testing (aborts, throwaway prompts). **Mitigation**: Default to config-driven manual mode and suppress non-fatal aborted-message recovery prompts.
   - Worktree creation may fail due to disk space or Git permission issues. **Mitigation**: Pre-validate disk space and Git permissions before attempting worktree creation, with clear error messages and cleanup procedures.
 - **Enhancements:**
   - Implement `project-context.md` generation and loading for consistent agent behavior
   - Support Party Mode agent coordination within shared worktrees
+  - Add `/pipeline` operational controls (`status`, `advance`, `stop`, `off`) for first-class session tree visibility and explicit stage transitions
+  - Add config-driven spawn approvals with local command fallback so orchestration remains usable without Discord
 
 ## PHASE 4: Deterministic Quality Gates
 <!-- PHASE:4 -->

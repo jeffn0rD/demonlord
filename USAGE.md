@@ -24,8 +24,9 @@ Execute the generated plans using the implement command:
 
 This command will:
 - Read the tasklist and find the next available subphase
-- Spawn isolated worktrees for parallel execution
+- Initialize or update explicit pipeline state
 - Route tasks to appropriate specialized agents via the Matchmaker
+- Wait for explicit pipeline transitions in manual mode (`/pipeline advance ...`)
 - Enforce quality gates through the `submit_implementation` tool
 
 ### 3. Review and Approval
@@ -33,6 +34,12 @@ Monitor Discord notifications for:
 - **Worktree creation requests**: Approve or reject based on the agent type and purpose
 - **Implementation completion**: Review code changes and approve for merge
 - **Error notifications**: Address any issues that require human intervention
+
+In manual mode, use local pipeline controls in the CLI:
+- **`/pipeline status [session]`**: View parent/child stage tree and worktree state
+- **`/pipeline advance <triage|implementation|review> [session]`**: Perform explicit transition
+- **`/pipeline stop [session]` / `/pipeline off`**: Stop one pipeline or disable orchestration
+- **`/pipeline approve [session]`**: Approve blocked spawn without Discord dependency
 
 ## Agent Roles and Responsibilities
 
@@ -49,7 +56,8 @@ Monitor Discord notifications for:
 - **Responsibilities**:
   - Parse planner output and extract task requirements
   - Use the Matchmaker tool to select appropriate specialized skills
-  - Spawn isolated worktrees using `spawn_worktree.sh`
+  - Maintain explicit persisted pipeline state per root session
+  - Spawn isolated worktrees using `spawn_worktree.sh` after transition/approval checks
   - Launch Minion agents in the new worktrees
 - **Tools**: `matchmaker.ts`, `spawn_worktree.sh`, OpenCode SDK
 
@@ -85,9 +93,9 @@ your-project/
 
 ### Worktree Approval Flow
 1. **Orchestrator** requests worktree creation for a Minion agent
-2. **Communication plugin** checks `demonlord.config.json` approval settings
-3. **If approval required**: Discord message is sent with worktree details
-4. **User approves**: `/approve` command unblocks the workflow
+2. **Orchestration policy** checks `demonlord.config.json` approval settings
+3. **If approval required**: transition is blocked pending explicit approval
+4. **User approves**: `/pipeline approve [session]` (or `/approve` via Discord when available)
 5. **Worktree created**: Minion agent begins execution in isolated environment
 
 ### Worktree Cleanup
@@ -133,6 +141,13 @@ Control the system via Discord slash commands:
 - **`/park`**: Pause current work for later resumption
 - **`/handoff [skill]`**: Transfer to a different specialized agent
 
+Control the orchestration pipeline locally via CLI commands:
+- **`/pipeline status [session]`**
+- **`/pipeline advance <triage|implementation|review> [session]`**
+- **`/pipeline stop [session]`**
+- **`/pipeline off`**
+- **`/pipeline approve [session]`**
+
 ### Configuration
 Discord integration is configured in `demonlord.config.json`:
 ```json
@@ -157,6 +172,11 @@ Discord integration is configured in `demonlord.config.json`:
 - **`worktrees.prefix`**: Prefix for worktree directory names
 - **`worktrees.approval_required`**: Global approval requirement toggle
 - **`worktrees.agent_approval`**: Per-agent approval settings
+- **`orchestration.enabled`**: Master orchestration on/off switch
+- **`orchestration.mode`**: `off` | `manual` | `auto` (default: `manual`)
+- **`orchestration.require_approval_before_spawn`**: Block child spawn until approved
+- **`orchestration.ignore_aborted_messages`**: Treat `MessageAbortedError` as non-fatal when true
+- **`orchestration.verbose_events`**: Enable concise operational event messages
 - **`discord.enabled`**: Enable/disable Discord integration
 - **`discord.personas`**: Agent-specific Discord persona settings
 

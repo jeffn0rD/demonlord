@@ -47,7 +47,7 @@ The Model Context Protocol (MCP) provides agents with external state persistence
 Strategic Integrations
 
 * GitHub MCP (@modelcontextprotocol/server-github): Facilitates direct interaction with the project’s version control state. It allows Planner and Reviewer agents to ingest issues, create sub-issues for task decomposition, and programmatically manage the Pull Request lifecycle.
-* Centralized Factory Config (demonlord.config.json): A single root-level file that manages the Discord persona mappings, worktree output paths, operational modes, and worktree approval settings, preventing the pollution of core OpenCode files.
+* Centralized Factory Config (demonlord.config.json): A single root-level file that manages Discord persona mappings, worktree output paths, and orchestration controls (enabled/off/manual/auto mode, approval gating, abort handling, and event verbosity), preventing pollution of core OpenCode files.
 
 Configuration Protocol
 
@@ -84,13 +84,28 @@ Example opencode.jsonc Configuration:
 
 4. The Workflow State Machine
 
-The factory discards unreliable LLM-based loops in favor of event-driven orchestration via OpenCode plugins. Plugins subscribe to session lifecycle events (`session.idle`, `session.error`, `session.created`) to coordinate transitions between pipeline stages.
+The factory discards unreliable LLM-based loops in favor of event-driven orchestration via OpenCode plugins. Plugins subscribe to session lifecycle events (`session.idle`, `session.error`, `session.created`) to coordinate transitions between pipeline stages while persisting explicit pipeline state (root session, stage, children, worktree, routing) as the source of truth.
 
 The Three-Stage Lifecycle
 
 1. Ingestion & Planning (/triage): Triggered by custom command, Discord slash command, or programmatic SDK call, the Planner ingests requirements and decomposes them into atomic, non-overlapping tasks.
 2. Orchestration & Spawning (/implement): The Orchestrator invokes spawn_worktree.sh, creating isolated sibling directories for parallel execution, and uses the SDK (`client.session.create()`) to launch the matching Minion in the new worktree.
 3. Review & Handoff: Upon completion, a plugin listening to `session.idle` triggers the Reviewer agent and posts a Discord notification for human-in-the-loop approval.
+
+Operational Modes and Manual Controls
+
+The orchestration layer is configuration-driven and supports three deterministic modes:
+
+* `off`: no automatic stage transitions, no child spawning, and no recovery prompts.
+* `manual` (default): no auto-spawn; transitions occur only through explicit operator actions.
+* `auto`: event-driven transitions remain enabled, but guarded by persisted pipeline-state validation and approval policy.
+
+To remove dependence on title inference and ad hoc DB inspection, operators use first-class pipeline controls:
+
+* `/pipeline status [session]`: Returns parent/child tree, stage, transition state, routing, and worktree context.
+* `/pipeline advance <triage|implementation|review> [session]`: Executes an explicit deterministic transition.
+* `/pipeline stop [session]` and global `/pipeline off`: Stops one pipeline or disables orchestration globally.
+* `/pipeline approve [session]`: Local approval path for blocked spawn transitions (works without Discord).
 
 Horizontal Scaling via Git Worktrees
 
@@ -106,10 +121,18 @@ Worktree Visibility and Approval
 
 To maintain operational control and visibility, the system implements worktree approval and tracking:
 
-* Configuration: The `demonlord.config.json` file contains `worktrees.approval_required` and `worktrees.agent_approval` settings to control approval requirements per agent type.
+* Configuration: The `demonlord.config.json` file contains `worktrees.approval_required`, `worktrees.agent_approval`, and `orchestration.require_approval_before_spawn` settings to control approval policy.
 * Discord Integration: The communication plugin sends detailed messages about worktree creation, including the agent type, purpose, and worktree path.
-* Approval Gating: When approval is required, the system pauses execution and waits for Discord slash command approval (`/approve`) before proceeding with agent development.
+* Approval Gating: When approval is required, the system pauses execution and waits for explicit approval (Discord `/approve` or local `/pipeline approve`) before proceeding with child-session creation.
 * Tracking: The worktree manager maintains metadata about active worktrees for cleanup and monitoring purposes.
+
+Abort and Error Policy
+
+To reduce noise during manual testing while preserving deterministic recovery:
+
+* `MessageAbortedError` can be treated as non-fatal when `orchestration.ignore_aborted_messages=true`.
+* Recovery prompts are emitted only for real execution errors and deduplicated once per normalized signature.
+* Structured orchestration events (`spawn requested/approved/blocked/completed`, `error`, `stopped`) are persisted for auditability.
 
 5. Deterministic Quality Gates & Plugin Architecture
 

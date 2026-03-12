@@ -12,6 +12,7 @@ Demonlord replaces manual coding workflows with specialized AI agents that work 
 - **Deterministic Quality Gates**: All code must pass linting and testing before commit
 - **Discord Integration**: Two-way communication with approval workflows
 - **Event-Driven Orchestration**: Plugin-based coordination between pipeline stages
+- **Manual-First Orchestration Controls**: Config-driven pipeline control with explicit stage transitions
 
 ## Quick Start
 
@@ -55,7 +56,7 @@ All code changes must pass through the `submit_implementation` quality gate, whi
 Key configuration files:
 
 - **`.env`**: Contains secrets (GitHub PAT, Discord tokens)
-- **`demonlord.config.json`**: Factory settings (worktree paths, Discord personas, approval settings)
+- **`demonlord.config.json`**: Factory settings (worktree paths, orchestration mode/approval policy, Discord personas)
 - **`.opencode/opencode.jsonc`**: Agent definitions, MCP servers, and permissions
 - **`.github/workflows/project-board.yml`**: Label-based GitHub Project V2 status routing
 
@@ -83,9 +84,9 @@ To enable `SUBPHASE-2.2` workflow routing, configure these GitHub repository set
 
 The workflow also accepts legacy compact labels (`status:todo`, `status:in-progress`, `status:review`, `status:done`) for compatibility.
 
-### Worktree Approval Settings
+### Worktree and Orchestration Settings
 
-The `demonlord.config.json` file includes worktree approval configuration:
+The `demonlord.config.json` file includes both worktree and orchestration control configuration:
 
 ```json
 {
@@ -97,17 +98,28 @@ The `demonlord.config.json` file includes worktree approval configuration:
       "minion": true,
       "reviewer": false
     }
+  },
+  "orchestration": {
+    "enabled": true,
+    "mode": "manual",
+    "require_approval_before_spawn": true,
+    "ignore_aborted_messages": true,
+    "verbose_events": true
   }
 }
 ```
 
-This allows you to require approval for specific agent types before worktree creation.
+This allows you to require approval for specific agent types and keep orchestration manual by default during development/testing.
 
 ## Usage
 
 ### Commands
 - **`/triage`**: Analyze GitHub issues and generate implementation plans
 - **`/implement`**: Execute the next available subphase from the tasklist
+- **`/pipeline status [session]`**: Inspect pipeline tree, stage, routing, and worktree
+- **`/pipeline advance <triage|implementation|review> [session]`**: Trigger explicit stage transition
+- **`/pipeline stop [session]`**: Stop a specific pipeline
+- **`/pipeline off`**: Disable orchestration globally
 - **`/worktrees`**: (Future) List and manage active worktrees
 
 ### Discord Integration

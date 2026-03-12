@@ -27,7 +27,7 @@ Because this factory is designed to be **generic and stack-agnostic**, it can be
 
 ## The Workflow State Machine
 
-The factory operates on a declarative pipeline (configured via `.opencode/pipelines.yml`), removing the unreliability of LLM-based orchestration loops.
+The factory operates on an event-driven orchestration state machine (implemented in `.opencode/plugins/orchestrator.ts`), removing the unreliability of LLM-based orchestration loops.
 
 ### 1. Ingestion & Planning (`/triage`)
 *   Triggered manually or via cron.
@@ -50,6 +50,12 @@ The factory operates on a declarative pipeline (configured via `.opencode/pipeli
 *   Events trigger the OpenCode Discord communication plugin, sending a Slack/Discord notification containing a summary and waiting for final Lead Developer approval.
 *   The Lead Dev can dictate a `/approve` or `/reject [reason]` slash command to the Discord bot to finalize the pipeline or force a rework.
 
+### 5. Orchestration Controls (Manual-First)
+*   Pipeline behavior is controlled from `demonlord.config.json` under `orchestration`.
+*   Default mode is `manual` for development/testing reliability.
+*   Operators use explicit controls (`/pipeline status`, `/pipeline advance`, `/pipeline stop`, `/pipeline off`) instead of relying on inferred stage from session titles.
+*   Spawn approvals can be enforced before child creation and supported through local command paths even when Discord is unavailable.
+
 ---
 
 ## Directory Structure Strategy
@@ -58,14 +64,13 @@ The factory operates on a declarative pipeline (configured via `.opencode/pipeli
 /demonlord.config.json     # Centralized settings for Discord personas and factory configs
 /.opencode/
   ├── opencode.jsonc       # Defines MCP servers, native Agent definitions, and Permission Matrix
-  ├── pipelines.yml        # Declarative state machine for subphase routing
   ├── commands/            # Custom UI commands (/triage, /implement)
   ├── skills/              # Agent skill profiles (the "Keys" for the matchmaker)
   │   └── frontend-specialist/
   │       └── SKILL.md
   ├── plugins/
   │   ├── communication.ts # Discord Webhooks & Bot for 2-way comms
-  │   └── workflow.ts      # Event hooks for the pipeline
+  │   └── orchestrator.ts  # Event-driven pipeline coordination and transition guards
   └── tools/
       ├── matchmaker.ts           # Dual-mode semantic routing logic
       └── submit_implementation.ts # The Deterministic Gate (lint/test/commit)

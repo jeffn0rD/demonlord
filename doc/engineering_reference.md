@@ -8,18 +8,33 @@ Core Technology Stack The platform is built on a high-performance stack utilizin
 
 The Directory Strategy Efficiency in a parallelized environment depends on a strict directory convention. OpenCode utilizes specific hidden directories and Git primitives to separate concerns:
 
-* demonlord.config.json: Centralized configuration file for Discord personas, worktree locations, and non-OpenCode specific factory settings.
+* demonlord.config.json: Centralized configuration file for Discord personas, worktree locations, and orchestration controls (enabled/mode/approval/abort policy/event verbosity).
 * .opencode/: Houses project-level configurations, agent definitions (in opencode.jsonc or as markdown files in agents/), plugins, skills, and custom tools.
 * Git Worktrees: Rather than standard branching, the system utilizes spawn_worktree.sh to generate isolated sibling directories.
 
 Strategic Impact: This structure prevents branch collisions and file-locking, allowing multiple "minion" agents to work on tasks simultaneously in a headless state while sharing a single local repository history.
 
-The Event-Driven Pipeline The software factory operates through event-driven orchestration via OpenCode plugins that ensures quality at every transition:
+The Event-Driven Pipeline The software factory operates through event-driven orchestration via OpenCode plugins that ensures quality at every transition. Pipeline progress is tracked in explicit persisted state rather than inferred from session title text:
 
 1. Triage: A Planner Agent analyzes GitHub issues, uses built-in tools like glob and grep to identify target code areas, and generates a .md plan file.
 2. Implementation: Specialized minions execute tasks within their assigned worktrees, spawned via the OpenCode SDK (`client.session.create()`).
 3. Deterministic Gates (The "Black Box"): This is a critical quality intercept. Agents are stripped of native git commands and must call a TypeScript custom tool, submit_implementation(). This tool programmatically runs lints and tests; if they fail, the function intercepts the stack trace and feeds it back to the agent for auto-correction.
 4. Review: Upon `session.idle` event, a plugin triggers the Reviewer Agent to analyze the output before posting a Discord notification for human-in-the-loop approval via Slash Commands (e.g., /approve, /reject).
+
+Orchestration Modes and Controls
+
+The orchestration runtime supports three deterministic operating modes configured in `demonlord.config.json`:
+
+* `off`: disables transitions/spawns/recovery prompts.
+* `manual` (default): transitions are explicit operator actions only.
+* `auto`: event-driven transitions stay enabled with guardrails.
+
+Operational control is exposed via `/pipeline` commands:
+
+* `/pipeline status [session]`: inspect root/child topology, stage, worktree, and routing.
+* `/pipeline advance <triage|implementation|review> [session]`: apply explicit stage transition.
+* `/pipeline stop [session]` and `/pipeline off`: halt one pipeline or disable orchestration globally.
+* `/pipeline approve [session]`: approve spawn without requiring Discord connectivity.
 
 
 --------------------------------------------------------------------------------
@@ -130,6 +145,7 @@ Key API Reference Categories
 * Sessions:
   * session.prompt: Allows plugins to send context or commands directly to an active session (e.g., client.session.prompt({ body: { text: "/approve" } })). Supports outputFormat for JSON and the noReply: true option.
   * session.create: Used by the Orchestrator to programmatically spawn a minion agent in an isolated worktree directory.
+  * session.command: Used by orchestration control plugins to execute deterministic slash-command flows (`/pipeline status`, `/pipeline advance`, `/pipeline stop`, `/pipeline off`, `/pipeline approve`).
 * Files: Provides find.symbols and find.text. Searches support a limit parameter (1–200) to optimize performance and context usage.
 * TUI: Control the terminal UI via tui.showToast or tui.appendPrompt.
 
