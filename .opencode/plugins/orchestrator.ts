@@ -4,6 +4,7 @@ import { execFile } from "child_process";
 import { appendFile, mkdir, readdir, readFile, rename, stat, writeFile } from "fs/promises";
 import { delimiter, dirname, resolve } from "path";
 import { promisify } from "util";
+import { parse as parseJsoncDocument, printParseErrorCode, type ParseError } from "jsonc-parser";
 import { loadSkillDefinitions, resolveTaskRoute, type RouteResult } from "../tools/matchmaker.ts";
 
 type PipelineStage = "triage" | "implementation" | "review";
@@ -1577,6 +1578,66 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
     const reviewDirectory = pipeline.worktree?.worktreePath ?? implementationSession.directory ?? worktree;
     const titleSuffix = pipeline.worktree?.taskID ?? implementationSession.sessionID;
 
+    const reviewAgentResolution = resolveAgentFromPools({
+      role: "review",
+      requestedTier: settings.taskRouting.defaultTier,
+      defaultTier: settings.taskRouting.defaultTier,
+      agentPools: settings.agentPools,
+      configuredAgentIDs: configuredAgentCatalog.ids,
+      configuredAgentSourceError: configuredAgentCatalog.loadError,
+      configuredAgentSourcePath: configuredAgentCatalog.sourcePath,
+    });
+
+    if (!reviewAgentResolution.ok || !reviewAgentResolution.agentID || !reviewAgentResolution.tier) {
+      const blockedReason = reviewAgentResolution.reason;
+      pipeline.transition = "blocked";
+      pipeline.pendingTransition = undefined;
+      pipeline.updatedAt = Date.now();
+      await persistState();
+
+      await recordEvent(pipeline, {
+        type: "task_blocked",
+        rootSessionID,
+        sessionID: implementationSession.sessionID,
+        stage: "implementation",
+        details: {
+          reason: blockedReason,
+          role: "review",
+          tier: settings.taskRouting.defaultTier,
+          taskRef: pipeline.routing?.taskRef ?? "unknown",
+        },
+      });
+
+      await writeExecutionGraphEvent(pipeline, {
+        eventType: "task_blocked",
+        sessionID: implementationSession.sessionID,
+        parentSessionID: implementationSession.parentSessionID ?? rootSessionID,
+        stage: "implementation",
+        taskRef: pipeline.routing?.taskRef ?? "n/a",
+        agentID: "unresolved",
+        tier: settings.taskRouting.defaultTier,
+        skillID: pipeline.routing?.skillID ?? "n/a",
+        parallelGroup: pipeline.routing?.parallelGroup ?? "",
+        slot: "review:0",
+        status: "blocked",
+        reason: blockedReason,
+      });
+
+      await promptSession(
+        rootSessionID,
+        [
+          "Pipeline is blocked before review spawn.",
+          blockedReason,
+          "Update orchestration.agent_pools or add the required agent IDs in .opencode/opencode.jsonc.",
+        ].join("\n"),
+        true,
+        pipeline.sessions[rootSessionID]?.directory,
+      );
+      return;
+    }
+
+    const reviewAgentID = reviewAgentResolution.agentID;
+
     const childSession = await createChildSession({
       parentSessionID: implementationSession.sessionID,
       stage: "review",
@@ -1604,48 +1665,6 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
     pipeline.updatedAt = Date.now();
     await persistState();
 
-    const reviewAgentResolution = resolveAgentFromPools({
-      role: "review",
-      requestedTier: settings.taskRouting.defaultTier,
-      defaultTier: settings.taskRouting.defaultTier,
-      agentPools: settings.agentPools,
-      configuredAgentIDs: configuredAgentCatalog.ids,
-      configuredAgentSourceError: configuredAgentCatalog.loadError,
-      configuredAgentSourcePath: configuredAgentCatalog.sourcePath,
-    });
-
-    const reviewAgentID = reviewAgentResolution.ok && reviewAgentResolution.agentID
-      ? reviewAgentResolution.agentID
-      : LEGACY_ROLE_AGENT.review;
-
-    if (!reviewAgentResolution.ok) {
-      await recordEvent(pipeline, {
-        type: "routing_warning",
-        rootSessionID,
-        sessionID: implementationSession.sessionID,
-        stage: "review",
-        details: {
-          reason: reviewAgentResolution.reason,
-          fallback: reviewAgentID,
-        },
-      });
-
-      await writeExecutionGraphEvent(pipeline, {
-        eventType: "routing_warning",
-        sessionID: implementationSession.sessionID,
-        parentSessionID: implementationSession.parentSessionID ?? rootSessionID,
-        stage: "review",
-        taskRef: pipeline.routing?.taskRef ?? "n/a",
-        agentID: reviewAgentID,
-        tier: settings.taskRouting.defaultTier,
-        skillID: pipeline.routing?.skillID ?? "n/a",
-        parallelGroup: pipeline.routing?.parallelGroup ?? "",
-        slot: "review:0",
-        status: "warning",
-        reason: reviewAgentResolution.reason,
-      });
-    }
-
     await promptSession(
       childSession.id,
       buildReviewPrompt(pipeline),
@@ -1666,11 +1685,12 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
     const rootSessionID = resolveRootSessionID(session.id, session.parentID);
     const pipeline = ensurePipeline(rootSessionID);
 
-    if (session.id === rootSessionID) {
-      pipeline.taskTraversal = await resolveTaskTraversalContext(worktree, {
-        taskDescription: extractTaskDescription(session.title ?? session.id),
-        existing: pipeline.taskTraversal,
-      });
+    if (session.id === rootSessionID && !pipeline.taskTraversal?.taskDescription) {
+      const diagnosticTaskDescription = extractTaskDescription(session.title ?? session.id);
+      pipeline.taskTraversal = {
+        ...pipeline.taskTraversal,
+        taskDescription: diagnosticTaskDescription,
+      };
     }
 
     let stage: PipelineStage = "triage";
@@ -2534,10 +2554,21 @@ async function loadConfiguredAgentIDs(worktree: string): Promise<ConfiguredAgent
 }
 
 function parseJsonc(raw: string): unknown {
-  const withoutBlockComments = raw.replace(/\/\*[\s\S]*?\*\//g, "");
-  const withoutLineComments = withoutBlockComments.replace(/^\s*\/\/.*$/gm, "");
-  const withoutTrailingCommas = withoutLineComments.replace(/,\s*([}\]])/g, "$1");
-  return JSON.parse(withoutTrailingCommas);
+  const errors: ParseError[] = [];
+  const parsed = parseJsoncDocument(raw, errors, {
+    allowTrailingComma: true,
+    disallowComments: false,
+    allowEmptyContent: false,
+  });
+
+  if (errors.length > 0) {
+    const details = errors
+      .map((entry) => `offset ${entry.offset}: ${printParseErrorCode(entry.error)}`)
+      .join("; ");
+    throw new Error(details || "Unknown JSONC parse error.");
+  }
+
+  return parsed;
 }
 
 function parseQueuedCommand(rawLine: string): PipelineControlQueueCommand | null {
@@ -2774,7 +2805,7 @@ async function resolveTaskTraversalContext(
 ): Promise<TaskTraversalContext> {
   const existing = input.existing;
   const taskDescription = existing?.taskDescription ?? input.taskDescription;
-  const taskRef = existing?.taskRef ?? extractTaskReference(taskDescription) ?? undefined;
+  const taskRef = existing?.taskRef;
 
   let tasklistPath = existing?.tasklistPath;
   if (!tasklistPath && taskRef) {
@@ -3252,6 +3283,7 @@ export const __orchestratorTestUtils = {
   getNextStage,
   loadPersistedState,
   parseAgentPools,
+  parseJsonc,
   parseTaskExecutionMetadata,
   parseTaskRoutingSettings,
   normalizeErrorSignature,

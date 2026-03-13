@@ -345,7 +345,7 @@ describe("orchestrator integration flow", () => {
     }
   });
 
-  test("uses tasklist EXECUTION metadata as primary runtime routing source", async () => {
+  test("uses persisted traversal context for metadata routing when title lacks task token", async () => {
     const root = await mkdtemp(join(tmpdir(), "orchestrator-routing-explicit-"));
 
     try {
@@ -379,14 +379,21 @@ describe("orchestrator integration flow", () => {
           "- [ ] **T-3.7.7**: preserve execution target across spec handoff.",
         ].join("\n"),
       );
+      const tasklistPath = resolve(root, "agents", "minion_Tasklist.md");
 
       const client = createMockClient(root);
-      const plugin = await createPlugin(client, root);
+      const initialPlugin = await createPlugin(client, root);
 
       await emitEvent(
-        plugin,
-        sessionCreatedEvent("ses-root-explicit", root, "triage: execute T-3.7.7 from minion_Tasklist.md"),
+        initialPlugin,
+        sessionCreatedEvent("ses-root-explicit", root, "triage: route selected remediation task"),
       );
+      await seedTaskTraversalContext(root, "ses-root-explicit", {
+        taskDescription: "selected remediation task",
+        taskRef: "T-3.7.7",
+        tasklistPath,
+      });
+      const plugin = await createPlugin(client, root);
       await emitEvent(plugin, sessionIdleEvent("ses-root-explicit"));
 
       const snapshot = await readSnapshot<PipelineFixture>(root);
@@ -407,7 +414,7 @@ describe("orchestrator integration flow", () => {
     }
   });
 
-  test("emits warning-level fallback when EXECUTION metadata is missing", async () => {
+  test("emits warning-level fallback when persisted task lacks EXECUTION metadata", async () => {
     const root = await mkdtemp(join(tmpdir(), "orchestrator-routing-warning-"));
 
     try {
@@ -440,18 +447,25 @@ describe("orchestrator integration flow", () => {
           "- [ ] **T-3.7.8**: metadata lookup must use persisted traversal context.",
         ].join("\n"),
       );
+      const tasklistPath = resolve(root, "agents", "minion_Tasklist.md");
 
       const client = createMockClient(root);
-      const plugin = await createPlugin(client, root);
+      const initialPlugin = await createPlugin(client, root);
 
       await emitEvent(
-        plugin,
+        initialPlugin,
         sessionCreatedEvent(
           "ses-root-warning",
           root,
-          "triage: execute T-3.7.8 from minion_Tasklist.md with deterministic fallback",
+          "triage: deterministic fallback for selected task",
         ),
       );
+      await seedTaskTraversalContext(root, "ses-root-warning", {
+        taskDescription: "selected fallback task",
+        taskRef: "T-3.7.8",
+        tasklistPath,
+      });
+      const plugin = await createPlugin(client, root);
       await emitEvent(plugin, sessionIdleEvent("ses-root-warning"));
 
       const snapshot = await readSnapshot<PipelineFixture>(root);
@@ -466,7 +480,7 @@ describe("orchestrator integration flow", () => {
     }
   });
 
-  test("blocks deterministic routing when requested tier pool is unresolved", async () => {
+  test("blocks deterministic routing when persisted task tier pool is unresolved", async () => {
     const root = await mkdtemp(join(tmpdir(), "orchestrator-routing-blocked-"));
 
     try {
@@ -499,14 +513,21 @@ describe("orchestrator integration flow", () => {
           "- [ ] **T-3.7.9**: fail closed when configured pool is unresolved.",
         ].join("\n"),
       );
+      const tasklistPath = resolve(root, "agents", "minion_Tasklist.md");
 
       const client = createMockClient(root);
-      const plugin = await createPlugin(client, root);
+      const initialPlugin = await createPlugin(client, root);
 
       await emitEvent(
-        plugin,
-        sessionCreatedEvent("ses-root-blocked", root, "triage: execute T-3.7.9 from minion_Tasklist.md"),
+        initialPlugin,
+        sessionCreatedEvent("ses-root-blocked", root, "triage: blocked routing selection"),
       );
+      await seedTaskTraversalContext(root, "ses-root-blocked", {
+        taskDescription: "blocked routing selection",
+        taskRef: "T-3.7.9",
+        tasklistPath,
+      });
+      const plugin = await createPlugin(client, root);
       await emitEvent(plugin, sessionIdleEvent("ses-root-blocked"));
 
       const snapshot = await readSnapshot<PipelineFixture>(root);
@@ -529,7 +550,7 @@ describe("orchestrator integration flow", () => {
     }
   });
 
-  test("spec handoff continuation preserves resolved execution target", async () => {
+  test("spec handoff continuation preserves resolved execution target from persisted context", async () => {
     const root = await mkdtemp(join(tmpdir(), "orchestrator-routing-handoff-"));
 
     try {
@@ -563,18 +584,25 @@ describe("orchestrator integration flow", () => {
           "- [ ] **T-3.7.10**: add runtime regression coverage.",
         ].join("\n"),
       );
+      const tasklistPath = resolve(root, "agents", "minion_Tasklist.md");
 
       const client = createMockClient(root);
-      const plugin = await createPlugin(client, root);
+      const initialPlugin = await createPlugin(client, root);
 
       await emitEvent(
-        plugin,
+        initialPlugin,
         sessionCreatedEvent(
           "ses-root-handoff",
           root,
-          "triage: execute T-3.7.10 from minion_Tasklist.md requirements are unclear and need recommendation",
+          "triage: requirements are unclear and need recommendation",
         ),
       );
+      await seedTaskTraversalContext(root, "ses-root-handoff", {
+        taskDescription: "requirements are unclear and need recommendation",
+        taskRef: "T-3.7.10",
+        tasklistPath,
+      });
+      const plugin = await createPlugin(client, root);
       await emitEvent(plugin, sessionIdleEvent("ses-root-handoff"));
 
       const beforeHandoff = await readSnapshot<PipelineFixture>(root);
@@ -612,6 +640,89 @@ describe("orchestrator integration flow", () => {
       assert.equal(resumed.routing?.tier, "standard");
       assert.equal(resumed.routing?.taskRef, "T-3.7.10");
       assert.equal(client.creates.length, 2);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("fails closed before review spawn when configured agent catalog is unreadable", async () => {
+    const root = await mkdtemp(join(tmpdir(), "orchestrator-review-fail-closed-"));
+
+    try {
+      await writeConfig(
+        root,
+        {
+          enabled: true,
+          mode: "auto",
+          require_approval_before_spawn: false,
+          ignore_aborted_messages: true,
+          verbose_events: false,
+        },
+        {
+          task_routing: { source: "tasklist_explicit", default_tier: "standard" },
+          agent_pools: {
+            implementation: {
+              standard: ["minion-standard"],
+            },
+            review: {
+              standard: ["reviewer"],
+            },
+          },
+        },
+      );
+      await writeOpencodeAgentConfig(root, ["planner", "minion", "minion-standard", "reviewer"]);
+      await writeSpawnWorktreeScript(root);
+      await writeTasklist(
+        root,
+        "minion_Tasklist.md",
+        [
+          "<!-- TASK:T-3.7.10 -->",
+          '<!-- EXECUTION:{"execution":{"role":"implementation","tier":"standard","skill":"orchestration-specialist","parallel_group":"routing-remediation-tests"}} -->',
+          "- [ ] **T-3.7.10**: add runtime regression coverage.",
+        ].join("\n"),
+      );
+      const tasklistPath = resolve(root, "agents", "minion_Tasklist.md");
+
+      const initialClient = createMockClient(root);
+      const initialPlugin = await createPlugin(initialClient, root);
+
+      await emitEvent(
+        initialPlugin,
+        sessionCreatedEvent("ses-root-review-block", root, "triage: selected task without title task token"),
+      );
+      await seedTaskTraversalContext(root, "ses-root-review-block", {
+        taskDescription: "selected review transition task",
+        taskRef: "T-3.7.10",
+        tasklistPath,
+      });
+      const seededPlugin = await createPlugin(initialClient, root);
+      await emitEvent(seededPlugin, sessionIdleEvent("ses-root-review-block"));
+
+      const beforeReload = await readSnapshot<PipelineFixture>(root);
+      assert.equal(beforeReload.pipelines["ses-root-review-block"]?.currentStage, "implementation");
+      assert.equal(initialClient.creates.length, 1);
+
+      await writeFile(resolve(root, ".opencode", "opencode.jsonc"), "{\n  // malformed jsonc\n  \"agent\": {\n", "utf-8");
+
+      const resumedClient = createMockClient(root);
+      const resumedPlugin = await createPlugin(resumedClient, root);
+      await emitEvent(resumedPlugin, sessionIdleEvent("ses-child-1"));
+
+      const snapshot = await readSnapshot<PipelineFixture>(root);
+      const pipeline = snapshot.pipelines["ses-root-review-block"];
+      const eventLog = await readEventLog(root);
+
+      assert.equal(pipeline.transition, "blocked");
+      assert.equal(pipeline.currentStage, "implementation");
+      assert.equal(resumedClient.creates.length, 0);
+      assert.equal(eventLog.some((entry) => entry.type === "task_blocked"), true);
+      assert.equal(
+        resumedClient.prompts.some(
+          (entry) =>
+            entry.sessionID === "ses-root-review-block" && entry.text.includes("Pipeline is blocked before review spawn"),
+        ),
+        true,
+      );
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -825,6 +936,40 @@ async function readSnapshot<TPipeline = PipelineFixture>(root: string): Promise<
   const raw = await readFile(resolve(root, "_bmad-output", "orchestration-state.json"), "utf-8");
   const parsed = JSON.parse(raw) as { pipelines: Record<string, TPipeline> };
   return parsed;
+}
+
+async function seedTaskTraversalContext(
+  root: string,
+  rootSessionID: string,
+  context: { taskDescription: string; taskRef: string; tasklistPath: string },
+): Promise<void> {
+  const statePath = resolve(root, "_bmad-output", "orchestration-state.json");
+  const raw = await readFile(statePath, "utf-8");
+  const parsed = JSON.parse(raw) as {
+    pipelines?: Record<
+      string,
+      {
+        taskTraversal?: {
+          taskDescription?: string;
+          taskRef?: string;
+          tasklistPath?: string;
+        };
+      }
+    >;
+  };
+
+  const pipeline = parsed.pipelines?.[rootSessionID];
+  if (!pipeline) {
+    throw new Error(`Missing pipeline '${rootSessionID}' while seeding traversal context.`);
+  }
+
+  pipeline.taskTraversal = {
+    taskDescription: context.taskDescription,
+    taskRef: context.taskRef,
+    tasklistPath: context.tasklistPath,
+  };
+
+  await writeFile(statePath, `${JSON.stringify(parsed, null, 2)}\n`, "utf-8");
 }
 
 async function readEventLog(root: string): Promise<Array<{ type: string }>> {

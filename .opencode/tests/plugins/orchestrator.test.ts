@@ -284,6 +284,42 @@ describe("orchestrator snapshot and queue helpers", () => {
     assert.deepEqual(metadata?.dependsOn, ["T-3.7.1"]);
   });
 
+  test("parses spec-compliant JSONC including inline comments and trailing commas", () => {
+    const parsed = __orchestratorTestUtils.parseJsonc([
+      "{",
+      "  // routing config",
+      "  \"agent\": {",
+      "    \"minion\": { \"description\": \"impl\", }, // trailing comma",
+      "  },",
+      "}",
+    ].join("\n")) as {
+      agent?: Record<string, { description?: string }>;
+    };
+
+    assert.equal(parsed.agent?.minion?.description, "impl");
+  });
+
+  test("keeps comment-like tokens inside JSONC strings", () => {
+    const parsed = __orchestratorTestUtils.parseJsonc([
+      "{",
+      "  \"agent\": {",
+      "    \"minion\": { \"description\": \"uses // and /* tokens literally\" }",
+      "  }",
+      "}",
+    ].join("\n")) as {
+      agent?: Record<string, { description?: string }>;
+    };
+
+    assert.equal(parsed.agent?.minion?.description, "uses // and /* tokens literally");
+  });
+
+  test("throws deterministic parse errors for invalid JSONC", () => {
+    assert.throws(
+      () => __orchestratorTestUtils.parseJsonc('{ "agent": { "minion": { "description": "x" }, }'),
+      /offset/i,
+    );
+  });
+
   test("resolves agent IDs deterministically with tier fallback chain", () => {
     const pools = __orchestratorTestUtils.parseAgentPools({
       implementation: {
