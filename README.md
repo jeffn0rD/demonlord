@@ -164,16 +164,18 @@ Active orchestration schema extensions for deterministic tasklist-explicit multi
 
 Routing behavior is deterministic: orchestrator reads `EXECUTION` metadata from tasklists, resolves role/tier against `agent_pools`, then falls back in order (`default_tier` -> legacy singleton) before blocking with explicit reason logs.
 
+Dispatch behavior is deterministic: tasks enter a FIFO queue by `stage` + `parallel_group` + tasklist order, enforce `depends_on`, and honor `parallelism` caps (`total`, `by_role`, `by_tier`) before spawn.
+
 ## Usage
 
 ### Commands
 - **`/triage`**: Analyze GitHub issues and generate implementation plans
 - **`/implement`**: Execute the next available subphase from the tasklist
-- **`/pipeline status [session]`**: Inspect pipeline tree, stage, routing, and worktree
+- **`/pipeline status [session]`**: Inspect pipeline tree, stage, routing, worktree, execution order, and overlap windows
 - **`/pipeline advance <triage|implementation|review> [session]`**: Trigger explicit stage transition
 - **`/pipeline stop [session]`**: Stop a specific pipeline
 - **`/pipeline off`**: Disable orchestration globally
-- **`pipelinectl status [session]`**: Shell fallback for deterministic pipeline status
+- **`pipelinectl status [session]`**: Shell fallback with session tree, execution order, and overlap windows
 - **`pipelinectl off|on|advance|approve|stop`**: Shell fallback control commands via queue handoff
 - **`/worktrees`**: (Future) List and manage active worktrees
 

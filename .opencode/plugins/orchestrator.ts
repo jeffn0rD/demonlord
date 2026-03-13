@@ -30,6 +30,13 @@ interface OrchestrationSettings {
   verboseEvents: boolean;
   taskRouting: TaskRoutingSettings;
   agentPools: AgentPools;
+  parallelism: ParallelismSettings;
+}
+
+interface ParallelismSettings {
+  maxParallelTotal: number;
+  maxParallelByRole: Record<ExecutionRole, number>;
+  maxParallelByTier: Record<ExecutionTier, number>;
 }
 
 interface RoutingContext {
@@ -58,6 +65,7 @@ interface TaskExecutionMetadata {
   skillID?: string;
   parallelGroup?: string;
   dependsOn: string[];
+  taskIndex: number;
   tasklistPath: string;
 }
 
@@ -93,6 +101,38 @@ interface ExecutionGraphEventEntry {
 }
 
 type ExecutionGraphEventInput = Omit<ExecutionGraphEventEntry, "seq" | "ts" | "rootSessionID">;
+
+interface DispatchQueueItem {
+  stage: PipelineStage;
+  taskRef: string;
+  role: ExecutionRole;
+  tier: ExecutionTier;
+  skillID: string;
+  parallelGroup: string;
+  dependsOn: string[];
+  taskIndex: number;
+  queuedAt: number;
+  requestedBySessionID: string;
+  parentSessionID: string;
+  slot: string;
+}
+
+interface DispatchInFlightItem {
+  stage: PipelineStage;
+  taskRef: string;
+  role: ExecutionRole;
+  tier: ExecutionTier;
+  parallelGroup: string;
+  slot: string;
+  startedAt: number;
+  startedBySessionID: string;
+}
+
+interface ParallelDispatchUsage {
+  total: number;
+  byRole: Record<ExecutionRole, number>;
+  byTier: Record<ExecutionTier, number>;
+}
 
 interface WorktreeContext {
   taskID: string;
@@ -175,6 +215,10 @@ interface PipelineState {
   error: ErrorContext;
   events: OrchestrationEventEntry[];
   executionSeq?: number;
+  executionDedupes?: Record<string, number>;
+  dispatchQueue?: DispatchQueueItem[];
+  dispatchInFlight?: DispatchInFlightItem[];
+  completedTaskRefs?: string[];
   createdAt: number;
   updatedAt: number;
 }
@@ -253,6 +297,8 @@ interface PipelineControlQueueCommand {
   };
 }
 
+type StageTransitionOutcome = "spawned" | "queued" | "blocked";
+
 const execFileAsync = promisify(execFile);
 
 const defaultOrchestrationSettings: OrchestrationSettings = {
@@ -280,6 +326,19 @@ const defaultOrchestrationSettings: OrchestrationSettings = {
       lite: ["reviewer-lite", "reviewer"],
       standard: ["reviewer", "reviewer-lite"],
       pro: ["reviewer-pro", "reviewer"],
+    },
+  },
+  parallelism: {
+    maxParallelTotal: 1,
+    maxParallelByRole: {
+      planning: 1,
+      implementation: 1,
+      review: 1,
+    },
+    maxParallelByTier: {
+      lite: 1,
+      standard: 1,
+      pro: 1,
     },
   },
 };
@@ -328,6 +387,9 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
   const idleInFlight = new Set<string>();
   const preHandledCommands = new Map<string, number>();
   const state = await loadPersistedState(statePath, commandQueuePath, settings);
+  for (const pipeline of Object.values(state.pipelines)) {
+    normalizePipelineRuntimeState(pipeline);
+  }
   state.commandQueue.path = commandQueuePath;
   state.updatedAt = new Date().toISOString();
   let writeQueue: Promise<void> = Promise.resolve();
@@ -450,6 +512,28 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
 
       if (isPipelineDisabled(pipeline)) {
         return;
+      }
+
+      if (pipeline.transition === "blocked" && (pipeline.dispatchQueue?.length ?? 0) > 0) {
+        const queuedHead = peekDispatchQueue(pipeline);
+        if (queuedHead) {
+          const dependencyStatus = await resolveTaskDependencyStatus({
+            dependsOn: queuedHead.dependsOn,
+            pipeline,
+            tasklistPath: pipeline.taskTraversal?.tasklistPath,
+          });
+          if (dependencyStatus.missing.length === 0) {
+            pipeline.transition = "idle";
+            pipeline.updatedAt = Date.now();
+            await persistState();
+            await promptSession(
+              session.sessionID,
+              `Dependencies resolved for queued task ${queuedHead.taskRef}. Dispatch is unblocked and ready for the next transition.`,
+              true,
+              session.directory,
+            );
+          }
+        }
       }
 
       if (session.stage === "review") {
@@ -594,6 +678,20 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
       rootSessionID,
       sessionID: session.sessionID,
       stage: "review",
+    });
+
+    await writeExecutionGraphEvent(pipeline, {
+      eventType: "pipeline_completed",
+      sessionID: session.sessionID,
+      parentSessionID: session.parentSessionID ?? rootSessionID,
+      stage: "review",
+      taskRef: pipeline.routing?.taskRef ?? "n/a",
+      agentID: pipeline.routing?.agentID ?? "n/a",
+      tier: pipeline.routing?.tier ?? settings.taskRouting.defaultTier,
+      skillID: pipeline.routing?.skillID ?? "n/a",
+      parallelGroup: normalizeParallelGroup(pipeline.routing?.parallelGroup),
+      slot: "review:terminal",
+      status: "completed",
     });
 
     const completionNote = [
@@ -811,7 +909,7 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
 
     switch (action) {
       case "status": {
-        const snapshot = renderStatusSnapshot(pipeline);
+        const snapshot = await renderStatusSnapshot(pipeline);
         await recordEvent(pipeline, {
           type: "status_snapshot",
           rootSessionID,
@@ -1244,21 +1342,27 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
     await persistState();
 
     try {
+      let outcome: StageTransitionOutcome;
       if (pending.from === "triage" && pending.to === "implementation") {
-        await executeTriageToImplementation(rootSessionID, pipeline, pending);
+        outcome = await executeTriageToImplementation(rootSessionID, pipeline, pending);
       } else if (pending.from === "implementation" && pending.to === "review") {
-        await executeImplementationToReview(rootSessionID, pipeline, pending);
+        outcome = await executeImplementationToReview(rootSessionID, pipeline, pending);
       } else {
         throw new Error(`Unsupported transition ${pending.from} -> ${pending.to}`);
       }
 
-      await recordEvent(pipeline, {
-        type: "spawn_completed",
-        rootSessionID,
-        sessionID: pending.requestedBySessionID,
-        stage: pending.to,
-      });
+      if (outcome === "spawned") {
+        await recordEvent(pipeline, {
+          type: "spawn_completed",
+          rootSessionID,
+          sessionID: pending.requestedBySessionID,
+          stage: pending.to,
+        });
+      }
     } catch (error) {
+      if (pending.to === "implementation" && pipeline.routing?.taskRef) {
+        clearDispatchInFlightTask(pipeline, pipeline.routing.taskRef);
+      }
       pipeline.transition = "blocked";
       pipeline.updatedAt = Date.now();
       await persistState();
@@ -1289,7 +1393,7 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
     rootSessionID: string,
     pipeline: PipelineState,
     pending: PendingTransition,
-  ): Promise<void> {
+  ): Promise<StageTransitionOutcome> {
     const triageSession = pipeline.sessions[pending.requestedBySessionID];
     if (!triageSession) {
       throw new Error("Triage session metadata missing.");
@@ -1392,7 +1496,7 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
         true,
         pipeline.sessions[rootSessionID]?.directory,
       );
-      return;
+      return "blocked";
     }
 
     if (agentResolution.fallbackUsed && agentResolution.fallbackUsed !== "requested_tier") {
@@ -1484,6 +1588,149 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
       metadataSource: preservedExecutionTarget.metadataSource,
     };
 
+    const dispatchTaskRef = taskRef ?? `TASK-${sanitizeTitleSegment(rootSessionID)}`;
+    const dispatchParallelGroup = normalizeParallelGroup(executionMetadata?.parallelGroup);
+    const dispatchItem = buildDispatchQueueItem({
+      stage: "implementation",
+      taskRef: dispatchTaskRef,
+      role: requestedRole,
+      tier: agentResolution.tier,
+      skillID: routing.skill_id,
+      parallelGroup: dispatchParallelGroup,
+      dependsOn: executionMetadata?.dependsOn ?? [],
+      taskIndex: executionMetadata?.taskIndex ?? Number.MAX_SAFE_INTEGER,
+      requestedBySessionID: triageSession.sessionID,
+      parentSessionID: triageSession.parentSessionID ?? rootSessionID,
+    });
+    const queued = enqueueDispatchTask(pipeline, dispatchItem);
+
+    if (queued.inserted) {
+      await writeExecutionGraphEvent(pipeline, {
+        eventType: "task_queued",
+        sessionID: triageSession.sessionID,
+        parentSessionID: triageSession.parentSessionID ?? rootSessionID,
+        stage: "implementation",
+        taskRef: dispatchItem.taskRef,
+        agentID: agentResolution.agentID,
+        tier: dispatchItem.tier,
+        skillID: dispatchItem.skillID,
+        parallelGroup: dispatchItem.parallelGroup,
+        slot: dispatchItem.slot,
+        status: "queued",
+        reason: "queued_for_dispatch",
+      });
+    }
+
+    const queueHead = peekDispatchQueue(pipeline);
+    if (!queueHead || queueHead.taskRef !== dispatchItem.taskRef) {
+      pipeline.transition = "idle";
+      pipeline.pendingTransition = undefined;
+      pipeline.updatedAt = Date.now();
+      await persistState();
+      await promptSession(
+        rootSessionID,
+        `Task ${dispatchItem.taskRef} is queued behind an earlier dispatch item and will run in FIFO order.`,
+        true,
+        pipeline.sessions[rootSessionID]?.directory,
+      );
+      return "queued";
+    }
+
+    const dependencyStatus = await resolveTaskDependencyStatus({
+      dependsOn: dispatchItem.dependsOn,
+      pipeline,
+      tasklistPath: traversalContext.tasklistPath,
+    });
+    if (dependencyStatus.missing.length > 0) {
+      const dependencyReason = `depends_on unresolved: ${dependencyStatus.missing.join(", ")}`;
+      pipeline.transition = "blocked";
+      pipeline.pendingTransition = undefined;
+      pipeline.updatedAt = Date.now();
+      await persistState();
+
+      await recordEvent(pipeline, {
+        type: "task_blocked",
+        rootSessionID,
+        sessionID: triageSession.sessionID,
+        stage: "triage",
+        details: {
+          reason: dependencyReason,
+          taskRef: dispatchItem.taskRef,
+        },
+      });
+
+      await writeExecutionGraphEvent(pipeline, {
+        eventType: "task_blocked",
+        sessionID: triageSession.sessionID,
+        parentSessionID: triageSession.parentSessionID ?? rootSessionID,
+        stage: "implementation",
+        taskRef: dispatchItem.taskRef,
+        agentID: agentResolution.agentID,
+        tier: dispatchItem.tier,
+        skillID: dispatchItem.skillID,
+        parallelGroup: dispatchItem.parallelGroup,
+        slot: dispatchItem.slot,
+        status: "blocked",
+        reason: dependencyReason,
+      });
+
+      await promptSession(
+        rootSessionID,
+        `Dispatch blocked for ${dispatchItem.taskRef}: ${dependencyReason}`,
+        true,
+        pipeline.sessions[rootSessionID]?.directory,
+      );
+      return "blocked";
+    }
+
+    const usage = computeParallelDispatchUsage(state.pipelines);
+    const capacity = evaluateParallelCapacity(dispatchItem, usage, settings.parallelism);
+    if (!capacity.ok) {
+      pipeline.transition = "idle";
+      pipeline.pendingTransition = undefined;
+      pipeline.updatedAt = Date.now();
+      await persistState();
+      await promptSession(
+        rootSessionID,
+        `Task ${dispatchItem.taskRef} remains queued: ${capacity.reason}`,
+        true,
+        pipeline.sessions[rootSessionID]?.directory,
+      );
+      return "queued";
+    }
+
+    dequeueDispatchTask(pipeline, dispatchItem.taskRef);
+
+    await writeExecutionGraphEvent(pipeline, {
+      eventType: "spawn_requested",
+      sessionID: triageSession.sessionID,
+      parentSessionID: triageSession.parentSessionID ?? rootSessionID,
+      stage: "implementation",
+      taskRef: dispatchItem.taskRef,
+      agentID: agentResolution.agentID,
+      tier: dispatchItem.tier,
+      skillID: dispatchItem.skillID,
+      parallelGroup: dispatchItem.parallelGroup,
+      slot: dispatchItem.slot,
+      status: "requested",
+    });
+
+    markDispatchInFlight(pipeline, dispatchItem, triageSession.sessionID);
+
+    await writeExecutionGraphEvent(pipeline, {
+      eventType: "spawn_started",
+      sessionID: triageSession.sessionID,
+      parentSessionID: triageSession.parentSessionID ?? rootSessionID,
+      stage: "implementation",
+      taskRef: dispatchItem.taskRef,
+      agentID: agentResolution.agentID,
+      tier: dispatchItem.tier,
+      skillID: dispatchItem.skillID,
+      parallelGroup: dispatchItem.parallelGroup,
+      slot: dispatchItem.slot,
+      status: "in_progress",
+    });
+
     const taskID = taskRef
       ? sanitizeTitleSegment(taskRef)
       : buildTaskID(rootSessionID, routing.skill_id, taskDescription);
@@ -1538,6 +1785,20 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
     pipeline.updatedAt = Date.now();
     await persistState();
 
+    await writeExecutionGraphEvent(pipeline, {
+      eventType: "spawn_completed",
+      sessionID: childSession.id,
+      parentSessionID: triageSession.sessionID,
+      stage: "implementation",
+      taskRef: dispatchItem.taskRef,
+      agentID: agentResolution.agentID,
+      tier: dispatchItem.tier,
+      skillID: dispatchItem.skillID,
+      parallelGroup: dispatchItem.parallelGroup,
+      slot: dispatchItem.slot,
+      status: "completed",
+    });
+
     await promptSession(
       childSession.id,
       pipeline.specHandoff
@@ -1563,13 +1824,15 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
       true,
       pipeline.sessions[rootSessionID]?.directory,
     );
+
+    return "spawned";
   }
 
   async function executeImplementationToReview(
     rootSessionID: string,
     pipeline: PipelineState,
     pending: PendingTransition,
-  ): Promise<void> {
+  ): Promise<StageTransitionOutcome> {
     const implementationSession = pipeline.sessions[pending.requestedBySessionID];
     if (!implementationSession) {
       throw new Error("Implementation session metadata missing.");
@@ -1633,10 +1896,41 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
         true,
         pipeline.sessions[rootSessionID]?.directory,
       );
-      return;
+      return "blocked";
     }
 
     const reviewAgentID = reviewAgentResolution.agentID;
+    const completionTaskRef = pipeline.routing?.taskRef ?? "n/a";
+    const completionParallelGroup = normalizeParallelGroup(pipeline.routing?.parallelGroup);
+    const completionSlot = buildDispatchSlot("review", completionParallelGroup, Number.MAX_SAFE_INTEGER);
+
+    await writeExecutionGraphEvent(pipeline, {
+      eventType: "spawn_requested",
+      sessionID: implementationSession.sessionID,
+      parentSessionID: implementationSession.parentSessionID ?? rootSessionID,
+      stage: "review",
+      taskRef: completionTaskRef,
+      agentID: reviewAgentID,
+      tier: reviewAgentResolution.tier,
+      skillID: pipeline.routing?.skillID ?? "n/a",
+      parallelGroup: completionParallelGroup,
+      slot: completionSlot,
+      status: "requested",
+    });
+
+    await writeExecutionGraphEvent(pipeline, {
+      eventType: "spawn_started",
+      sessionID: implementationSession.sessionID,
+      parentSessionID: implementationSession.parentSessionID ?? rootSessionID,
+      stage: "review",
+      taskRef: completionTaskRef,
+      agentID: reviewAgentID,
+      tier: reviewAgentResolution.tier,
+      skillID: pipeline.routing?.skillID ?? "n/a",
+      parallelGroup: completionParallelGroup,
+      slot: completionSlot,
+      status: "in_progress",
+    });
 
     const childSession = await createChildSession({
       parentSessionID: implementationSession.sessionID,
@@ -1665,6 +1959,36 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
     pipeline.updatedAt = Date.now();
     await persistState();
 
+    await writeExecutionGraphEvent(pipeline, {
+      eventType: "spawn_completed",
+      sessionID: childSession.id,
+      parentSessionID: implementationSession.sessionID,
+      stage: "review",
+      taskRef: completionTaskRef,
+      agentID: reviewAgentID,
+      tier: reviewAgentResolution.tier,
+      skillID: pipeline.routing?.skillID ?? "n/a",
+      parallelGroup: completionParallelGroup,
+      slot: completionSlot,
+      status: "completed",
+    });
+
+    markDispatchTaskCompleted(pipeline, completionTaskRef);
+
+    await writeExecutionGraphEvent(pipeline, {
+      eventType: "task_completed",
+      sessionID: implementationSession.sessionID,
+      parentSessionID: implementationSession.parentSessionID ?? rootSessionID,
+      stage: "implementation",
+      taskRef: completionTaskRef,
+      agentID: pipeline.routing?.agentID ?? "n/a",
+      tier: pipeline.routing?.tier ?? settings.taskRouting.defaultTier,
+      skillID: pipeline.routing?.skillID ?? "n/a",
+      parallelGroup: completionParallelGroup,
+      slot: buildDispatchSlot("implementation", completionParallelGroup, Number.MAX_SAFE_INTEGER),
+      status: "completed",
+    });
+
     await promptSession(
       childSession.id,
       buildReviewPrompt(pipeline),
@@ -1679,6 +2003,8 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
       true,
       pipeline.sessions[rootSessionID]?.directory,
     );
+
+    return "spawned";
   }
 
   async function registerSession(session: Session): Promise<void> {
@@ -1702,6 +2028,22 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
 
     registerKnownSession(session, rootSessionID, stage, session.parentID, session.directory);
     await persistState();
+
+    if (session.id === rootSessionID) {
+      await writeExecutionGraphEvent(pipeline, {
+        eventType: "pipeline_started",
+        sessionID: session.id,
+        parentSessionID: session.parentID ?? "n/a",
+        stage: "triage",
+        taskRef: pipeline.taskTraversal?.taskRef ?? "n/a",
+        agentID: "orchestrator",
+        tier: pipeline.routing?.tier ?? settings.taskRouting.defaultTier,
+        skillID: pipeline.routing?.skillID ?? "n/a",
+        parallelGroup: pipeline.routing?.parallelGroup ?? "default",
+        slot: "triage:root",
+        status: "started",
+      });
+    }
   }
 
   function registerKnownSession(
@@ -1807,6 +2149,7 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
   function ensurePipeline(rootSessionID: string): PipelineState {
     const existing = state.pipelines[rootSessionID];
     if (existing) {
+      normalizePipelineRuntimeState(existing);
       return existing;
     }
 
@@ -1832,12 +2175,17 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
       },
       events: [],
       executionSeq: 0,
+      executionDedupes: {},
+      dispatchQueue: [],
+      dispatchInFlight: [],
+      completedTaskRefs: [],
       createdAt: now,
       updatedAt: now,
     };
 
     state.sessionToRoot[rootSessionID] = rootSessionID;
     state.pipelines[rootSessionID] = pipeline;
+    normalizePipelineRuntimeState(pipeline);
     return pipeline;
   }
 
@@ -1980,10 +2328,13 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
     return null;
   }
 
-  function renderStatusSnapshot(pipeline: PipelineState): string {
+  async function renderStatusSnapshot(pipeline: PipelineState): Promise<string> {
     const pending = pipeline.pendingTransition
       ? `${pipeline.pendingTransition.from} -> ${pipeline.pendingTransition.to}`
       : "none";
+    const executionGraph = await readExecutionGraphEntries(executionGraphPath, pipeline.rootSessionID);
+    const executionOrderLines = renderExecutionOrderSummary(executionGraph);
+    const overlapLines = renderOverlapWindowSummary(executionGraph);
     const statusLines = [
       `Pipeline: ${pipeline.rootSessionID}`,
       `Mode: ${getEffectiveMode()}`,
@@ -2005,8 +2356,14 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
           ? `${pipeline.specHandoff.completed ? "completed" : "required"} -> ${pipeline.specHandoff.targetSkillID}`
           : "n/a"
       }`,
+      `Dispatch Queue: ${pipeline.dispatchQueue?.length ?? 0}`,
+      `In Flight: ${pipeline.dispatchInFlight?.length ?? 0}`,
       "Session Tree:",
       ...renderSessionTree(pipeline, pipeline.rootSessionID, 0),
+      "Execution Order:",
+      ...executionOrderLines,
+      "Overlap Windows:",
+      ...overlapLines,
     ];
 
     return statusLines.join("\n");
@@ -2020,7 +2377,9 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
 
     const indent = "  ".repeat(depth);
     const currentMarker = session.stage === pipeline.currentStage && session.status === "active" ? " *" : "";
-    const line = `${indent}- ${session.sessionID} [${session.stage}] {${session.status}}${currentMarker}`;
+    const taskRef = session.stage === "triage" ? pipeline.taskTraversal?.taskRef ?? "n/a" : pipeline.routing?.taskRef ?? "n/a";
+    const agentID = session.stage === "triage" ? "planner" : pipeline.routing?.agentID ?? "n/a";
+    const line = `${indent}- ${session.sessionID} [${session.stage}] {${session.status}} task=${taskRef} agent=${agentID}${currentMarker}`;
     const childLines = session.children.flatMap((childID) => renderSessionTree(pipeline, childID, depth + 1));
     return [line, ...childLines];
   }
@@ -2061,33 +2420,47 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
   }
 
   async function writeExecutionGraphEvent(pipeline: PipelineState, input: ExecutionGraphEventInput): Promise<void> {
-    const nextSeq = typeof pipeline.executionSeq === "number" && pipeline.executionSeq > 0
-      ? pipeline.executionSeq + 1
-      : 1;
-    pipeline.executionSeq = nextSeq;
-    pipeline.updatedAt = Date.now();
-
-    const payload: ExecutionGraphEventEntry = {
-      seq: nextSeq,
-      ts: new Date().toISOString(),
-      rootSessionID: pipeline.rootSessionID,
-      eventType: input.eventType,
-      sessionID: input.sessionID,
-      parentSessionID: input.parentSessionID,
-      stage: input.stage,
-      taskRef: input.taskRef,
-      agentID: input.agentID,
-      tier: input.tier,
-      skillID: input.skillID,
-      parallelGroup: input.parallelGroup,
-      slot: input.slot,
-      status: input.status,
-      reason: input.reason,
-    };
+    const normalized = normalizeExecutionGraphEventInput(input);
 
     await scheduleWrite(async () => {
+      normalizePipelineRuntimeState(pipeline);
+      const dedupeKey = buildExecutionGraphDedupeKey(pipeline.rootSessionID, normalized);
+      if (pipeline.executionDedupes?.[dedupeKey]) {
+        return;
+      }
+
+      const nextSeq = typeof pipeline.executionSeq === "number" && pipeline.executionSeq > 0
+        ? pipeline.executionSeq + 1
+        : 1;
+      const payload: ExecutionGraphEventEntry = {
+        seq: nextSeq,
+        ts: new Date().toISOString(),
+        rootSessionID: pipeline.rootSessionID,
+        eventType: normalized.eventType,
+        sessionID: normalized.sessionID,
+        parentSessionID: normalized.parentSessionID,
+        stage: normalized.stage,
+        taskRef: normalized.taskRef,
+        agentID: normalized.agentID,
+        tier: normalized.tier,
+        skillID: normalized.skillID,
+        parallelGroup: normalized.parallelGroup,
+        slot: normalized.slot,
+        status: normalized.status,
+        reason: normalized.reason,
+      };
+
       await mkdir(dirname(executionGraphPath), { recursive: true });
       await appendFile(executionGraphPath, `${JSON.stringify(payload)}\n`, "utf-8");
+
+      pipeline.executionSeq = nextSeq;
+      pipeline.executionDedupes = {
+        ...(pipeline.executionDedupes ?? {}),
+        [dedupeKey]: nextSeq,
+      };
+      pruneExecutionGraphDedupes(pipeline.executionDedupes, nextSeq);
+
+      pipeline.updatedAt = Date.now();
       await writePersistedSnapshot();
     });
   }
@@ -2185,6 +2558,7 @@ async function loadOrchestrationSettings(worktree: string): Promise<Orchestratio
         verbose_events?: unknown;
         task_routing?: unknown;
         agent_pools?: unknown;
+        parallelism?: unknown;
       };
     };
 
@@ -2214,6 +2588,7 @@ async function loadOrchestrationSettings(worktree: string): Promise<Orchestratio
           : defaultOrchestrationSettings.verboseEvents,
       taskRouting: parseTaskRoutingSettings(config.task_routing),
       agentPools: parseAgentPools(config.agent_pools),
+      parallelism: parseParallelismSettings(config.parallelism),
     };
   } catch {
     return cloneOrchestrationSettings(defaultOrchestrationSettings);
@@ -2328,6 +2703,19 @@ function cloneOrchestrationSettings(input: OrchestrationSettings): Orchestration
       ...input.taskRouting,
     },
     agentPools: cloneAgentPools(input.agentPools),
+    parallelism: {
+      maxParallelTotal: input.parallelism.maxParallelTotal,
+      maxParallelByRole: {
+        planning: input.parallelism.maxParallelByRole.planning,
+        implementation: input.parallelism.maxParallelByRole.implementation,
+        review: input.parallelism.maxParallelByRole.review,
+      },
+      maxParallelByTier: {
+        lite: input.parallelism.maxParallelByTier.lite,
+        standard: input.parallelism.maxParallelByTier.standard,
+        pro: input.parallelism.maxParallelByTier.pro,
+      },
+    },
   };
 }
 
@@ -2388,6 +2776,66 @@ function parseAgentPools(input: unknown): AgentPools {
   }
 
   return pools;
+}
+
+function parseParallelismSettings(input: unknown): ParallelismSettings {
+  if (!isRecord(input)) {
+    return {
+      maxParallelTotal: defaultOrchestrationSettings.parallelism.maxParallelTotal,
+      maxParallelByRole: {
+        planning: defaultOrchestrationSettings.parallelism.maxParallelByRole.planning,
+        implementation: defaultOrchestrationSettings.parallelism.maxParallelByRole.implementation,
+        review: defaultOrchestrationSettings.parallelism.maxParallelByRole.review,
+      },
+      maxParallelByTier: {
+        lite: defaultOrchestrationSettings.parallelism.maxParallelByTier.lite,
+        standard: defaultOrchestrationSettings.parallelism.maxParallelByTier.standard,
+        pro: defaultOrchestrationSettings.parallelism.maxParallelByTier.pro,
+      },
+    };
+  }
+
+  const byRole = isRecord(input.max_parallel_by_role) ? input.max_parallel_by_role : {};
+  const byTier = isRecord(input.max_parallel_by_tier) ? input.max_parallel_by_tier : {};
+
+  return {
+    maxParallelTotal: parsePositiveLimit(
+      input.max_parallel_total,
+      defaultOrchestrationSettings.parallelism.maxParallelTotal,
+    ),
+    maxParallelByRole: {
+      planning: parsePositiveLimit(
+        byRole.planning,
+        defaultOrchestrationSettings.parallelism.maxParallelByRole.planning,
+      ),
+      implementation: parsePositiveLimit(
+        byRole.implementation,
+        defaultOrchestrationSettings.parallelism.maxParallelByRole.implementation,
+      ),
+      review: parsePositiveLimit(byRole.review, defaultOrchestrationSettings.parallelism.maxParallelByRole.review),
+    },
+    maxParallelByTier: {
+      lite: parsePositiveLimit(byTier.lite, defaultOrchestrationSettings.parallelism.maxParallelByTier.lite),
+      standard: parsePositiveLimit(
+        byTier.standard,
+        defaultOrchestrationSettings.parallelism.maxParallelByTier.standard,
+      ),
+      pro: parsePositiveLimit(byTier.pro, defaultOrchestrationSettings.parallelism.maxParallelByTier.pro),
+    },
+  };
+}
+
+function parsePositiveLimit(candidate: unknown, fallback: number): number {
+  if (typeof candidate !== "number" || !Number.isFinite(candidate)) {
+    return fallback;
+  }
+
+  const normalized = Math.trunc(candidate);
+  if (normalized < 1) {
+    return fallback;
+  }
+
+  return normalized;
 }
 
 function normalizeExecutionRole(value: unknown): ExecutionRole | null {
@@ -2626,6 +3074,409 @@ function splitCommandQueueLines(raw: string): string[] {
     lines.pop();
   }
   return lines;
+}
+
+function normalizePipelineRuntimeState(pipeline: PipelineState): void {
+  pipeline.executionSeq = typeof pipeline.executionSeq === "number" && pipeline.executionSeq > 0
+    ? Math.trunc(pipeline.executionSeq)
+    : 0;
+  pipeline.executionDedupes = isRecord(pipeline.executionDedupes)
+    ? (pipeline.executionDedupes as Record<string, number>)
+    : {};
+  pipeline.dispatchQueue = Array.isArray(pipeline.dispatchQueue) ? pipeline.dispatchQueue : [];
+  pipeline.dispatchInFlight = Array.isArray(pipeline.dispatchInFlight) ? pipeline.dispatchInFlight : [];
+  pipeline.completedTaskRefs = Array.isArray(pipeline.completedTaskRefs)
+    ? pipeline.completedTaskRefs.map((taskRef) => taskRef.toUpperCase())
+    : [];
+}
+
+function normalizeParallelGroup(value: string | undefined): string {
+  const normalized = (value ?? "").trim();
+  return normalized.length > 0 ? normalized : "default";
+}
+
+function buildDispatchSlot(stage: PipelineStage, parallelGroup: string, taskIndex: number): string {
+  const normalizedIndex = Number.isFinite(taskIndex) && taskIndex >= 0 ? Math.trunc(taskIndex) : "fifo";
+  return `${stage}:${parallelGroup}:${normalizedIndex}`;
+}
+
+function buildDispatchQueueItem(input: {
+  stage: PipelineStage;
+  taskRef: string;
+  role: ExecutionRole;
+  tier: ExecutionTier;
+  skillID: string;
+  parallelGroup: string;
+  dependsOn: string[];
+  taskIndex: number;
+  requestedBySessionID: string;
+  parentSessionID: string;
+}): DispatchQueueItem {
+  const taskRef = input.taskRef.toUpperCase();
+  const parallelGroup = normalizeParallelGroup(input.parallelGroup);
+  return {
+    stage: input.stage,
+    taskRef,
+    role: input.role,
+    tier: input.tier,
+    skillID: input.skillID,
+    parallelGroup,
+    dependsOn: input.dependsOn.map((dependency) => dependency.toUpperCase()),
+    taskIndex: Number.isFinite(input.taskIndex) ? Math.max(0, Math.trunc(input.taskIndex)) : Number.MAX_SAFE_INTEGER,
+    queuedAt: Date.now(),
+    requestedBySessionID: input.requestedBySessionID,
+    parentSessionID: input.parentSessionID,
+    slot: buildDispatchSlot(input.stage, parallelGroup, input.taskIndex),
+  };
+}
+
+function enqueueDispatchTask(pipeline: PipelineState, candidate: DispatchQueueItem): { inserted: boolean; queuePosition: number } {
+  normalizePipelineRuntimeState(pipeline);
+  const queue = pipeline.dispatchQueue ?? [];
+  const inFlight = pipeline.dispatchInFlight ?? [];
+  const completed = new Set((pipeline.completedTaskRefs ?? []).map((taskRef) => taskRef.toUpperCase()));
+
+  if (completed.has(candidate.taskRef) || inFlight.some((item) => item.taskRef === candidate.taskRef)) {
+    const existingPosition = queue.findIndex((item) => item.taskRef === candidate.taskRef);
+    return {
+      inserted: false,
+      queuePosition: existingPosition,
+    };
+  }
+
+  const existingIndex = queue.findIndex((item) => item.taskRef === candidate.taskRef);
+  if (existingIndex >= 0) {
+    queue.sort(compareDispatchQueueItems);
+    return {
+      inserted: false,
+      queuePosition: queue.findIndex((item) => item.taskRef === candidate.taskRef),
+    };
+  }
+
+  queue.push(candidate);
+  queue.sort(compareDispatchQueueItems);
+  pipeline.dispatchQueue = queue;
+  return {
+    inserted: true,
+    queuePosition: queue.findIndex((item) => item.taskRef === candidate.taskRef),
+  };
+}
+
+function compareDispatchQueueItems(left: DispatchQueueItem, right: DispatchQueueItem): number {
+  const stageOrder = { triage: 0, implementation: 1, review: 2 } as const;
+  if (stageOrder[left.stage] !== stageOrder[right.stage]) {
+    return stageOrder[left.stage] - stageOrder[right.stage];
+  }
+
+  const groupCompare = left.parallelGroup.localeCompare(right.parallelGroup);
+  if (groupCompare !== 0) {
+    return groupCompare;
+  }
+
+  if (left.taskIndex !== right.taskIndex) {
+    return left.taskIndex - right.taskIndex;
+  }
+
+  if (left.queuedAt !== right.queuedAt) {
+    return left.queuedAt - right.queuedAt;
+  }
+
+  return left.taskRef.localeCompare(right.taskRef);
+}
+
+function peekDispatchQueue(pipeline: PipelineState): DispatchQueueItem | null {
+  normalizePipelineRuntimeState(pipeline);
+  const queue = pipeline.dispatchQueue ?? [];
+  queue.sort(compareDispatchQueueItems);
+  return queue[0] ?? null;
+}
+
+function dequeueDispatchTask(pipeline: PipelineState, taskRef: string): void {
+  normalizePipelineRuntimeState(pipeline);
+  const normalizedTaskRef = taskRef.toUpperCase();
+  pipeline.dispatchQueue = (pipeline.dispatchQueue ?? []).filter((item) => item.taskRef !== normalizedTaskRef);
+}
+
+function markDispatchInFlight(pipeline: PipelineState, item: DispatchQueueItem, startedBySessionID: string): void {
+  normalizePipelineRuntimeState(pipeline);
+  const normalizedTaskRef = item.taskRef.toUpperCase();
+  pipeline.dispatchInFlight = (pipeline.dispatchInFlight ?? []).filter((entry) => entry.taskRef !== normalizedTaskRef);
+  pipeline.dispatchInFlight.push({
+    stage: item.stage,
+    taskRef: normalizedTaskRef,
+    role: item.role,
+    tier: item.tier,
+    parallelGroup: item.parallelGroup,
+    slot: item.slot,
+    startedAt: Date.now(),
+    startedBySessionID,
+  });
+}
+
+function markDispatchTaskCompleted(pipeline: PipelineState, taskRef: string): void {
+  normalizePipelineRuntimeState(pipeline);
+  const normalizedTaskRef = taskRef.toUpperCase();
+  pipeline.dispatchInFlight = (pipeline.dispatchInFlight ?? []).filter((entry) => entry.taskRef !== normalizedTaskRef);
+
+  const completed = new Set((pipeline.completedTaskRefs ?? []).map((entry) => entry.toUpperCase()));
+  completed.add(normalizedTaskRef);
+  pipeline.completedTaskRefs = Array.from(completed).sort();
+}
+
+function clearDispatchInFlightTask(pipeline: PipelineState, taskRef: string): void {
+  normalizePipelineRuntimeState(pipeline);
+  const normalizedTaskRef = taskRef.toUpperCase();
+  pipeline.dispatchInFlight = (pipeline.dispatchInFlight ?? []).filter((entry) => entry.taskRef !== normalizedTaskRef);
+}
+
+function computeParallelDispatchUsage(pipelines: Record<string, PipelineState>): ParallelDispatchUsage {
+  const usage: ParallelDispatchUsage = {
+    total: 0,
+    byRole: {
+      planning: 0,
+      implementation: 0,
+      review: 0,
+    },
+    byTier: {
+      lite: 0,
+      standard: 0,
+      pro: 0,
+    },
+  };
+
+  for (const pipeline of Object.values(pipelines)) {
+    normalizePipelineRuntimeState(pipeline);
+    for (const inFlight of pipeline.dispatchInFlight ?? []) {
+      usage.total += 1;
+      usage.byRole[inFlight.role] += 1;
+      usage.byTier[inFlight.tier] += 1;
+    }
+  }
+
+  return usage;
+}
+
+function evaluateParallelCapacity(
+  candidate: DispatchQueueItem,
+  usage: ParallelDispatchUsage,
+  limits: ParallelismSettings,
+): { ok: true } | { ok: false; reason: string } {
+  if (usage.total >= limits.maxParallelTotal) {
+    return {
+      ok: false,
+      reason: `global parallel cap reached (${usage.total}/${limits.maxParallelTotal})`,
+    };
+  }
+
+  const roleUsage = usage.byRole[candidate.role];
+  const roleCap = limits.maxParallelByRole[candidate.role];
+  if (roleUsage >= roleCap) {
+    return {
+      ok: false,
+      reason: `role cap reached for ${candidate.role} (${roleUsage}/${roleCap})`,
+    };
+  }
+
+  const tierUsage = usage.byTier[candidate.tier];
+  const tierCap = limits.maxParallelByTier[candidate.tier];
+  if (tierUsage >= tierCap) {
+    return {
+      ok: false,
+      reason: `tier cap reached for ${candidate.tier} (${tierUsage}/${tierCap})`,
+    };
+  }
+
+  return { ok: true };
+}
+
+async function resolveTaskDependencyStatus(input: {
+  dependsOn: string[];
+  pipeline: PipelineState;
+  tasklistPath?: string;
+}): Promise<{ missing: string[] }> {
+  const required = input.dependsOn.map((taskRef) => taskRef.toUpperCase());
+  if (required.length === 0) {
+    return { missing: [] };
+  }
+
+  const completed = new Set((input.pipeline.completedTaskRefs ?? []).map((taskRef) => taskRef.toUpperCase()));
+  if (input.tasklistPath) {
+    try {
+      const tasklistRaw = await readFile(input.tasklistPath, "utf-8");
+      const checked = parseCompletedTaskRefsFromTasklist(tasklistRaw);
+      for (const taskRef of checked) {
+        completed.add(taskRef);
+      }
+    } catch {
+      // Deterministically continue with currently known completion set.
+    }
+  }
+
+  const missing = required.filter((taskRef) => !completed.has(taskRef));
+  return { missing };
+}
+
+function parseCompletedTaskRefsFromTasklist(content: string): Set<string> {
+  const completed = new Set<string>();
+  const lines = content.split("\n");
+  for (const line of lines) {
+    const match = line.match(/^\s*-\s*\[(x|X)\]\s+\*\*(T-\d+(?:\.\d+)+)\*\*/);
+    if (!match || !match[2]) {
+      continue;
+    }
+
+    completed.add(match[2].toUpperCase());
+  }
+
+  return completed;
+}
+
+function normalizeExecutionGraphEventInput(input: ExecutionGraphEventInput): ExecutionGraphEventInput {
+  return {
+    eventType: input.eventType.trim(),
+    sessionID: input.sessionID.trim() || "n/a",
+    parentSessionID: input.parentSessionID.trim() || "n/a",
+    stage: input.stage,
+    taskRef: input.taskRef.trim() || "n/a",
+    agentID: input.agentID.trim() || "n/a",
+    tier: input.tier.trim() || "n/a",
+    skillID: input.skillID.trim() || "n/a",
+    parallelGroup: normalizeParallelGroup(input.parallelGroup),
+    slot: input.slot.trim() || "n/a",
+    status: input.status.trim() || "unknown",
+    reason: typeof input.reason === "string" && input.reason.trim().length > 0 ? input.reason.trim() : undefined,
+  };
+}
+
+function buildExecutionGraphDedupeKey(rootSessionID: string, input: ExecutionGraphEventInput): string {
+  return `${rootSessionID}:${input.taskRef}:${input.eventType}:${input.status}`;
+}
+
+function pruneExecutionGraphDedupes(cache: Record<string, number>, latestSeq: number): void {
+  const floor = Math.max(0, latestSeq - 2048);
+  for (const [key, seq] of Object.entries(cache)) {
+    if (typeof seq !== "number" || seq < floor) {
+      delete cache[key];
+    }
+  }
+}
+
+async function readExecutionGraphEntries(filePath: string, rootSessionID: string): Promise<ExecutionGraphEventEntry[]> {
+  try {
+    const raw = await readFile(filePath, "utf-8");
+    return splitCommandQueueLines(raw)
+      .map((line) => parseExecutionGraphEntry(line))
+      .filter((entry): entry is ExecutionGraphEventEntry => Boolean(entry))
+      .filter((entry) => entry.rootSessionID === rootSessionID)
+      .sort((left, right) => left.seq - right.seq);
+  } catch {
+    return [];
+  }
+}
+
+function parseExecutionGraphEntry(rawLine: string): ExecutionGraphEventEntry | null {
+  try {
+    const parsed = JSON.parse(rawLine) as Partial<ExecutionGraphEventEntry>;
+    if (
+      typeof parsed.seq !== "number" ||
+      typeof parsed.ts !== "string" ||
+      typeof parsed.rootSessionID !== "string" ||
+      typeof parsed.eventType !== "string" ||
+      typeof parsed.sessionID !== "string" ||
+      typeof parsed.parentSessionID !== "string" ||
+      (parsed.stage !== "triage" && parsed.stage !== "implementation" && parsed.stage !== "review") ||
+      typeof parsed.taskRef !== "string" ||
+      typeof parsed.agentID !== "string" ||
+      typeof parsed.tier !== "string" ||
+      typeof parsed.skillID !== "string" ||
+      typeof parsed.parallelGroup !== "string" ||
+      typeof parsed.slot !== "string" ||
+      typeof parsed.status !== "string"
+    ) {
+      return null;
+    }
+
+    return {
+      seq: parsed.seq,
+      ts: parsed.ts,
+      rootSessionID: parsed.rootSessionID,
+      eventType: parsed.eventType,
+      sessionID: parsed.sessionID,
+      parentSessionID: parsed.parentSessionID,
+      stage: parsed.stage,
+      taskRef: parsed.taskRef,
+      agentID: parsed.agentID,
+      tier: parsed.tier,
+      skillID: parsed.skillID,
+      parallelGroup: parsed.parallelGroup,
+      slot: parsed.slot,
+      status: parsed.status,
+      reason: typeof parsed.reason === "string" ? parsed.reason : undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function renderExecutionOrderSummary(entries: ExecutionGraphEventEntry[]): string[] {
+  if (entries.length === 0) {
+    return ["- none"];
+  }
+
+  return entries.slice(-12).map((entry) => {
+    const reasonSegment = entry.reason ? ` reason=${entry.reason}` : "";
+    return `- #${entry.seq} ${entry.eventType} task=${entry.taskRef} stage=${entry.stage} status=${entry.status}${reasonSegment}`;
+  });
+}
+
+function renderOverlapWindowSummary(entries: ExecutionGraphEventEntry[]): string[] {
+  if (entries.length === 0) {
+    return ["- none"];
+  }
+
+  const activeBySlot = new Map<string, { startSeq: number; group: string; taskRef: string }>();
+  const windowsByGroup = new Map<string, string[]>();
+  const lastSeq = entries[entries.length - 1]?.seq ?? 0;
+
+  for (const entry of entries) {
+    if (entry.eventType === "spawn_started") {
+      activeBySlot.set(entry.slot, {
+        startSeq: entry.seq,
+        group: entry.parallelGroup,
+        taskRef: entry.taskRef,
+      });
+      continue;
+    }
+
+    if (entry.eventType !== "spawn_completed") {
+      continue;
+    }
+
+    const started = activeBySlot.get(entry.slot);
+    if (!started) {
+      continue;
+    }
+
+    const group = started.group;
+    const windows = windowsByGroup.get(group) ?? [];
+    windows.push(`[${started.startSeq}-${entry.seq}] ${started.taskRef}`);
+    windowsByGroup.set(group, windows);
+    activeBySlot.delete(entry.slot);
+  }
+
+  for (const [slot, started] of activeBySlot.entries()) {
+    const windows = windowsByGroup.get(started.group) ?? [];
+    windows.push(`[${started.startSeq}-${lastSeq}] ${started.taskRef} (active:${slot})`);
+    windowsByGroup.set(started.group, windows);
+  }
+
+  if (windowsByGroup.size === 0) {
+    return ["- none"];
+  }
+
+  return Array.from(windowsByGroup.entries())
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([group, windows]) => `- ${group}: ${windows.join(", ")}`);
 }
 
 function dedupePathEntries(entries: string[]): string[] {
@@ -2938,11 +3789,15 @@ function parseTaskExecutionMetadata(content: string, tasklistPath: string): Map<
   const metadataByTask = new Map<string, TaskExecutionMetadata>();
   const lines = content.split("\n");
   let pendingTaskRef: string | null = null;
+  let pendingTaskIndex = -1;
+  let taskIndex = 0;
 
   for (const line of lines) {
     const taskMatch = line.match(/^\s*<!--\s*TASK:([^\s]+)\s*-->\s*$/i);
     if (taskMatch && taskMatch[1]) {
       pendingTaskRef = taskMatch[1].trim().toUpperCase();
+      pendingTaskIndex = taskIndex;
+      taskIndex += 1;
       continue;
     }
 
@@ -2955,12 +3810,13 @@ function parseTaskExecutionMetadata(content: string, tasklistPath: string): Map<
       continue;
     }
 
-    const parsed = parseTaskExecutionComment(executionMatch[1].trim(), pendingTaskRef, tasklistPath);
+    const parsed = parseTaskExecutionComment(executionMatch[1].trim(), pendingTaskRef, tasklistPath, pendingTaskIndex);
     if (parsed) {
       metadataByTask.set(pendingTaskRef, parsed);
     }
 
     pendingTaskRef = null;
+    pendingTaskIndex = -1;
   }
 
   return metadataByTask;
@@ -2970,6 +3826,7 @@ function parseTaskExecutionComment(
   rawExecutionJson: string,
   taskRef: string,
   tasklistPath: string,
+  taskIndex: number,
 ): TaskExecutionMetadata | null {
   try {
     const parsed = JSON.parse(rawExecutionJson) as {
@@ -3009,6 +3866,7 @@ function parseTaskExecutionComment(
       skillID,
       parallelGroup,
       dependsOn,
+      taskIndex,
       tasklistPath,
     };
   } catch {

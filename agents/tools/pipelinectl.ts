@@ -24,6 +24,36 @@ interface PipelineStateSnapshot {
   stopReason?: string;
   updatedAt: number;
   pendingTransition?: PendingTransition;
+  sessions?: Record<string, PipelineSessionSnapshot>;
+  routing?: PipelineRoutingSnapshot;
+  taskTraversal?: {
+    taskRef?: string;
+  };
+}
+
+interface PipelineSessionSnapshot {
+  sessionID: string;
+  stage: PipelineStage;
+  parentSessionID?: string;
+  children: string[];
+  status: "active" | "completed" | "blocked" | "stopped";
+}
+
+interface PipelineRoutingSnapshot {
+  taskRef?: string;
+  agentID?: string;
+}
+
+interface ExecutionGraphEntry {
+  seq: number;
+  rootSessionID: string;
+  eventType: string;
+  stage: PipelineStage;
+  taskRef: string;
+  parallelGroup: string;
+  slot: string;
+  status: string;
+  reason?: string;
 }
 
 interface OrchestrationSnapshot {
@@ -111,7 +141,9 @@ export async function runPipelineCtl(
   }
 
   if (action === "status") {
-    io.stdout(`${renderStatus(snapshot, context.sessionID, args[0])}\n`);
+    const executionGraphPath = resolve(context.worktree, "_bmad-output", "execution-graph.ndjson");
+    const executionGraph = await loadExecutionGraph(executionGraphPath);
+    io.stdout(`${renderStatus(snapshot, context.sessionID, args[0], executionGraph)}\n`);
     return 0;
   }
 
@@ -307,7 +339,12 @@ async function loadSnapshot(filePath: string): Promise<OrchestrationSnapshot | n
   }
 }
 
-function renderStatus(snapshot: OrchestrationSnapshot, envSessionID?: string, explicitSessionID?: string): string {
+function renderStatus(
+  snapshot: OrchestrationSnapshot,
+  envSessionID?: string,
+  explicitSessionID?: string,
+  executionGraph: ExecutionGraphEntry[] = [],
+): string {
   const pipelines = getPipelineMap(snapshot);
   const roots = Object.keys(pipelines);
   if (roots.length === 0) {
@@ -316,7 +353,7 @@ function renderStatus(snapshot: OrchestrationSnapshot, envSessionID?: string, ex
 
   const selected = resolvePipeline(snapshot, explicitSessionID ?? envSessionID);
   if (selected) {
-    return formatPipelineStatus(selected, snapshot);
+    return formatPipelineStatus(selected, snapshot, executionGraph);
   }
 
   const lines = [
@@ -334,12 +371,22 @@ function renderStatus(snapshot: OrchestrationSnapshot, envSessionID?: string, ex
   return lines.join("\n");
 }
 
-function formatPipelineStatus(target: PipelineTarget, snapshot: OrchestrationSnapshot): string {
+function formatPipelineStatus(
+  target: PipelineTarget,
+  snapshot: OrchestrationSnapshot,
+  executionGraph: ExecutionGraphEntry[],
+): string {
   const pipeline = target.pipeline;
   const pending = pipeline.pendingTransition
     ? `${pipeline.pendingTransition.from} -> ${pipeline.pendingTransition.to}`
     : "none";
   const mode = snapshot.runtime?.effectiveMode ?? snapshot.runtime?.configuredMode ?? "unknown";
+  const graphEntries = executionGraph
+    .filter((entry) => entry.rootSessionID === target.rootSessionID)
+    .sort((left, right) => left.seq - right.seq);
+  const sessionTree = renderSessionTree(pipeline, target.rootSessionID, 0);
+  const executionOrder = renderExecutionOrderSummary(graphEntries);
+  const overlap = renderOverlapWindowSummary(graphEntries);
 
   return [
     `Pipeline: ${target.rootSessionID}`,
@@ -349,6 +396,12 @@ function formatPipelineStatus(target: PipelineTarget, snapshot: OrchestrationSna
     `Stopped: ${pipeline.stopped ? `yes (${pipeline.stopReason ?? "unknown"})` : "no"}`,
     `Pending: ${pending}`,
     `UpdatedAt: ${pipeline.updatedAt}`,
+    "Session Tree:",
+    ...sessionTree,
+    "Execution Order:",
+    ...executionOrder,
+    "Overlap Windows:",
+    ...overlap,
   ].join("\n");
 }
 
@@ -380,12 +433,133 @@ function resolvePipeline(snapshot: OrchestrationSnapshot, sessionID?: string): P
 }
 
 function getPipelineMap(snapshot: OrchestrationSnapshot): Record<string, PipelineStateSnapshot> {
-  const summaries = snapshot.pipelineSummaries ?? {};
-  if (Object.keys(summaries).length > 0) {
-    return summaries;
+  const pipelines = snapshot.pipelines ?? {};
+  if (Object.keys(pipelines).length > 0) {
+    return pipelines;
   }
 
-  return snapshot.pipelines ?? {};
+  return snapshot.pipelineSummaries ?? {};
+}
+
+function renderSessionTree(pipeline: PipelineStateSnapshot, sessionID: string, depth: number): string[] {
+  const sessions = pipeline.sessions;
+  if (!sessions || !sessions[sessionID]) {
+    return ["- unavailable (snapshot summary has no session tree)"];
+  }
+
+  const session = sessions[sessionID];
+  const indent = "  ".repeat(depth);
+  const taskRef = session.stage === "triage" ? pipeline.taskTraversal?.taskRef ?? "n/a" : pipeline.routing?.taskRef ?? "n/a";
+  const agentID = session.stage === "triage" ? "planner" : pipeline.routing?.agentID ?? "n/a";
+  const line = `${indent}- ${session.sessionID} [${session.stage}] {${session.status}} task=${taskRef} agent=${agentID}`;
+  const childLines = (session.children ?? []).flatMap((childID) => renderSessionTree(pipeline, childID, depth + 1));
+  return [line, ...childLines];
+}
+
+function renderExecutionOrderSummary(entries: ExecutionGraphEntry[]): string[] {
+  if (entries.length === 0) {
+    return ["- none"];
+  }
+
+  return entries.slice(-12).map((entry) => {
+    const reasonSegment = entry.reason ? ` reason=${entry.reason}` : "";
+    return `- #${entry.seq} ${entry.eventType} task=${entry.taskRef} stage=${entry.stage} status=${entry.status}${reasonSegment}`;
+  });
+}
+
+function renderOverlapWindowSummary(entries: ExecutionGraphEntry[]): string[] {
+  if (entries.length === 0) {
+    return ["- none"];
+  }
+
+  const activeBySlot = new Map<string, { startSeq: number; group: string; taskRef: string }>();
+  const windowsByGroup = new Map<string, string[]>();
+  const lastSeq = entries[entries.length - 1]?.seq ?? 0;
+
+  for (const entry of entries) {
+    if (entry.eventType === "spawn_started") {
+      activeBySlot.set(entry.slot, {
+        startSeq: entry.seq,
+        group: entry.parallelGroup,
+        taskRef: entry.taskRef,
+      });
+      continue;
+    }
+
+    if (entry.eventType !== "spawn_completed") {
+      continue;
+    }
+
+    const started = activeBySlot.get(entry.slot);
+    if (!started) {
+      continue;
+    }
+
+    const windows = windowsByGroup.get(started.group) ?? [];
+    windows.push(`[${started.startSeq}-${entry.seq}] ${started.taskRef}`);
+    windowsByGroup.set(started.group, windows);
+    activeBySlot.delete(entry.slot);
+  }
+
+  for (const [slot, started] of activeBySlot.entries()) {
+    const windows = windowsByGroup.get(started.group) ?? [];
+    windows.push(`[${started.startSeq}-${lastSeq}] ${started.taskRef} (active:${slot})`);
+    windowsByGroup.set(started.group, windows);
+  }
+
+  if (windowsByGroup.size === 0) {
+    return ["- none"];
+  }
+
+  return Array.from(windowsByGroup.entries())
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([group, windows]) => `- ${group}: ${windows.join(", ")}`);
+}
+
+async function loadExecutionGraph(filePath: string): Promise<ExecutionGraphEntry[]> {
+  try {
+    const raw = await readFile(filePath, "utf-8");
+    return raw
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0)
+      .map((line) => parseExecutionGraphEntry(line))
+      .filter((entry): entry is ExecutionGraphEntry => Boolean(entry));
+  } catch {
+    return [];
+  }
+}
+
+function parseExecutionGraphEntry(rawLine: string): ExecutionGraphEntry | null {
+  try {
+    const parsed = JSON.parse(rawLine) as Partial<ExecutionGraphEntry>;
+    if (
+      typeof parsed.seq !== "number" ||
+      typeof parsed.rootSessionID !== "string" ||
+      typeof parsed.eventType !== "string" ||
+      (parsed.stage !== "triage" && parsed.stage !== "implementation" && parsed.stage !== "review") ||
+      typeof parsed.taskRef !== "string" ||
+      typeof parsed.parallelGroup !== "string" ||
+      typeof parsed.slot !== "string" ||
+      typeof parsed.status !== "string"
+    ) {
+      return null;
+    }
+
+    return {
+      seq: parsed.seq,
+      rootSessionID: parsed.rootSessionID,
+      eventType: parsed.eventType,
+      stage: parsed.stage,
+      taskRef: parsed.taskRef,
+      parallelGroup: parsed.parallelGroup,
+      slot: parsed.slot,
+      status: parsed.status,
+      reason: typeof parsed.reason === "string" ? parsed.reason : undefined,
+    };
+  } catch {
+    return null;
+  }
 }
 
 function buildQueueCommand(input: {

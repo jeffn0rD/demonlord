@@ -63,7 +63,7 @@ Monitor Discord notifications for:
 - **Error notifications**: Address any issues that require human intervention
 
 In manual mode, use local pipeline controls in the CLI:
-- **`/pipeline status [session]`**: View parent/child stage tree and worktree state
+- **`/pipeline status [session]`**: View parent/child stage tree plus execution order (`seq`) and overlap windows by `parallel_group`
 - **`/pipeline advance <triage|implementation|review> [session]`**: Perform explicit transition
 - **`/pipeline stop [session]` / `/pipeline off`**: Stop one pipeline or disable orchestration
 - **`/pipeline approve [session]`**: Approve blocked spawn without Discord dependency
@@ -74,7 +74,7 @@ If slash-command handling is constrained, use the deterministic shell fallback:
 ./scripts/bootstrap.sh
 ```
 
-- **`pipelinectl status [session]`**
+- **`pipelinectl status [session]`** (includes session tree, execution order, overlap windows)
 - **`pipelinectl off|on`**
 - **`pipelinectl advance <triage|implementation|review> [session]`**
 - **`pipelinectl approve [session]`**
@@ -189,7 +189,7 @@ Control the orchestration pipeline locally via CLI commands:
 - **`/pipeline off`**
 - **`/pipeline approve [session]`**
 
-Shell fallback commands (`pipelinectl`) enqueue deterministic control intents into `_bmad-output/orchestration-commands.ndjson`, consumed by the orchestrator plugin. This path avoids direct LLM reasoning turns for control operations.
+Shell fallback commands (`pipelinectl`) enqueue deterministic control intents into `_bmad-output/orchestration-commands.ndjson`, consumed by the orchestrator plugin. Status output is sourced from `_bmad-output/execution-graph.ndjson` and summarizes spawn sequence order plus overlap windows for quick operator inspection.
 
 ### Configuration
 Discord integration is configured in `demonlord.config.json`:

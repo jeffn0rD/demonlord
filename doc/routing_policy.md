@@ -70,6 +70,7 @@ Missing metadata fallback (deterministic):
 - FIFO ordering applies within the same stage and `parallel_group`.
 - If capacity is unavailable, task MUST stay `queued` (never dropped).
 - If dependencies are unresolved, task MUST be `blocked` with explicit reason.
+- `max_parallel_total`, `max_parallel_by_role`, and `max_parallel_by_tier` default to `1` when omitted (migration-safe single-flight).
 
 ## Execution Graph Event Policy
 
@@ -77,6 +78,7 @@ Missing metadata fallback (deterministic):
 - Required event types: `pipeline_started`, `task_queued`, `task_blocked`, `spawn_requested`, `spawn_started`, `spawn_completed`, `task_completed`, `pipeline_completed`.
 - Each event MUST include: `seq`, `ts`, `rootSessionID`, `eventType`, `sessionID`, `parentSessionID`, `stage`, `taskRef`, `agentID`, `tier`, `skillID`, `parallelGroup`, `slot`, `status`, and optional `reason`.
 - Events MUST be monotonic by `seq` and deduped by `(rootSessionID, taskRef, eventType, status)`.
+- `/pipeline status` and `pipelinectl status` must render the same graph-derived visibility: session tree, recent execution order, and overlap windows.
 
 ## Spec Handoff Marker Contract
 

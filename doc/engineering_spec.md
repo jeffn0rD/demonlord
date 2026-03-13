@@ -252,6 +252,7 @@ Deterministic queue semantics:
 3. If dependency is unresolved, task state MUST be `blocked` with explicit `reason`.
 4. If capacity is unavailable (`max_parallel_total`, role cap, or tier cap), task state MUST be `queued`; tasks are never dropped.
 5. When capacity becomes available, queued tasks MUST resume in deterministic order (same key as above).
+6. `/pipeline status` and `pipelinectl status` MUST surface the same dispatch view: parent/child tree, execution order by `seq`, and overlap windows grouped by `parallel_group`.
 
 Execution Graph Log Contract (Concise, Machine-Readable)
 
@@ -284,6 +285,7 @@ Ordering and dedupe guarantees:
 * `seq` allocation MUST be monotonic and gap-free for committed writes.
 * Duplicate transitions for the same `(rootSessionID, taskRef, eventType, status)` MUST be deduped.
 * Deduped attempts MUST NOT reorder subsequent committed events.
+* Runtime default remains migration-safe single-flight (`parallelism` missing => total/role/tier caps all `1`).
 
 Example event:
 

@@ -34,6 +34,19 @@
     "task_routing": {
       "source": "tasklist_explicit",
       "default_tier": "standard"
+    },
+    "parallelism": {
+      "max_parallel_total": 1,
+      "max_parallel_by_role": {
+        "planning": 1,
+        "implementation": 1,
+        "review": 1
+      },
+      "max_parallel_by_tier": {
+        "lite": 1,
+        "standard": 1,
+        "pro": 1
+      }
     }
   },
   "discord": {

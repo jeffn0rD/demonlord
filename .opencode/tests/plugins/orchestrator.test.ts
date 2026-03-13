@@ -58,6 +58,11 @@ describe("orchestrator snapshot and queue helpers", () => {
           defaultTier: "standard",
         },
         agentPools: __orchestratorTestUtils.parseAgentPools({}),
+        parallelism: {
+          maxParallelTotal: 1,
+          maxParallelByRole: { planning: 1, implementation: 1, review: 1 },
+          maxParallelByTier: { lite: 1, standard: 1, pro: 1 },
+        },
       });
 
       assert.equal(migrated.version, 2);
@@ -150,6 +155,11 @@ describe("orchestrator snapshot and queue helpers", () => {
           defaultTier: "standard",
         },
         agentPools: __orchestratorTestUtils.parseAgentPools({}),
+        parallelism: {
+          maxParallelTotal: 1,
+          maxParallelByRole: { planning: 1, implementation: 1, review: 1 },
+          maxParallelByTier: { lite: 1, standard: 1, pro: 1 },
+        },
       },
     );
     const autoNotIgnored = __orchestratorTestUtils.shouldIgnoreError(
@@ -165,6 +175,11 @@ describe("orchestrator snapshot and queue helpers", () => {
           defaultTier: "standard",
         },
         agentPools: __orchestratorTestUtils.parseAgentPools({}),
+        parallelism: {
+          maxParallelTotal: 1,
+          maxParallelByRole: { planning: 1, implementation: 1, review: 1 },
+          maxParallelByTier: { lite: 1, standard: 1, pro: 1 },
+        },
       },
     );
 

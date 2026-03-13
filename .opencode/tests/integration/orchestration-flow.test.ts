@@ -374,6 +374,8 @@ describe("orchestrator integration flow", () => {
         root,
         "minion_Tasklist.md",
         [
+          "<!-- TASK:T-3.7.3 -->",
+          "- [x] **T-3.7.3**: prerequisite completed in prior subphase.",
           "<!-- TASK:T-3.7.7 -->",
           '<!-- EXECUTION:{"execution":{"role":"implementation","tier":"pro","skill":"orchestration-specialist","parallel_group":"routing-remediation","depends_on":["T-3.7.3"]}} -->',
           "- [ ] **T-3.7.7**: preserve execution target across spec handoff.",
@@ -579,6 +581,12 @@ describe("orchestrator integration flow", () => {
         root,
         "minion_Tasklist.md",
         [
+          "<!-- TASK:T-3.7.7 -->",
+          "- [x] **T-3.7.7**: prerequisite complete.",
+          "<!-- TASK:T-3.7.8 -->",
+          "- [x] **T-3.7.8**: prerequisite complete.",
+          "<!-- TASK:T-3.7.9 -->",
+          "- [x] **T-3.7.9**: prerequisite complete.",
           "<!-- TASK:T-3.7.10 -->",
           '<!-- EXECUTION:{"execution":{"role":"implementation","tier":"standard","parallel_group":"routing-remediation-tests","depends_on":["T-3.7.7","T-3.7.8","T-3.7.9"]}} -->',
           "- [ ] **T-3.7.10**: add runtime regression coverage.",

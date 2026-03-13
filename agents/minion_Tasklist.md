@@ -318,33 +318,33 @@ Agents should execute one subphase at a time. To trigger implementation, the Lea
 **Goal:** Add deterministic queue/dispatch controls with dependency-aware parallelism and concise execution-graph logging.
 **Entry criteria:** SUBPHASE-3.7 complete, including remediation tasks `T-3.7.7` through `T-3.7.10`.
 **Exit criteria / QA checklist:**
-- [ ] Scheduler enforces global, per-role, and per-tier parallelism caps deterministically.
-- [ ] Dependency gating uses `execution.depends_on` and emits explicit blocked reasons.
-- [ ] Capacity shortfall queues tasks (never drops) and resumes FIFO within group.
-- [ ] Required execution-graph event types are emitted in monotonic sequence order.
-- [ ] `/pipeline status` includes concise spawn tree, sequence order, and overlap window summary.
+- [x] Scheduler enforces global, per-role, and per-tier parallelism caps deterministically.
+- [x] Dependency gating uses `execution.depends_on` and emits explicit blocked reasons.
+- [x] Capacity shortfall queues tasks (never drops) and resumes FIFO within group.
+- [x] Required execution-graph event types are emitted in monotonic sequence order.
+- [x] `/pipeline status` includes concise spawn tree, sequence order, and overlap window summary.
 **Proposed PR title:** feat: add dependency-aware parallel dispatch and concise execution-graph logging
 **Proposed commit message:** feat: enforce constrained parallel orchestration with deterministic execution-graph events (Refs #1)
 
 **Tasks:**
 <!-- TASK:T-3.8.1 -->
 <!-- EXECUTION:{"execution":{"role":"implementation","tier":"pro","skill":"orchestration-specialist","parallel_group":"dispatch-core","depends_on":["T-3.7.10"]}} -->
-- [ ] **T-3.8.1** (Refs #1): Implement deterministic scheduler ordering and dispatch lifecycle (`task_queued`, `spawn_requested`, `spawn_started`, `spawn_completed`, `task_completed`) with FIFO semantics per stage/group. Touch points: `.opencode/plugins/orchestrator.ts`
+- [x] **T-3.8.1** (Refs #1): Implement deterministic scheduler ordering and dispatch lifecycle (`task_queued`, `spawn_requested`, `spawn_started`, `spawn_completed`, `task_completed`) with FIFO semantics per stage/group. Touch points: `.opencode/plugins/orchestrator.ts`
 <!-- TASK:T-3.8.2 -->
 <!-- EXECUTION:{"execution":{"role":"implementation","tier":"standard","skill":"orchestration-specialist","parallel_group":"dispatch-core","depends_on":["T-3.8.1"]}} -->
-- [ ] **T-3.8.2** (Refs #1): Enforce dependency blocking (`task_blocked`) from `execution.depends_on` and unblock transitions only after prerequisite `task_completed` events. Touch points: `.opencode/plugins/orchestrator.ts`
+- [x] **T-3.8.2** (Refs #1): Enforce dependency blocking (`task_blocked`) from `execution.depends_on` and unblock transitions only after prerequisite `task_completed` events. Touch points: `.opencode/plugins/orchestrator.ts`
 <!-- TASK:T-3.8.3 -->
 <!-- EXECUTION:{"execution":{"role":"implementation","tier":"standard","skill":"config-guardian","parallel_group":"dispatch-config","depends_on":["T-3.8.1"]}} -->
-- [ ] **T-3.8.3** (Refs #1): Add orchestration config parsing for `parallelism.max_parallel_total`, `parallelism.max_parallel_by_role`, and `parallelism.max_parallel_by_tier` with deterministic fallback to single-flight limits. Touch points: `.opencode/plugins/orchestrator.ts`, `demonlord.config.json`
+- [x] **T-3.8.3** (Refs #1): Add orchestration config parsing for `parallelism.max_parallel_total`, `parallelism.max_parallel_by_role`, and `parallelism.max_parallel_by_tier` with deterministic fallback to single-flight limits. Touch points: `.opencode/plugins/orchestrator.ts`, `demonlord.config.json`
 <!-- TASK:T-3.8.4 -->
 <!-- EXECUTION:{"execution":{"role":"implementation","tier":"pro","skill":"orchestration-specialist","parallel_group":"dispatch-graph","depends_on":["T-3.8.1"]}} -->
-- [ ] **T-3.8.4** (Refs #1): Implement concise execution graph NDJSON writer with required schema fields (`seq`, `ts`, `rootSessionID`, `eventType`, `sessionID`, `parentSessionID`, `stage`, `taskRef`, `agentID`, `tier`, `skillID`, `parallelGroup`, `slot`, `status`, optional `reason`) and dedupe semantics. Touch points: `.opencode/plugins/orchestrator.ts`, `_bmad-output/execution-graph.ndjson`
+- [x] **T-3.8.4** (Refs #1): Implement concise execution graph NDJSON writer with required schema fields (`seq`, `ts`, `rootSessionID`, `eventType`, `sessionID`, `parentSessionID`, `stage`, `taskRef`, `agentID`, `tier`, `skillID`, `parallelGroup`, `slot`, `status`, optional `reason`) and dedupe semantics. Touch points: `.opencode/plugins/orchestrator.ts`, `_bmad-output/execution-graph.ndjson`
 <!-- TASK:T-3.8.5 -->
 <!-- EXECUTION:{"execution":{"role":"implementation","tier":"lite","skill":"orchestration-specialist","parallel_group":"dispatch-status","depends_on":["T-3.8.4"]}} -->
-- [ ] **T-3.8.5** (Refs #1): Extend `/pipeline status` and `pipelinectl status` summaries to show parent->child tree, execution order, and overlap windows from execution-graph data. Touch points: `.opencode/plugins/orchestrator.ts`, `agents/tools/pipelinectl.sh`, `USAGE.md`
+- [x] **T-3.8.5** (Refs #1): Extend `/pipeline status` and `pipelinectl status` summaries to show parent->child tree, execution order, and overlap windows from execution-graph data. Touch points: `.opencode/plugins/orchestrator.ts`, `agents/tools/pipelinectl.sh`, `USAGE.md`
 <!-- TASK:T-3.8.6 -->
 <!-- EXECUTION:{"execution":{"role":"review","tier":"lite","skill":"spec-expert","parallel_group":"dispatch-docs","depends_on":["T-3.8.5"]}} -->
-- [ ] **T-3.8.6** (Refs #1): Update architecture docs with deterministic ordering guarantees, event-type contract, and migration-safe config defaults. Touch points: `doc/engineering_spec.md`, `doc/routing_policy.md`, `README.md`
+- [x] **T-3.8.6** (Refs #1): Update architecture docs with deterministic ordering guarantees, event-type contract, and migration-safe config defaults. Touch points: `doc/engineering_spec.md`, `doc/routing_policy.md`, `README.md`
 
 ### SUBPHASE-3.9: V1 Routing/Parallelism Determinism Tests & Regression Gates
 <!-- SUBPHASE:3.9 -->
