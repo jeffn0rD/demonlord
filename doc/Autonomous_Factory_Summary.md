@@ -37,6 +37,7 @@ The factory operates on an event-driven orchestration state machine (implemented
 ### 2. Orchestration & Spawning (`/implement`)
 *   The Orchestrator reads the plan.
 *   It invokes the `matchmaker.ts` tool, passing the task requirements to find the exact Minion Skill (e.g., `frontend-specialist`) matching the job.
+*   V1 routing is tasklist-explicit: each runnable task provides `execution.role` and `execution.tier` metadata, and orchestrator resolves concrete agent IDs from config-defined role/tier pools.
 *   For ambiguous/spec-heavy requests, it runs a spec-first pass and requires a marker artifact (`_bmad-output/spec-handoff-<taskID>.md`) with scope/constraints before coding begins.
 *   A bash script (`spawn_worktree.sh`) generates an isolated sibling directory.
 *   The specialized minion is spawned headlessly inside the worktree using the OpenCode SDK.
@@ -56,6 +57,7 @@ The factory operates on an event-driven orchestration state machine (implemented
 *   Default mode is `manual` for development/testing reliability.
 *   Operators use explicit controls (`/pipeline status`, `/pipeline advance`, `/pipeline stop`, `/pipeline off`) instead of relying on inferred stage from session titles.
 *   Spawn approvals can be enforced before child creation and supported through local command paths even when Discord is unavailable.
+*   Execution order and parallel overlap are tracked in `_bmad-output/execution-graph.ndjson` for concise machine-readable auditing.
 
 ---
 
