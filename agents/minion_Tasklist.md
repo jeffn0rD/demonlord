@@ -361,3 +361,19 @@ Agents should execute one subphase at a time. To trigger implementation, the Lea
 - **T-5.3.2** (Refs #1): Extend bootstrap workflow to support one-command provisioning in fresh repos (dependencies, `pipelinectl` shims, minimum config defaults) with deterministic outputs. Touch points: `scripts/bootstrap.sh`, `.opencode/`, `demonlord.config.json`
 <!-- TASK:T-5.3.3 -->
 - **T-5.3.3** (Refs #1): Add installer verification checks and docs for first-run validation (`opencode` start, `pipelinectl status`, required env placeholders). Touch points: `USAGE.md`, `README.md`, `doc/engineering_spec.md`
+
+### SUBPHASE-5.4: Configurable Pipeline Command Short-Circuit Strategies
+<!-- SUBPHASE:5.4 -->
+**Goal:** Add a configurable fallback strategy to stop `/pipeline` control commands from reaching an LLM turn when hook-level no-reply behavior is unreliable.
+**Entry criteria:** SUBPHASE-5.3 complete.
+**Exit criteria / QA checklist:**
+- [ ] A new orchestration configuration setting selects command short-circuit strategy for `/pipeline` controls.
+- [ ] Default behavior remains backward compatible with existing no-reply flow.
+- [ ] A fallback strategy can intentionally raise a controlled pre-hook error to halt downstream LLM request issuance when enabled.
+- [ ] Plugin tests cover strategy selection, command behavior, and safety guards.
+**Proposed PR title:** feat: add configurable pipeline command short-circuit strategies
+**Proposed commit message:** feat: add config-driven pipeline command short-circuit fallback strategies for control commands (Refs #1)
+
+**Tasks:**
+<!-- TASK:T-5.4.1 -->
+- **T-5.4.1** (Refs #1): Extend orchestration config and orchestrator command pre-hook handling to support selectable command short-circuit strategies for `/pipeline`, including an error-throw fallback mode that intentionally stops command processing before an LLM turn. Touch points: `demonlord.config.json`, `.opencode/plugins/orchestrator.ts`, `.opencode/tests/plugins/orchestrator.test.ts`, `doc/engineering_spec.md`, `USAGE.md`
