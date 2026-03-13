@@ -14,6 +14,7 @@ type OrchestrationMode = "off" | "manual" | "auto";
 type StopReason = "manual" | "global_off" | "completed";
 type ExecutionRole = "planning" | "implementation" | "review";
 type ExecutionTier = "lite" | "standard" | "pro";
+type PipelineCommandShortCircuitStrategy = "no_reply" | "prehook_error";
 
 interface TaskRoutingSettings {
   source: "tasklist_explicit";
@@ -28,6 +29,7 @@ interface OrchestrationSettings {
   requireApprovalBeforeSpawn: boolean;
   ignoreAbortedMessages: boolean;
   verboseEvents: boolean;
+  pipelineCommandShortCircuit: PipelineCommandShortCircuitStrategy;
   taskRouting: TaskRoutingSettings;
   agentPools: AgentPools;
   parallelism: ParallelismSettings;
@@ -314,6 +316,7 @@ const defaultOrchestrationSettings: OrchestrationSettings = {
   requireApprovalBeforeSpawn: true,
   ignoreAbortedMessages: true,
   verboseEvents: true,
+  pipelineCommandShortCircuit: "no_reply",
   taskRouting: {
     source: "tasklist_explicit",
     defaultTier: "standard",
@@ -431,7 +434,7 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
       await handlePipelineCommand(commandInput);
 
       output.parts = [];
-      setNoReplyIfSupported(output);
+      applyPipelineCommandShortCircuit(output, settings.pipelineCommandShortCircuit);
     },
     "shell.env": async (input, output) => {
       const toolsPath = resolve(worktree, "agents", "tools");
@@ -2631,6 +2634,7 @@ async function loadOrchestrationSettings(worktree: string): Promise<Orchestratio
         require_approval_before_spawn?: unknown;
         ignore_aborted_messages?: unknown;
         verbose_events?: unknown;
+        pipeline_command_short_circuit?: unknown;
         task_routing?: unknown;
         agent_pools?: unknown;
         parallelism?: unknown;
@@ -2662,6 +2666,7 @@ async function loadOrchestrationSettings(worktree: string): Promise<Orchestratio
         typeof config.verbose_events === "boolean"
           ? config.verbose_events
           : defaultOrchestrationSettings.verboseEvents,
+      pipelineCommandShortCircuit: parsePipelineCommandShortCircuitStrategy(config.pipeline_command_short_circuit),
       taskRouting: parseTaskRoutingSettings(config.task_routing),
       agentPools: parseAgentPools(config.agent_pools),
       parallelism: parseParallelismSettings(config.parallelism),
@@ -2931,6 +2936,14 @@ function parseExecutionGraphSettings(input: unknown): ExecutionGraphSettings {
     path,
     verbosity,
   };
+}
+
+function parsePipelineCommandShortCircuitStrategy(input: unknown): PipelineCommandShortCircuitStrategy {
+  if (input === "prehook_error" || input === "no_reply") {
+    return input;
+  }
+
+  return defaultOrchestrationSettings.pipelineCommandShortCircuit;
 }
 
 function parsePositiveLimit(candidate: unknown, fallback: number): number {
@@ -3694,6 +3707,26 @@ function setNoReplyIfSupported(output: { parts: unknown[] }): void {
   mutable.noReply = true;
 }
 
+class PipelineControlPrehookStopError extends Error {
+  code = "DEMONLORD_PIPELINE_PREHOOK_STOP";
+
+  constructor() {
+    super("Demonlord halted '/pipeline' command in pre-hook to short-circuit LLM request issuance (strategy=prehook_error).");
+    this.name = "PipelineControlPrehookStopError";
+  }
+}
+
+function applyPipelineCommandShortCircuit(
+  output: { parts: unknown[] },
+  strategy: PipelineCommandShortCircuitStrategy,
+): void {
+  if (strategy === "prehook_error") {
+    throw new PipelineControlPrehookStopError();
+  }
+
+  setNoReplyIfSupported(output);
+}
+
 async function validateSpecHandoffMarkerFile(filePath: string): Promise<{ ok: boolean; missing: string[] }> {
   try {
     const content = await readFile(filePath, "utf-8");
@@ -4310,6 +4343,7 @@ export const __orchestratorTestUtils = {
   parseAgentPools,
   parseJsonc,
   parseTaskExecutionMetadata,
+  parsePipelineCommandShortCircuitStrategy,
   parseTaskRoutingSettings,
   parseExecutionGraphSettings,
   normalizeErrorSignature,
@@ -4321,6 +4355,7 @@ export const __orchestratorTestUtils = {
   shouldIgnoreError,
   splitCommandQueueLines,
   pruneProcessedCommandDedupes,
+  applyPipelineCommandShortCircuit,
   setNoReplyIfSupported,
   shouldPreferSpecExpertFirst,
   validateSpecHandoffMarkerContent,

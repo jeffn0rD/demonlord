@@ -53,6 +53,7 @@ describe("orchestrator snapshot and queue helpers", () => {
         requireApprovalBeforeSpawn: true,
         ignoreAbortedMessages: true,
         verboseEvents: true,
+        pipelineCommandShortCircuit: "no_reply",
         taskRouting: {
           source: "tasklist_explicit",
           defaultTier: "standard",
@@ -141,6 +142,30 @@ describe("orchestrator snapshot and queue helpers", () => {
     assert.equal(output.noReply, true);
   });
 
+  test("parses pipeline command short-circuit strategy with safe default", () => {
+    const fallback = __orchestratorTestUtils.parsePipelineCommandShortCircuitStrategy("unexpected");
+    const noReply = __orchestratorTestUtils.parsePipelineCommandShortCircuitStrategy("no_reply");
+    const prehookError = __orchestratorTestUtils.parsePipelineCommandShortCircuitStrategy("prehook_error");
+
+    assert.equal(fallback, "no_reply");
+    assert.equal(noReply, "no_reply");
+    assert.equal(prehookError, "prehook_error");
+  });
+
+  test("applies pipeline short-circuit strategy deterministically", () => {
+    const output: { parts: unknown[]; noReply?: boolean } = {
+      parts: [],
+    };
+
+    __orchestratorTestUtils.applyPipelineCommandShortCircuit(output, "no_reply");
+    assert.equal(output.noReply, true);
+
+    assert.throws(
+      () => __orchestratorTestUtils.applyPipelineCommandShortCircuit({ parts: [] }, "prehook_error"),
+      /strategy=prehook_error/i,
+    );
+  });
+
   test("ignores MessageAbortedError only in manual mode when configured", () => {
     const manualIgnored = __orchestratorTestUtils.shouldIgnoreError(
       { name: "MessageAbortedError", message: "aborted" },
@@ -150,6 +175,7 @@ describe("orchestrator snapshot and queue helpers", () => {
         requireApprovalBeforeSpawn: true,
         ignoreAbortedMessages: true,
         verboseEvents: false,
+        pipelineCommandShortCircuit: "no_reply",
         taskRouting: {
           source: "tasklist_explicit",
           defaultTier: "standard",
@@ -170,6 +196,7 @@ describe("orchestrator snapshot and queue helpers", () => {
         requireApprovalBeforeSpawn: true,
         ignoreAbortedMessages: true,
         verboseEvents: false,
+        pipelineCommandShortCircuit: "no_reply",
         taskRouting: {
           source: "tasklist_explicit",
           defaultTier: "standard",

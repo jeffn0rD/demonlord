@@ -360,7 +360,8 @@ Config Schema Contract (migration-safe)
       "enabled": true,
       "path": "_bmad-output/execution-graph.ndjson",
       "verbosity": "concise"
-    }
+    },
+    "pipeline_command_short_circuit": "no_reply"
   }
 }
 ```
@@ -371,7 +372,13 @@ Default and backward-compatibility behavior:
 * If `task_routing` is absent, runtime MUST assume `source="tasklist_explicit"` and `default_tier="standard"` while preserving legacy fallback when metadata is missing.
 * If `parallelism` is absent, effective limits MUST default to `1` for total/role/tier (single-flight behavior).
 * If `execution_graph` is absent, runtime MUST default to enabled concise logging at `_bmad-output/execution-graph.ndjson`.
+* If `pipeline_command_short_circuit` is absent or invalid, runtime MUST default to `no_reply`.
 * Orchestrator MUST continue to treat tasklist metadata as the sole V1 tier source and MUST NOT derive tier from heuristic complexity signals.
+
+Pipeline command short-circuit strategy (`orchestration.pipeline_command_short_circuit`):
+
+* `no_reply` (default): the pre-hook handles `/pipeline` and sets `output.noReply=true` (backward-compatible behavior).
+* `prehook_error` (fallback): after deterministic command handling, the pre-hook raises a controlled error to intentionally halt downstream LLM request issuance on cores where no-reply behavior is unreliable.
 
 V1 Acceptance Criteria (pass/fail)
 

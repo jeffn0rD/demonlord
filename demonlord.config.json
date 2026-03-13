@@ -14,6 +14,7 @@
     "require_approval_before_spawn": true,
     "ignore_aborted_messages": true,
     "verbose_events": true,
+    "pipeline_command_short_circuit": "no_reply",
     "agent_pools": {
       "planning": {
         "lite": ["planner-lite", "planner"],

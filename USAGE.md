@@ -263,6 +263,7 @@ Discord integration is configured in `demonlord.config.json`:
 - **`orchestration.parallelism.max_parallel_by_role`**: Per-role caps
 - **`orchestration.parallelism.max_parallel_by_tier`**: Per-tier caps
 - **`orchestration.execution_graph.enabled|path|verbosity`**: Concise NDJSON execution graph output controls
+- **`orchestration.pipeline_command_short_circuit`**: `/pipeline` pre-hook short-circuit strategy (`no_reply` default, `prehook_error` fallback)
 - **`discord.enabled`**: Enable/disable Discord integration
 - **`discord.personas`**: Agent-specific Discord persona settings
 
@@ -304,7 +305,7 @@ When execution graph logging is enabled, events are written to `_bmad-output/exe
 
 **`/pipeline` commands show reasoning text before output**
 - **Solution**: Apply the local OpenCode command-hook patch in `doc/opencode_command_noReply_patch.md`
-- **Check**: Confirm Demonlord pre-hooks set `output.noReply = true` for `/pipeline` and `/approve` on patched core builds
+- **Check**: Confirm `orchestration.pipeline_command_short_circuit` is `no_reply` for patched builds, or switch to `prehook_error` to force a controlled pre-hook stop on unpatched cores
 
 **`pipelinectl` rejects command as stale/invalid**
 - **Solution**: Run `pipelinectl status` and retry with the latest state
