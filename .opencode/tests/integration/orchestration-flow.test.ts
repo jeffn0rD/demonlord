@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { mkdtemp, readFile, rm, writeFile } from "fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "fs/promises";
 import { tmpdir } from "os";
 import { join, resolve } from "path";
 import type { Event, Session } from "@opencode-ai/sdk";
@@ -40,6 +40,28 @@ interface PipelineFixture {
   currentStage: PipelineStage;
   transition: TransitionState;
   sessions: Record<string, PipelineSessionFixture>;
+  routing?: {
+    skillID?: string;
+    mode?: "llm" | "heuristic";
+    reason?: string;
+    agentID?: string;
+    role?: "planning" | "implementation" | "review";
+    tier?: "lite" | "standard" | "pro";
+    taskRef?: string;
+    metadataSource?: "tasklist" | "legacy";
+  };
+  taskTraversal?: {
+    taskDescription?: string;
+    taskRef?: string;
+    tasklistPath?: string;
+  };
+  specHandoff?: {
+    required: boolean;
+    completed: boolean;
+    markerPath: string;
+    markerSessionID?: string;
+    targetSkillID: string;
+  };
   terminalNotified: boolean;
   stopped: boolean;
   stopReason?: "manual" | "global_off" | "completed";
@@ -105,14 +127,18 @@ describe("orchestration off/on control semantics", () => {
       },
     };
 
-    __orchestratorTestUtils.applyGlobalOffToPipelines(pipelines);
+    __orchestratorTestUtils.applyGlobalOffToPipelines(
+      pipelines as unknown as Parameters<typeof __orchestratorTestUtils.applyGlobalOffToPipelines>[0],
+    );
 
     assert.equal(pipelines.manual.stopReason, "manual");
     assert.equal(pipelines.queued.stopReason, "global_off");
     assert.equal(pipelines.queued.transition, "stopped");
     assert.equal(pipelines.terminal.stopReason, "completed");
 
-    const resumed = __orchestratorTestUtils.applyGlobalOnToPipelines(pipelines);
+    const resumed = __orchestratorTestUtils.applyGlobalOnToPipelines(
+      pipelines as unknown as Parameters<typeof __orchestratorTestUtils.applyGlobalOnToPipelines>[0],
+    );
 
     assert.equal(resumed, 1);
     assert.equal(pipelines.manual.stopReason, "manual");
@@ -319,6 +345,278 @@ describe("orchestrator integration flow", () => {
     }
   });
 
+  test("uses tasklist EXECUTION metadata as primary runtime routing source", async () => {
+    const root = await mkdtemp(join(tmpdir(), "orchestrator-routing-explicit-"));
+
+    try {
+      await writeConfig(
+        root,
+        {
+          enabled: true,
+          mode: "auto",
+          require_approval_before_spawn: false,
+          ignore_aborted_messages: true,
+          verbose_events: false,
+        },
+        {
+          task_routing: { source: "tasklist_explicit", default_tier: "standard" },
+          agent_pools: {
+            implementation: {
+              pro: ["minion-pro"],
+              standard: ["minion-standard"],
+            },
+          },
+        },
+      );
+      await writeOpencodeAgentConfig(root, ["planner", "minion", "minion-standard", "minion-pro", "reviewer"]);
+      await writeSpawnWorktreeScript(root);
+      await writeTasklist(
+        root,
+        "minion_Tasklist.md",
+        [
+          "<!-- TASK:T-3.7.7 -->",
+          '<!-- EXECUTION:{"execution":{"role":"implementation","tier":"pro","skill":"orchestration-specialist","parallel_group":"routing-remediation","depends_on":["T-3.7.3"]}} -->',
+          "- [ ] **T-3.7.7**: preserve execution target across spec handoff.",
+        ].join("\n"),
+      );
+
+      const client = createMockClient(root);
+      const plugin = await createPlugin(client, root);
+
+      await emitEvent(
+        plugin,
+        sessionCreatedEvent("ses-root-explicit", root, "triage: execute T-3.7.7 from minion_Tasklist.md"),
+      );
+      await emitEvent(plugin, sessionIdleEvent("ses-root-explicit"));
+
+      const snapshot = await readSnapshot<PipelineFixture>(root);
+      const pipeline = snapshot.pipelines["ses-root-explicit"];
+
+      assert.equal(pipeline.transition, "completed");
+      assert.equal(pipeline.currentStage, "implementation");
+      assert.equal(pipeline.routing?.skillID, "orchestration-specialist");
+      assert.equal(pipeline.routing?.agentID, "minion-pro");
+      assert.equal(pipeline.routing?.role, "implementation");
+      assert.equal(pipeline.routing?.tier, "pro");
+      assert.equal(pipeline.routing?.taskRef, "T-3.7.7");
+      assert.equal(pipeline.routing?.metadataSource, "tasklist");
+      assert.match(pipeline.taskTraversal?.tasklistPath ?? "", /minion_Tasklist\.md$/);
+      assert.equal(client.creates.length, 1);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("emits warning-level fallback when EXECUTION metadata is missing", async () => {
+    const root = await mkdtemp(join(tmpdir(), "orchestrator-routing-warning-"));
+
+    try {
+      await writeConfig(
+        root,
+        {
+          enabled: true,
+          mode: "auto",
+          require_approval_before_spawn: false,
+          ignore_aborted_messages: true,
+          verbose_events: false,
+        },
+        {
+          task_routing: { source: "tasklist_explicit", default_tier: "standard" },
+          agent_pools: {
+            implementation: {
+              standard: ["minion-standard"],
+            },
+          },
+        },
+      );
+      await writeOpencodeAgentConfig(root, ["planner", "minion", "minion-standard", "reviewer"]);
+      await writeSkillCatalog(root, ["backend-specialist"]);
+      await writeSpawnWorktreeScript(root);
+      await writeTasklist(
+        root,
+        "minion_Tasklist.md",
+        [
+          "<!-- TASK:T-3.7.8 -->",
+          "- [ ] **T-3.7.8**: metadata lookup must use persisted traversal context.",
+        ].join("\n"),
+      );
+
+      const client = createMockClient(root);
+      const plugin = await createPlugin(client, root);
+
+      await emitEvent(
+        plugin,
+        sessionCreatedEvent(
+          "ses-root-warning",
+          root,
+          "triage: execute T-3.7.8 from minion_Tasklist.md with deterministic fallback",
+        ),
+      );
+      await emitEvent(plugin, sessionIdleEvent("ses-root-warning"));
+
+      const snapshot = await readSnapshot<PipelineFixture>(root);
+      const pipeline = snapshot.pipelines["ses-root-warning"];
+      const eventLog = await readEventLog(root);
+
+      assert.equal(pipeline.routing?.metadataSource, "legacy");
+      assert.equal(pipeline.routing?.taskRef, "T-3.7.8");
+      assert.equal(eventLog.some((entry) => entry.type === "routing_warning"), true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("blocks deterministic routing when requested tier pool is unresolved", async () => {
+    const root = await mkdtemp(join(tmpdir(), "orchestrator-routing-blocked-"));
+
+    try {
+      await writeConfig(
+        root,
+        {
+          enabled: true,
+          mode: "auto",
+          require_approval_before_spawn: false,
+          ignore_aborted_messages: true,
+          verbose_events: false,
+        },
+        {
+          task_routing: { source: "tasklist_explicit", default_tier: "standard" },
+          agent_pools: {
+            implementation: {
+              pro: ["minion-pro"],
+              standard: ["minion-standard"],
+            },
+          },
+        },
+      );
+      await writeOpencodeAgentConfig(root, ["reviewer"]);
+      await writeTasklist(
+        root,
+        "minion_Tasklist.md",
+        [
+          "<!-- TASK:T-3.7.9 -->",
+          '<!-- EXECUTION:{"execution":{"role":"implementation","tier":"pro","skill":"orchestration-specialist","parallel_group":"routing-remediation"}} -->',
+          "- [ ] **T-3.7.9**: fail closed when configured pool is unresolved.",
+        ].join("\n"),
+      );
+
+      const client = createMockClient(root);
+      const plugin = await createPlugin(client, root);
+
+      await emitEvent(
+        plugin,
+        sessionCreatedEvent("ses-root-blocked", root, "triage: execute T-3.7.9 from minion_Tasklist.md"),
+      );
+      await emitEvent(plugin, sessionIdleEvent("ses-root-blocked"));
+
+      const snapshot = await readSnapshot<PipelineFixture>(root);
+      const pipeline = snapshot.pipelines["ses-root-blocked"];
+      const eventLog = await readEventLog(root);
+
+      assert.equal(pipeline.transition, "blocked");
+      assert.equal(pipeline.currentStage, "triage");
+      assert.equal(client.creates.length, 0);
+      assert.equal(eventLog.some((entry) => entry.type === "task_blocked"), true);
+      assert.equal(
+        client.prompts.some(
+          (entry) =>
+            entry.sessionID === "ses-root-blocked" && entry.text.includes("Pipeline is blocked before implementation spawn"),
+        ),
+        true,
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("spec handoff continuation preserves resolved execution target", async () => {
+    const root = await mkdtemp(join(tmpdir(), "orchestrator-routing-handoff-"));
+
+    try {
+      await writeConfig(
+        root,
+        {
+          enabled: true,
+          mode: "auto",
+          require_approval_before_spawn: false,
+          ignore_aborted_messages: true,
+          verbose_events: false,
+        },
+        {
+          task_routing: { source: "tasklist_explicit", default_tier: "standard" },
+          agent_pools: {
+            implementation: {
+              standard: ["minion-standard"],
+            },
+          },
+        },
+      );
+      await writeOpencodeAgentConfig(root, ["planner", "minion", "minion-standard", "reviewer"]);
+      await writeSkillCatalog(root, ["spec-expert", "backend-specialist"]);
+      await writeSpawnWorktreeScript(root);
+      await writeTasklist(
+        root,
+        "minion_Tasklist.md",
+        [
+          "<!-- TASK:T-3.7.10 -->",
+          '<!-- EXECUTION:{"execution":{"role":"implementation","tier":"standard","parallel_group":"routing-remediation-tests","depends_on":["T-3.7.7","T-3.7.8","T-3.7.9"]}} -->',
+          "- [ ] **T-3.7.10**: add runtime regression coverage.",
+        ].join("\n"),
+      );
+
+      const client = createMockClient(root);
+      const plugin = await createPlugin(client, root);
+
+      await emitEvent(
+        plugin,
+        sessionCreatedEvent(
+          "ses-root-handoff",
+          root,
+          "triage: execute T-3.7.10 from minion_Tasklist.md requirements are unclear and need recommendation",
+        ),
+      );
+      await emitEvent(plugin, sessionIdleEvent("ses-root-handoff"));
+
+      const beforeHandoff = await readSnapshot<PipelineFixture>(root);
+      const handoffPipeline = beforeHandoff.pipelines["ses-root-handoff"];
+      const markerPath = handoffPipeline.specHandoff?.markerPath;
+      assert.equal(typeof markerPath, "string");
+      assert.equal(handoffPipeline.specHandoff?.completed, false);
+      assert.equal(handoffPipeline.routing?.agentID, "minion-standard");
+      assert.equal(handoffPipeline.routing?.role, "implementation");
+      assert.equal(handoffPipeline.routing?.tier, "standard");
+      assert.equal(handoffPipeline.routing?.taskRef, "T-3.7.10");
+
+      await writeFile(
+        markerPath as string,
+        [
+          "# Spec Handoff",
+          "<!-- DEMONLORD_SPEC_HANDOFF_READY -->",
+          "## Scope",
+          "- implement deterministic routing safeguards",
+          "## Constraints",
+          "- preserve resolved execution target",
+        ].join("\n"),
+        "utf-8",
+      );
+
+      await emitEvent(plugin, sessionIdleEvent("ses-child-1"));
+
+      const afterHandoff = await readSnapshot<PipelineFixture>(root);
+      const resumed = afterHandoff.pipelines["ses-root-handoff"];
+
+      assert.equal(resumed.specHandoff?.completed, true);
+      assert.equal(resumed.routing?.skillID, "backend-specialist");
+      assert.equal(resumed.routing?.agentID, "minion-standard");
+      assert.equal(resumed.routing?.role, "implementation");
+      assert.equal(resumed.routing?.tier, "standard");
+      assert.equal(resumed.routing?.taskRef, "T-3.7.10");
+      assert.equal(client.creates.length, 2);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
 });
 
 interface MockClient {
@@ -453,8 +751,72 @@ async function writeConfig(
     ignore_aborted_messages: boolean;
     verbose_events: boolean;
   },
+  overrides?: Record<string, unknown>,
 ): Promise<void> {
-  await writeFile(resolve(root, "demonlord.config.json"), `${JSON.stringify({ orchestration }, null, 2)}\n`, "utf-8");
+  await writeFile(
+    resolve(root, "demonlord.config.json"),
+    `${JSON.stringify({ orchestration: { ...orchestration, ...(overrides ?? {}) } }, null, 2)}\n`,
+    "utf-8",
+  );
+}
+
+async function writeOpencodeAgentConfig(root: string, agentIDs: string[]): Promise<void> {
+  const agentEntries = Object.fromEntries(
+    agentIDs.map((agentID) => [agentID, { mode: "subagent", description: `${agentID} test agent` }]),
+  );
+
+  await mkdir(resolve(root, ".opencode"), { recursive: true });
+  await writeFile(
+    resolve(root, ".opencode", "opencode.jsonc"),
+    `${JSON.stringify({ agent: agentEntries }, null, 2)}\n`,
+    "utf-8",
+  );
+}
+
+async function writeTasklist(root: string, fileName: string, content: string): Promise<void> {
+  await mkdir(resolve(root, "agents"), { recursive: true });
+  await writeFile(resolve(root, "agents", fileName), `${content}\n`, "utf-8");
+}
+
+async function writeSkillCatalog(root: string, skillIDs: string[]): Promise<void> {
+  const skillsRoot = resolve(root, ".opencode", "skills");
+  await mkdir(skillsRoot, { recursive: true });
+
+  for (const skillID of skillIDs) {
+    const directory = resolve(skillsRoot, skillID);
+    await mkdir(directory, { recursive: true });
+    const skillBody = [
+      "---",
+      `name: ${skillID}`,
+      `description: ${skillID} test skill`,
+      "---",
+      "",
+      "## Routing Hints",
+      skillID === "spec-expert"
+        ? "- ambiguity requirements tasklist recommendation"
+        : "- implementation backend api coding",
+    ].join("\n");
+    await writeFile(resolve(directory, "SKILL.md"), `${skillBody}\n`, "utf-8");
+  }
+}
+
+async function writeSpawnWorktreeScript(root: string): Promise<void> {
+  const toolsRoot = resolve(root, "agents", "tools");
+  await mkdir(toolsRoot, { recursive: true });
+
+  const scriptPath = resolve(toolsRoot, "spawn_worktree.sh");
+  const script = [
+    "#!/usr/bin/env bash",
+    "set -euo pipefail",
+    "task_id=\"${1:-task}\"",
+    "worktree_path=\"$PWD/.tmp-worktrees/$task_id\"",
+    "mkdir -p \"$worktree_path/_bmad-output\"",
+    "printf 'Created worktree: %s\\n' \"$worktree_path\"",
+    "printf 'Branch: %s\\n' \"test-$task_id\"",
+  ].join("\n");
+
+  await writeFile(scriptPath, `${script}\n`, "utf-8");
+  await chmod(scriptPath, 0o755);
 }
 
 async function readSnapshot<TPipeline = PipelineFixture>(root: string): Promise<{

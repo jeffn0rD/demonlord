@@ -197,10 +197,11 @@ V1 role families and tiers:
 Deterministic selection rules:
 
 1. The orchestrator MUST identify the selected task from persisted task traversal context (`taskRef`, `tasklistPath`); session-title parsing is diagnostic-only.
+   - This context MUST be persisted in pipeline state and reused for metadata lookup across approvals, retries, and resumed idle events.
 2. It MUST read `execution.role` and `execution.tier` from that task's adjacent metadata block.
 3. It MUST resolve candidates from `orchestration.agent_pools[role][tier]` in listed order.
 4. It MUST select the first candidate that exists under `.opencode/opencode.jsonc.agent`.
-5. If `.opencode/opencode.jsonc` cannot be read or parsed, agent resolution MUST fail closed (`task_blocked`) with explicit reason logging.
+5. If `.opencode/opencode.jsonc` cannot be read or parsed, agent resolution MUST fail closed (`task_blocked`) with explicit reason logging that includes the config load/parsing failure.
 6. If no candidate exists, it MUST apply deterministic fallback in this order:
    a) `orchestration.task_routing.default_tier` for the same role;
    b) legacy singleton ID (`planner` | `minion` | `reviewer`) for that role;

@@ -44,6 +44,12 @@ interface RoutingContext {
   metadataSource?: "tasklist" | "legacy";
 }
 
+interface TaskTraversalContext {
+  taskDescription?: string;
+  taskRef?: string;
+  tasklistPath?: string;
+}
+
 interface TaskExecutionMetadata {
   taskRef: string;
   role: ExecutionRole;
@@ -101,6 +107,15 @@ interface SpecHandoffState {
   targetSkillID: string;
   targetRoutingMode: RouteResult["mode"];
   targetReason: string;
+  targetExecution?: {
+    agentID: string;
+    role: ExecutionRole;
+    tier: ExecutionTier;
+    taskRef?: string;
+    parallelGroup?: string;
+    dependsOn?: string[];
+    metadataSource: "tasklist" | "legacy";
+  };
   completedAt?: number;
 }
 
@@ -150,6 +165,7 @@ interface PipelineState {
   pendingTransition?: PendingTransition;
   nextSessionID?: string;
   routing?: RoutingContext;
+  taskTraversal?: TaskTraversalContext;
   worktree?: WorktreeContext;
   specHandoff?: SpecHandoffState;
   terminalNotified: boolean;
@@ -187,6 +203,7 @@ interface PipelineSummary {
   pendingTransition?: PendingTransition;
   nextSessionID?: string;
   routing?: RoutingContext;
+  taskTraversal?: TaskTraversalContext;
   worktree?: WorktreeContext;
   specHandoff?: SpecHandoffState;
 }
@@ -196,6 +213,12 @@ interface CommandQueueState {
   lastProcessedLine: number;
   lastProcessedAt?: string;
   processedDedupes: Record<string, number>;
+}
+
+interface ConfiguredAgentCatalog {
+  ids: Set<string>;
+  sourcePath: string;
+  loadError?: string;
 }
 
 interface PipelineReference {
@@ -300,7 +323,7 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
   const commandQueuePath = resolve(worktree, "_bmad-output", "orchestration-commands.ndjson");
   const shellBootstrapPath = resolve(worktree, "_bmad-output", "pipelinectl-shell.env.sh");
   const spawnScriptPath = resolve(worktree, "agents", "tools", "spawn_worktree.sh");
-  const configuredAgentIDs = await loadConfiguredAgentIDs(worktree);
+  const configuredAgentCatalog = await loadConfiguredAgentIDs(worktree);
   const idleInFlight = new Set<string>();
   const preHandledCommands = new Map<string, number>();
   const state = await loadPersistedState(statePath, commandQueuePath, settings);
@@ -632,6 +655,16 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
     handoff.markerSessionID = session.sessionID;
     session.status = "completed";
 
+    const preservedTarget = handoff.targetExecution ?? {
+      agentID: pipeline.routing?.agentID ?? LEGACY_ROLE_AGENT.implementation,
+      role: pipeline.routing?.role ?? "implementation",
+      tier: pipeline.routing?.tier ?? defaultOrchestrationSettings.taskRouting.defaultTier,
+      taskRef: pipeline.routing?.taskRef,
+      parallelGroup: pipeline.routing?.parallelGroup,
+      dependsOn: pipeline.routing?.dependsOn,
+      metadataSource: pipeline.routing?.metadataSource ?? "legacy",
+    };
+
     const taskID = pipeline.worktree?.taskID ?? sanitizeTitleSegment(rootSessionID);
     const implementationDirectory = pipeline.worktree?.worktreePath ?? session.directory ?? worktree;
 
@@ -659,6 +692,13 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
         skillID: handoff.targetSkillID,
         mode: handoff.targetRoutingMode,
         reason: `Spec handoff marker verified at ${handoff.markerPath}. ${handoff.targetReason}`,
+        agentID: preservedTarget.agentID,
+        role: preservedTarget.role,
+        tier: preservedTarget.tier,
+        taskRef: preservedTarget.taskRef,
+        parallelGroup: preservedTarget.parallelGroup,
+        dependsOn: preservedTarget.dependsOn,
+        metadataSource: preservedTarget.metadataSource,
       };
       pipeline.nextSessionID = childSession.id;
       pipeline.transition = "idle";
@@ -684,7 +724,7 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
         buildImplementationPrompt(taskDescription, pipeline, childSession.id),
         false,
         implementationDirectory,
-        pipeline.routing?.agentID ?? "minion",
+        preservedTarget.agentID,
       );
 
       await promptSession(
@@ -1255,9 +1295,17 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
     }
 
     const session = await getSession(triageSession.sessionID, triageSession.directory);
-    const taskDescription = extractTaskDescription(session?.title ?? triageSession.sessionID);
-    const executionLookup = await resolveTaskExecutionMetadata(worktree, taskDescription);
+    const fallbackTaskDescription = extractTaskDescription(session?.title ?? triageSession.sessionID);
+    const traversalContext = await resolveTaskTraversalContext(worktree, {
+      taskDescription: fallbackTaskDescription,
+      existing: pipeline.taskTraversal,
+    });
+    pipeline.taskTraversal = traversalContext;
+
+    const taskDescription = traversalContext.taskDescription ?? fallbackTaskDescription;
+    const executionLookup = await resolveTaskExecutionMetadata(traversalContext);
     const executionMetadata = executionLookup.metadata;
+    const taskRef = executionMetadata?.taskRef ?? traversalContext.taskRef;
 
     if (executionLookup.warning) {
       await recordEvent(pipeline, {
@@ -1275,7 +1323,7 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
         sessionID: triageSession.sessionID,
         parentSessionID: triageSession.parentSessionID ?? rootSessionID,
         stage: "triage",
-        taskRef: executionMetadata?.taskRef ?? "n/a",
+        taskRef: taskRef ?? "n/a",
         agentID: "n/a",
         tier: executionMetadata?.tier ?? settings.taskRouting.defaultTier,
         skillID: executionMetadata?.skillID ?? "n/a",
@@ -1293,7 +1341,9 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
       requestedTier,
       defaultTier: settings.taskRouting.defaultTier,
       agentPools: settings.agentPools,
-      configuredAgentIDs,
+      configuredAgentIDs: configuredAgentCatalog.ids,
+      configuredAgentSourceError: configuredAgentCatalog.loadError,
+      configuredAgentSourcePath: configuredAgentCatalog.sourcePath,
     });
 
     if (!agentResolution.ok || !agentResolution.agentID || !agentResolution.tier) {
@@ -1312,7 +1362,7 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
           reason: blockedReason,
           role: requestedRole,
           tier: requestedTier,
-          taskRef: executionMetadata?.taskRef ?? "unknown",
+          taskRef: taskRef ?? "unknown",
         },
       });
 
@@ -1321,7 +1371,7 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
         sessionID: triageSession.sessionID,
         parentSessionID: triageSession.parentSessionID ?? rootSessionID,
         stage: "triage",
-        taskRef: executionMetadata?.taskRef ?? "n/a",
+        taskRef: taskRef ?? "n/a",
         agentID: "unresolved",
         tier: requestedTier,
         skillID: executionMetadata?.skillID ?? "n/a",
@@ -1364,7 +1414,7 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
         sessionID: triageSession.sessionID,
         parentSessionID: triageSession.parentSessionID ?? rootSessionID,
         stage: "triage",
-        taskRef: executionMetadata?.taskRef ?? "n/a",
+        taskRef: taskRef ?? "n/a",
         agentID: agentResolution.agentID,
         tier: agentResolution.tier,
         skillID: executionMetadata?.skillID ?? "n/a",
@@ -1409,21 +1459,32 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
       }
     }
 
+    const metadataSource: "tasklist" | "legacy" = executionMetadata ? "tasklist" : "legacy";
+    const preservedExecutionTarget = {
+      agentID: agentResolution.agentID,
+      role: requestedRole,
+      tier: agentResolution.tier,
+      taskRef,
+      parallelGroup: executionMetadata?.parallelGroup,
+      dependsOn: executionMetadata?.dependsOn,
+      metadataSource,
+    };
+
     pipeline.routing = {
       skillID: routing.skill_id,
       reason: `${routing.reason} Agent resolver: ${agentResolution.reason}`,
       mode: routing.mode,
-      agentID: agentResolution.agentID,
-      role: requestedRole,
-      tier: agentResolution.tier,
-      taskRef: executionMetadata?.taskRef,
-      parallelGroup: executionMetadata?.parallelGroup,
-      dependsOn: executionMetadata?.dependsOn,
-      metadataSource: executionMetadata ? "tasklist" : "legacy",
+      agentID: preservedExecutionTarget.agentID,
+      role: preservedExecutionTarget.role,
+      tier: preservedExecutionTarget.tier,
+      taskRef: preservedExecutionTarget.taskRef,
+      parallelGroup: preservedExecutionTarget.parallelGroup,
+      dependsOn: preservedExecutionTarget.dependsOn,
+      metadataSource: preservedExecutionTarget.metadataSource,
     };
 
-    const taskID = executionMetadata?.taskRef
-      ? sanitizeTitleSegment(executionMetadata.taskRef)
+    const taskID = taskRef
+      ? sanitizeTitleSegment(taskRef)
       : buildTaskID(rootSessionID, routing.skill_id, taskDescription);
     const worktreeContext = await provisionImplementationWorktree({
       taskID,
@@ -1440,6 +1501,7 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
           targetSkillID: implementationRouting.skill_id,
           targetRoutingMode: implementationRouting.mode,
           targetReason: implementationRouting.reason,
+          targetExecution: preservedExecutionTarget,
         }
       : undefined;
     pipeline.specHandoff = specHandoff;
@@ -1547,7 +1609,9 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
       requestedTier: settings.taskRouting.defaultTier,
       defaultTier: settings.taskRouting.defaultTier,
       agentPools: settings.agentPools,
-      configuredAgentIDs,
+      configuredAgentIDs: configuredAgentCatalog.ids,
+      configuredAgentSourceError: configuredAgentCatalog.loadError,
+      configuredAgentSourcePath: configuredAgentCatalog.sourcePath,
     });
 
     const reviewAgentID = reviewAgentResolution.ok && reviewAgentResolution.agentID
@@ -1601,6 +1665,13 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
   async function registerSession(session: Session): Promise<void> {
     const rootSessionID = resolveRootSessionID(session.id, session.parentID);
     const pipeline = ensurePipeline(rootSessionID);
+
+    if (session.id === rootSessionID) {
+      pipeline.taskTraversal = await resolveTaskTraversalContext(worktree, {
+        taskDescription: extractTaskDescription(session.title ?? session.id),
+        existing: pipeline.taskTraversal,
+      });
+    }
 
     let stage: PipelineStage = "triage";
     if (session.parentID && pipeline.sessions[session.parentID]) {
@@ -1902,6 +1973,7 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
       `Pending: ${pending}`,
       `Worktree: ${pipeline.worktree?.worktreePath ?? "n/a"}`,
       `Routing: ${pipeline.routing ? `${pipeline.routing.skillID} (${pipeline.routing.mode})` : "n/a"}`,
+      `Tasklist Context: ${pipeline.taskTraversal?.tasklistPath ?? "n/a"}`,
       `Execution Target: ${
         pipeline.routing?.agentID
           ? `${pipeline.routing.agentID} [${pipeline.routing.role ?? "n/a"}/${pipeline.routing.tier ?? "n/a"}]`
@@ -2026,6 +2098,7 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
         pendingTransition: pipeline.pendingTransition,
         nextSessionID: pipeline.nextSessionID,
         routing: pipeline.routing,
+        taskTraversal: pipeline.taskTraversal,
         worktree: pipeline.worktree,
         specHandoff: pipeline.specHandoff,
       };
@@ -2343,8 +2416,29 @@ function resolveAgentFromPools(input: {
   defaultTier: ExecutionTier;
   agentPools: AgentPools;
   configuredAgentIDs: Set<string>;
+  configuredAgentSourceError?: string;
+  configuredAgentSourcePath?: string;
 }): AgentResolution {
-  const { role, requestedTier, defaultTier, agentPools, configuredAgentIDs } = input;
+  const {
+    role,
+    requestedTier,
+    defaultTier,
+    agentPools,
+    configuredAgentIDs,
+    configuredAgentSourceError,
+    configuredAgentSourcePath,
+  } = input;
+
+  if (configuredAgentSourceError) {
+    return {
+      ok: false,
+      reason: [
+        `Blocked: unable to load configured agents from ${configuredAgentSourcePath ?? ".opencode/opencode.jsonc"}.`,
+        configuredAgentSourceError,
+      ].join(" "),
+    };
+  }
+
   const rolePools = agentPools[role];
 
   const requestedAgent = firstConfiguredAgent(rolePools[requestedTier], configuredAgentIDs);
@@ -2408,26 +2502,34 @@ function firstConfiguredAgent(candidates: string[], configuredAgentIDs: Set<stri
 }
 
 function hasConfiguredAgent(agentID: string, configuredAgentIDs: Set<string>): boolean {
-  if (configuredAgentIDs.size === 0) {
-    return true;
-  }
-
   return configuredAgentIDs.has(agentID);
 }
 
-async function loadConfiguredAgentIDs(worktree: string): Promise<Set<string>> {
+async function loadConfiguredAgentIDs(worktree: string): Promise<ConfiguredAgentCatalog> {
   const configPath = resolve(worktree, ".opencode", "opencode.jsonc");
 
   try {
     const raw = await readFile(configPath, "utf-8");
     const parsed = parseJsonc(raw);
     if (!isRecord(parsed) || !isRecord(parsed.agent)) {
-      return new Set<string>();
+      return {
+        ids: new Set<string>(),
+        sourcePath: configPath,
+        loadError: "Missing or invalid top-level 'agent' object.",
+      };
     }
 
-    return new Set(Object.keys(parsed.agent));
-  } catch {
-    return new Set<string>();
+    return {
+      ids: new Set(Object.keys(parsed.agent)),
+      sourcePath: configPath,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown error while parsing JSONC.";
+    return {
+      ids: new Set<string>(),
+      sourcePath: configPath,
+      loadError: message,
+    };
   }
 }
 
@@ -2666,32 +2768,53 @@ function extractTaskDescription(title: string): string {
   return withoutPrefix || normalized;
 }
 
-async function resolveTaskExecutionMetadata(worktree: string, taskDescription: string): Promise<TaskExecutionLookup> {
-  const taskRef = extractTaskReference(taskDescription);
-  if (!taskRef) {
+async function resolveTaskTraversalContext(
+  worktree: string,
+  input: { taskDescription: string; existing?: TaskTraversalContext },
+): Promise<TaskTraversalContext> {
+  const existing = input.existing;
+  const taskDescription = existing?.taskDescription ?? input.taskDescription;
+  const taskRef = existing?.taskRef ?? extractTaskReference(taskDescription) ?? undefined;
+
+  let tasklistPath = existing?.tasklistPath;
+  if (!tasklistPath && taskRef) {
+    tasklistPath = (await resolveTasklistPath(worktree, taskDescription, taskRef)) ?? undefined;
+  }
+
+  return {
+    taskDescription,
+    taskRef,
+    tasklistPath,
+  };
+}
+
+async function resolveTaskExecutionMetadata(taskContext: TaskTraversalContext): Promise<TaskExecutionLookup> {
+  if (!taskContext.taskRef) {
     return {
       warning: [
-        "EXECUTION metadata lookup skipped because task reference was not found in task description.",
-        `Description='${taskDescription}'. Falling back to legacy routing defaults.`,
+        "EXECUTION metadata lookup skipped because persisted task traversal context is missing taskRef.",
+        `Context='${taskContext.taskDescription ?? "unknown"}'. Falling back to legacy routing defaults.`,
       ].join(" "),
     };
   }
 
-  const tasklistPath = await resolveTasklistPath(worktree, taskDescription);
-  if (!tasklistPath) {
+  if (!taskContext.tasklistPath) {
     return {
-      warning: `Could not find *_Tasklist.md for task '${taskRef}'. Falling back to legacy routing defaults.`,
+      warning: [
+        `Could not resolve persisted tasklistPath for task '${taskContext.taskRef}'.`,
+        "Falling back to legacy routing defaults.",
+      ].join(" "),
     };
   }
 
   try {
-    const content = await readFile(tasklistPath, "utf-8");
-    const parsed = parseTaskExecutionMetadata(content, tasklistPath);
-    const metadata = parsed.get(taskRef);
+    const content = await readFile(taskContext.tasklistPath, "utf-8");
+    const parsed = parseTaskExecutionMetadata(content, taskContext.tasklistPath);
+    const metadata = parsed.get(taskContext.taskRef);
     if (!metadata) {
       return {
         warning: [
-          `Missing EXECUTION metadata for '${taskRef}' in ${tasklistPath}.`,
+          `Missing EXECUTION metadata for '${taskContext.taskRef}' in ${taskContext.tasklistPath}.`,
           "Falling back to legacy role/tier routing behavior.",
         ].join(" "),
       };
@@ -2700,7 +2823,10 @@ async function resolveTaskExecutionMetadata(worktree: string, taskDescription: s
     return { metadata };
   } catch {
     return {
-      warning: `Unable to read tasklist '${tasklistPath}' for '${taskRef}'. Falling back to legacy routing defaults.`,
+      warning: [
+        `Unable to read tasklist '${taskContext.tasklistPath}' for '${taskContext.taskRef}'.`,
+        "Falling back to legacy routing defaults.",
+      ].join(" "),
     };
   }
 }
@@ -2714,7 +2840,7 @@ function extractTaskReference(taskDescription: string): string | null {
   return matched[0].toUpperCase();
 }
 
-async function resolveTasklistPath(worktree: string, taskDescription: string): Promise<string | null> {
+async function resolveTasklistPath(worktree: string, taskDescription: string, taskRef?: string): Promise<string | null> {
   const explicit = taskDescription.match(/([A-Za-z0-9_-]+_Tasklist\.md)/);
   if (explicit && explicit[1]) {
     const directPath = resolve(worktree, "agents", explicit[1]);
@@ -2729,6 +2855,20 @@ async function resolveTasklistPath(worktree: string, taskDescription: string): P
   }
 
   const discovered = await listTasklistPaths(worktree);
+  if (taskRef) {
+    for (const candidate of discovered) {
+      try {
+        const raw = await readFile(candidate, "utf-8");
+        const hasTask = new RegExp(`<!--\\s*TASK:${escapeRegExp(taskRef)}\\s*-->`, "i").test(raw);
+        if (hasTask) {
+          return candidate;
+        }
+      } catch {
+        continue;
+      }
+    }
+  }
+
   return discovered[0] ?? null;
 }
 

@@ -24,6 +24,7 @@ This document defines deterministic routing behavior for Demonlord so agent sess
 - Parser contract: orchestrator scans `<!-- TASK:... -->` markers and consumes the nearest following `<!-- EXECUTION:{...} -->` block for that task reference.
 - Task identity source MUST be persisted traversal context (`taskRef`, `tasklistPath`) captured during tasklist selection.
 - Session/request title parsing is diagnostic only and MUST NOT be an authoritative metadata lookup source.
+- Runtime MUST persist this traversal context in pipeline state and reuse it for metadata resolution, including post-approval and retry flows.
 - If traversal context is missing, orchestrator emits a warning and uses deterministic legacy fallback.
 
 Canonical metadata shape:

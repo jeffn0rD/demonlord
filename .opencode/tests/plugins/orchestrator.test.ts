@@ -339,4 +339,26 @@ describe("orchestrator snapshot and queue helpers", () => {
     assert.equal(blocked.ok, false);
     assert.match(blocked.reason, /Blocked:/);
   });
+
+  test("fails closed when configured agent catalog cannot be loaded", () => {
+    const pools = __orchestratorTestUtils.parseAgentPools({
+      implementation: {
+        standard: ["minion-standard"],
+      },
+    });
+
+    const blocked = __orchestratorTestUtils.resolveAgentFromPools({
+      role: "implementation",
+      requestedTier: "standard",
+      defaultTier: "standard",
+      agentPools: pools,
+      configuredAgentIDs: new Set(["minion-standard"]),
+      configuredAgentSourceError: "Unexpected token / in JSON at position 12",
+      configuredAgentSourcePath: "/tmp/.opencode/opencode.jsonc",
+    });
+
+    assert.equal(blocked.ok, false);
+    assert.match(blocked.reason, /unable to load configured agents/i);
+    assert.match(blocked.reason, /Unexpected token/);
+  });
 });
