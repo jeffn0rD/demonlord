@@ -7,6 +7,97 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 INSTALL_DIR="${DEMONLORD_BIN_DIR:-$HOME/.local/bin}"
 TARGET="$ROOT_DIR/agents/tools/pipelinectl.sh"
 OPENCODE_DIR="$ROOT_DIR/.opencode"
+CONFIG_FILE="$ROOT_DIR/demonlord.config.json"
+CONFIG_TEMPLATE="$ROOT_DIR/.opencode/templates/demonlord.config.default.json"
+
+DRY_RUN=0
+SKIP_DEPENDENCY_INSTALL=0
+
+usage() {
+  cat <<'EOF'
+Usage: bootstrap.sh [options]
+
+Prepare local Demonlord runtime dependencies and command shims.
+
+Options:
+  --dry-run              Print planned actions without changes.
+  --skip-deps            Skip npm install for .opencode dependencies.
+  -h, --help             Show this help message.
+EOF
+}
+
+run_cmd() {
+  if [[ $DRY_RUN -eq 1 ]]; then
+    printf '[dry-run]'
+    for part in "$@"; do
+      printf ' %q' "$part"
+    done
+    printf '\n'
+    return 0
+  fi
+  "$@"
+}
+
+write_minimum_config() {
+  if [[ -f "$CONFIG_FILE" ]]; then
+    printf 'Found existing %s\n' "$CONFIG_FILE"
+    return 0
+  fi
+
+  printf 'No demonlord.config.json found. Creating minimum defaults...\n'
+
+  if [[ -f "$CONFIG_TEMPLATE" ]]; then
+    run_cmd cp "$CONFIG_TEMPLATE" "$CONFIG_FILE"
+    return 0
+  fi
+
+  if [[ $DRY_RUN -eq 1 ]]; then
+    printf '[dry-run] write minimum config at %s\n' "$CONFIG_FILE"
+    return 0
+  fi
+
+  cat > "$CONFIG_FILE" <<'EOF'
+{
+  "worktrees": {
+    "directory": "../worktrees",
+    "prefix": "task-",
+    "approval_required": true,
+    "agent_approval": {
+      "minion": true,
+      "reviewer": false
+    }
+  },
+  "orchestration": {
+    "enabled": true,
+    "mode": "manual",
+    "require_approval_before_spawn": true,
+    "ignore_aborted_messages": true,
+    "verbose_events": true
+  },
+  "discord": {
+    "enabled": true,
+    "personas": {
+      "planner": {
+        "name": "Planner",
+        "avatarUrl": ""
+      },
+      "orchestrator": {
+        "name": "Orchestrator",
+        "avatarUrl": ""
+      },
+      "minion": {
+        "name": "Minion",
+        "avatarUrl": ""
+      },
+      "reviewer": {
+        "name": "Reviewer",
+        "avatarUrl": ""
+      }
+    }
+  }
+}
+EOF
+}
 
 require_command() {
   local command_name="$1"
@@ -18,9 +109,30 @@ require_command() {
   fi
 }
 
-printf '[1/3] Validating bootstrap prerequisites...\n'
-require_command node "Install Node.js (v18+) before running bootstrap."
-require_command npm "Install npm (bundled with Node.js) before running bootstrap."
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dry-run)
+      DRY_RUN=1
+      shift
+      ;;
+    --skip-deps)
+      SKIP_DEPENDENCY_INSTALL=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      printf 'Unknown argument: %s\n' "$1" >&2
+      usage >&2
+      exit 1
+      ;;
+  esac
+done
+
+printf '[1/4] Validating bootstrap prerequisites...\n'
+require_command bash "Install Bash before running bootstrap."
 
 if [[ ! -f "$OPENCODE_DIR/package.json" ]]; then
   printf 'Could not find %s/package.json\n' "$OPENCODE_DIR" >&2
@@ -28,17 +140,26 @@ if [[ ! -f "$OPENCODE_DIR/package.json" ]]; then
   exit 1
 fi
 
-printf '[2/3] Installing .opencode dependencies...\n'
-npm --prefix "$OPENCODE_DIR" install
+printf '[2/4] Ensuring minimum config defaults...\n'
+write_minimum_config
 
-if [[ ! -x "$TARGET" ]]; then
-  chmod +x "$TARGET"
+if [[ $SKIP_DEPENDENCY_INSTALL -eq 1 ]]; then
+  printf '[3/4] Skipping .opencode dependency install (--skip-deps).\n'
+else
+  printf '[3/4] Installing .opencode dependencies...\n'
+  require_command node "Install Node.js (v18+) before running bootstrap."
+  require_command npm "Install npm (bundled with Node.js) before running bootstrap."
+  run_cmd npm --prefix "$OPENCODE_DIR" install
 fi
 
-printf '[3/3] Installing pipeline control shims...\n'
-mkdir -p "$INSTALL_DIR"
-ln -sfn "$TARGET" "$INSTALL_DIR/pipelinectl"
-ln -sfn "$TARGET" "$INSTALL_DIR/piplinectl"
+if [[ ! -x "$TARGET" ]]; then
+  run_cmd chmod +x "$TARGET"
+fi
+
+printf '[4/4] Installing pipeline control shims...\n'
+run_cmd mkdir -p "$INSTALL_DIR"
+run_cmd ln -sfn "$TARGET" "$INSTALL_DIR/pipelinectl"
+run_cmd ln -sfn "$TARGET" "$INSTALL_DIR/piplinectl"
 
 printf 'Installed pipelinectl at %s\n' "$INSTALL_DIR/pipelinectl"
 printf 'Installed piplinectl compatibility alias at %s\n' "$INSTALL_DIR/piplinectl"

@@ -16,6 +16,26 @@ Demonlord replaces manual coding workflows with specialized AI agents that work 
 
 ## Quick Start
 
+### One-Command Installer (Recommended)
+
+From your target repository root, run the installer and let it inject assets plus bootstrap dependencies/shims:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/<owner>/<repo>/main/scripts/install-demonlord.sh | bash -s -- --source https://github.com/<owner>/<repo>.git
+```
+
+Local source example (when you already have a cloned Demonlord template):
+
+```bash
+/path/to/demonlord-template/scripts/install-demonlord.sh --source /path/to/demonlord-template --target .
+```
+
+Preflight and recovery options:
+
+- `--dry-run`: preview actions without changing files
+- `--skip-bootstrap`: inject assets only
+- `--rollback`: restore managed paths from `.demonlord-install-backup/latest`
+
 ### Inject Demonlord Into Your Repository
 
 Use this project as a template source and copy these assets into your target repository root:
@@ -57,7 +77,23 @@ opencode
 - Use `/triage` to analyze issues and generate plans
 - Use `/implement` to execute the next subphase
 
-Bootstrap policy: any repeatable install/setup behavior (dependencies, command shims, generated local runtime helpers) should be added to `scripts/bootstrap.sh` so bringing Demonlord into a new repository stays a one-command setup.
+Bootstrap policy: any repeatable install/setup behavior (dependencies, command shims, generated local runtime helpers) should be added to `scripts/bootstrap.sh`; `scripts/install-demonlord.sh` should delegate to it for deterministic one-command provisioning.
+
+### First-Run Validation
+
+After installation/bootstrap, verify the environment in this order:
+
+```bash
+opencode
+```
+
+```bash
+pipelinectl status
+```
+
+- Confirm `.env` has placeholders filled for `GITHUB_PAT`, `DISCORD_BOT_TOKEN`, and Discord webhook URLs.
+- Confirm `demonlord.config.json` exists (bootstrap creates minimum defaults if missing).
+- Confirm `pipelinectl` resolves (`type pipelinectl`) or use `./agents/tools/pipelinectl.sh status` directly.
 
 ## Architecture
 
@@ -236,6 +272,8 @@ This ensures that all code meets your quality standards before being committed.
 - **`pipelinectl` says session context missing**: run within an active OpenCode shell session or export `OPENCODE_SESSION_ID`
 - **`pipelinectl: command not found`**: run `./scripts/bootstrap.sh`, then restart shell and confirm `~/.local/bin` is on `PATH`
 - **Queued shell command rejected as stale**: rerun `pipelinectl status` and retry with fresh state
+- **Installer fails midway**: run `./scripts/install-demonlord.sh --rollback`, resolve the error, then rerun installer
+- **Offline/proxy npm install issues**: rerun bootstrap with configured proxy env (`HTTPS_PROXY`, `HTTP_PROXY`, optional `NPM_CONFIG_REGISTRY`) or run `./scripts/install-demonlord.sh --skip-bootstrap` and bootstrap later
 - **Bootstrap takes too long**: Check network connectivity and npm registry access
 
 ## Validation Requirements

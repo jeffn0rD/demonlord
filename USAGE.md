@@ -2,6 +2,25 @@
 
 ## First-Time Setup
 
+### 0) One-Command Install (Recommended)
+
+From the target repository root:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/<owner>/<repo>/main/scripts/install-demonlord.sh | bash -s -- --source https://github.com/<owner>/<repo>.git
+```
+
+Local template source example:
+
+```bash
+/path/to/demonlord-template/scripts/install-demonlord.sh --source /path/to/demonlord-template --target .
+```
+
+Useful flags:
+- `--dry-run` (preview changes)
+- `--skip-bootstrap` (copy/update assets only)
+- `--rollback` (restore from `.demonlord-install-backup/latest`)
+
 ### 1) Inject Demonlord Assets
 
 Copy Demonlord assets into your target repository root (`.opencode/`, `agents/`, `scripts/`, `doc/`, `demonlord.config.json`, `.env.example`).
@@ -17,6 +36,21 @@ cd .opencode && npm install
 ```bash
 cd .. && ./scripts/bootstrap.sh
 ```
+
+### 4) First-Run Validation
+
+```bash
+opencode
+```
+
+```bash
+pipelinectl status
+```
+
+Check all of the following before your first `/triage` run:
+- `.env` includes `GITHUB_PAT`, `DISCORD_BOT_TOKEN`, and Discord webhook values
+- `demonlord.config.json` exists (bootstrap will create minimum defaults when missing)
+- `type pipelinectl` resolves, or `./agents/tools/pipelinectl.sh status` works directly
 
 ## Daily Workflow
 
@@ -277,6 +311,14 @@ When execution graph logging is enabled, events are written to `_bmad-output/exe
 **`pipelinectl: command not found`**
 - **Solution**: Run `./scripts/bootstrap.sh`, restart shell, and ensure `~/.local/bin` is in `PATH`
 - **Check**: Run `type pipelinectl` and verify it resolves to `~/.local/bin/pipelinectl`
+
+**Installer partially applied assets**
+- **Solution**: Run `./scripts/install-demonlord.sh --rollback`, fix root cause, rerun installer
+- **Check**: Confirm `.demonlord-install-backup/latest/manifest.txt` exists before rollback
+
+**Offline/proxy dependency install failures**
+- **Solution**: Export `HTTPS_PROXY`/`HTTP_PROXY` and optional `NPM_CONFIG_REGISTRY`, then rerun `./scripts/bootstrap.sh`
+- **Alternative**: Use `./scripts/install-demonlord.sh --skip-bootstrap`, then bootstrap once network access is available
 
 **Discord messages not appearing**
 - **Solution**: Verify `.env` contains correct Discord webhook URLs

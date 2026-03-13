@@ -1,0 +1,78 @@
+{
+  "worktrees": {
+    "directory": "../worktrees",
+    "prefix": "task-",
+    "approval_required": true,
+    "agent_approval": {
+      "minion": true,
+      "reviewer": false
+    }
+  },
+  "orchestration": {
+    "enabled": true,
+    "mode": "manual",
+    "require_approval_before_spawn": true,
+    "ignore_aborted_messages": true,
+    "verbose_events": true,
+    "agent_pools": {
+      "planning": {
+        "lite": ["planner-lite", "planner"],
+        "standard": ["planner", "planner-lite"],
+        "pro": ["planner-pro", "planner"]
+      },
+      "implementation": {
+        "lite": ["minion-lite", "minion"],
+        "standard": ["minion-standard", "minion"],
+        "pro": ["minion-pro", "minion"]
+      },
+      "review": {
+        "lite": ["reviewer-lite", "reviewer"],
+        "standard": ["reviewer", "reviewer-lite"],
+        "pro": ["reviewer-pro", "reviewer"]
+      }
+    },
+    "task_routing": {
+      "source": "tasklist_explicit",
+      "default_tier": "standard"
+    },
+    "parallelism": {
+      "max_parallel_total": 1,
+      "max_parallel_by_role": {
+        "planning": 1,
+        "implementation": 1,
+        "review": 1
+      },
+      "max_parallel_by_tier": {
+        "lite": 1,
+        "standard": 1,
+        "pro": 1
+      }
+    },
+    "execution_graph": {
+      "enabled": true,
+      "path": "_bmad-output/execution-graph.ndjson",
+      "verbosity": "concise"
+    }
+  },
+  "discord": {
+    "enabled": true,
+    "personas": {
+      "planner": {
+        "name": "Planner",
+        "avatarUrl": ""
+      },
+      "orchestrator": {
+        "name": "Orchestrator",
+        "avatarUrl": ""
+      },
+      "minion": {
+        "name": "Minion",
+        "avatarUrl": ""
+      },
+      "reviewer": {
+        "name": "Reviewer",
+        "avatarUrl": ""
+      }
+    }
+  }
+}

@@ -148,6 +148,24 @@ Failure and recovery behavior:
 * Queue processing advances linearly and persists offsets, preventing replays after restarts.
 * Snapshot writes remain atomic to prevent partial reads during concurrent operator activity.
 
+One-Command Installer Bootstrap
+
+To support template injection into arbitrary repositories, Demonlord includes a standalone installer entrypoint (`scripts/install-demonlord.sh`) that can run from local disk or stdin (`curl | bash`) with explicit source targeting.
+
+Installer contract:
+
+* Required source assets: `.opencode/`, `agents/`, `doc/`, `scripts/bootstrap.sh`, `demonlord.config.json`, `.env.example`.
+* Managed path backups: prior managed paths are snapshotted to `.demonlord-install-backup/latest` before sync.
+* Idempotent reruns: installer replaces managed assets deterministically, then delegates environment setup to `scripts/bootstrap.sh`.
+* Dry-run support: `--dry-run` emits exact planned actions without writing files.
+* Rollback support: `--rollback` restores managed assets from the latest backup snapshot.
+
+Bootstrap contract extensions:
+
+* `scripts/bootstrap.sh` can now create a minimum `demonlord.config.json` when absent (preferring `.opencode/templates/demonlord.config.default.json`).
+* Dependency install can be deferred (`--skip-deps`) for offline/proxy-constrained environments.
+* Shim installation for `pipelinectl` remains deterministic and repeatable across reruns.
+
 Horizontal Scaling via Git Worktrees
 
 The adoption of Git Worktrees over standard branching is a critical architectural decision:
