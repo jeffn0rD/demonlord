@@ -319,28 +319,28 @@ Agents should execute one subphase at a time. To trigger implementation, the Lea
 **Goal:** Execute the full lifecycle and tag the release, including Party Mode and simplified testing validation.
 **Entry criteria:** SUBPHASE-5.1 complete.
 **Exit criteria / QA checklist:**
-- [ ] End-to-end task flows successfully from `/triage` to PR creation within 5 minutes
-- [ ] All unit and integration tests pass with 95%+ coverage
-- [ ] Error handling scenarios properly managed (network timeouts, disk full, invalid configs)
-- [ ] Bootstrap completes in <60 seconds on standard hardware
-- [ ] Party Mode round-based discussion functions correctly with user control
-- [ ] Simplified test generation succeeds >90% of time with auto-fix capabilities
+- [x] End-to-end task flows successfully from `/triage` to PR creation within 5 minutes
+- [x] All unit and integration tests pass with 95%+ coverage
+- [x] Error handling scenarios properly managed (network timeouts, disk full, invalid configs)
+- [x] Bootstrap completes in <60 seconds on standard hardware
+- [x] Party Mode round-based discussion functions correctly with user control
+- [x] Simplified test generation succeeds >90% of time with auto-fix capabilities
 **Proposed PR title:** release: demonlord v1.0.0
 **Proposed commit message:** release: finalize end-to-end validation including party mode and simplified testing, tag v1.0.0 (Refs #1)
 
 **Tasks:**
 <!-- TASK:T-5.2.1 -->
-- **T-5.2.1** (Refs #1): Execute the full Triage -> Implement -> Review pipeline on a dummy "Hello World" task to verify worktree spawning and the deterministic quality gate. (Manual Execution Task).
+- [x] **T-5.2.1** (Refs #1): Execute the full Triage -> Implement -> Review pipeline on a dummy "Hello World" task to verify worktree spawning and the deterministic quality gate. (Manual Execution Task).
 <!-- TASK:T-5.2.2 -->
-- **T-5.2.2** (Refs #1): Implement comprehensive test suite including unit tests for custom tools, integration tests for plugins, and end-to-end workflow validation. Touch points: `.opencode/tests/`
+- [x] **T-5.2.2** (Refs #1): Implement comprehensive test suite including unit tests for custom tools, integration tests for plugins, and end-to-end workflow validation. Touch points: `.opencode/tests/`
 <!-- TASK:T-5.2.3 -->
-- **T-5.2.3** (Refs #1): Validate error handling scenarios: simulate network timeouts, disk full conditions, and invalid configurations to ensure graceful degradation. Touch points: `.opencode/tests/error-handling/`
+- [x] **T-5.2.3** (Refs #1): Validate error handling scenarios: simulate network timeouts, disk full conditions, and invalid configurations to ensure graceful degradation. Touch points: `.opencode/tests/error-handling/`
 <!-- TASK:T-5.2.4 -->
-- **T-5.2.4** (Refs #1): Test Party Mode functionality with multi-agent collaboration and user control via Discord commands. (Manual Execution Task).
+- [x] **T-5.2.4** (Refs #1): Test Party Mode functionality with multi-agent collaboration and user control via Discord commands. (Manual Execution Task).
 <!-- TASK:T-5.2.5 -->
-- **T-5.2.5** (Refs #1): Validate simplified test generation and auto-fix loop with various test frameworks and failure scenarios. Touch points: `.opencode/tests/testing/`
+- [x] **T-5.2.5** (Refs #1): Validate simplified test generation and auto-fix loop with various test frameworks and failure scenarios. Touch points: `.opencode/tests/testing/`
 <!-- TASK:T-5.2.6 -->
-- **T-5.2.6** (Refs #1): Clean up any test branches/worktrees, tag the repository as a GitHub Template, and draft the `v1.0.0` GitHub Release notes. (Manual Execution Task).
+- [x] **T-5.2.6** (Refs #1): Clean up any test branches/worktrees, tag the repository as a GitHub Template, and draft the `v1.0.0` GitHub Release notes. (Manual Execution Task).
 
 ### SUBPHASE-5.3: One-Command Installer Bootstrap
 <!-- SUBPHASE:5.3 -->
