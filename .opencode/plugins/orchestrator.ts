@@ -1,7 +1,7 @@
 import type { Plugin } from "@opencode-ai/plugin";
 import type { Event, Session } from "@opencode-ai/sdk";
 import { execFile } from "child_process";
-import { appendFile, mkdir, readFile, rename, writeFile } from "fs/promises";
+import { appendFile, mkdir, readdir, readFile, rename, stat, writeFile } from "fs/promises";
 import { delimiter, dirname, resolve } from "path";
 import { promisify } from "util";
 import { loadSkillDefinitions, resolveTaskRoute, type RouteResult } from "../tools/matchmaker.ts";
@@ -11,6 +11,15 @@ type TransitionState = "idle" | "awaiting_approval" | "in_progress" | "blocked" 
 type SessionStatus = "active" | "completed" | "blocked" | "stopped";
 type OrchestrationMode = "off" | "manual" | "auto";
 type StopReason = "manual" | "global_off" | "completed";
+type ExecutionRole = "planning" | "implementation" | "review";
+type ExecutionTier = "lite" | "standard" | "pro";
+
+interface TaskRoutingSettings {
+  source: "tasklist_explicit";
+  defaultTier: ExecutionTier;
+}
+
+type AgentPools = Record<ExecutionRole, Record<ExecutionTier, string[]>>;
 
 interface OrchestrationSettings {
   enabled: boolean;
@@ -18,13 +27,65 @@ interface OrchestrationSettings {
   requireApprovalBeforeSpawn: boolean;
   ignoreAbortedMessages: boolean;
   verboseEvents: boolean;
+  taskRouting: TaskRoutingSettings;
+  agentPools: AgentPools;
 }
 
 interface RoutingContext {
   skillID: string;
   reason: string;
   mode: RouteResult["mode"];
+  agentID?: string;
+  role?: ExecutionRole;
+  tier?: ExecutionTier;
+  taskRef?: string;
+  parallelGroup?: string;
+  dependsOn?: string[];
+  metadataSource?: "tasklist" | "legacy";
 }
+
+interface TaskExecutionMetadata {
+  taskRef: string;
+  role: ExecutionRole;
+  tier: ExecutionTier;
+  skillID?: string;
+  parallelGroup?: string;
+  dependsOn: string[];
+  tasklistPath: string;
+}
+
+interface TaskExecutionLookup {
+  metadata?: TaskExecutionMetadata;
+  warning?: string;
+}
+
+interface AgentResolution {
+  ok: boolean;
+  agentID?: string;
+  tier?: ExecutionTier;
+  fallbackUsed?: "requested_tier" | "default_tier" | "legacy_singleton";
+  reason: string;
+}
+
+interface ExecutionGraphEventEntry {
+  seq: number;
+  ts: string;
+  rootSessionID: string;
+  eventType: string;
+  sessionID: string;
+  parentSessionID: string;
+  stage: PipelineStage;
+  taskRef: string;
+  agentID: string;
+  tier: string;
+  skillID: string;
+  parallelGroup: string;
+  slot: string;
+  status: string;
+  reason?: string;
+}
+
+type ExecutionGraphEventInput = Omit<ExecutionGraphEventEntry, "seq" | "ts" | "rootSessionID">;
 
 interface WorktreeContext {
   taskID: string;
@@ -96,6 +157,7 @@ interface PipelineState {
   stopReason?: StopReason;
   error: ErrorContext;
   events: OrchestrationEventEntry[];
+  executionSeq?: number;
   createdAt: number;
   updatedAt: number;
 }
@@ -175,11 +237,39 @@ const defaultOrchestrationSettings: OrchestrationSettings = {
   requireApprovalBeforeSpawn: true,
   ignoreAbortedMessages: true,
   verboseEvents: true,
+  taskRouting: {
+    source: "tasklist_explicit",
+    defaultTier: "standard",
+  },
+  agentPools: {
+    planning: {
+      lite: ["planner-lite", "planner"],
+      standard: ["planner", "planner-lite"],
+      pro: ["planner-pro", "planner"],
+    },
+    implementation: {
+      lite: ["minion-lite", "minion"],
+      standard: ["minion-standard", "minion"],
+      pro: ["minion-pro", "minion"],
+    },
+    review: {
+      lite: ["reviewer-lite", "reviewer"],
+      standard: ["reviewer", "reviewer-lite"],
+      pro: ["reviewer-pro", "reviewer"],
+    },
+  },
+};
+
+const LEGACY_ROLE_AGENT: Record<ExecutionRole, string> = {
+  planning: "planner",
+  implementation: "minion",
+  review: "reviewer",
 };
 
 const SPEC_EXPERT_SKILL_ID = "spec-expert";
 const SPEC_HANDOFF_READY_MARKER = "<!-- DEMONLORD_SPEC_HANDOFF_READY -->";
 const SPEC_HANDOFF_REQUIRED_HEADINGS = ["## Scope", "## Constraints"];
+const TASK_REF_PATTERN = /\bT-\d+(?:\.\d+)+\b/i;
 
 const AMBIGUITY_HINT_PATTERN = /(not sure|unsure|unclear|ambiguous|conflict|recommend|recommendation)/;
 
@@ -206,9 +296,11 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
 
   const statePath = resolve(worktree, "_bmad-output", "orchestration-state.json");
   const eventLogPath = resolve(worktree, "_bmad-output", "orchestration-events.ndjson");
+  const executionGraphPath = resolve(worktree, "_bmad-output", "execution-graph.ndjson");
   const commandQueuePath = resolve(worktree, "_bmad-output", "orchestration-commands.ndjson");
   const shellBootstrapPath = resolve(worktree, "_bmad-output", "pipelinectl-shell.env.sh");
   const spawnScriptPath = resolve(worktree, "agents", "tools", "spawn_worktree.sh");
+  const configuredAgentIDs = await loadConfiguredAgentIDs(worktree);
   const idleInFlight = new Set<string>();
   const preHandledCommands = new Map<string, number>();
   const state = await loadPersistedState(statePath, commandQueuePath, settings);
@@ -531,7 +623,7 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
         "After writing the file, return to idle to continue pipeline progression.",
       ].join("\n");
 
-      await promptSession(session.sessionID, reminder, false, session.directory, "minion");
+      await promptSession(session.sessionID, reminder, false, session.directory, pipeline.routing?.agentID ?? "minion");
       return true;
     }
 
@@ -592,7 +684,7 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
         buildImplementationPrompt(taskDescription, pipeline, childSession.id),
         false,
         implementationDirectory,
-        "minion",
+        pipeline.routing?.agentID ?? "minion",
       );
 
       await promptSession(
@@ -1164,10 +1256,128 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
 
     const session = await getSession(triageSession.sessionID, triageSession.directory);
     const taskDescription = extractTaskDescription(session?.title ?? triageSession.sessionID);
+    const executionLookup = await resolveTaskExecutionMetadata(worktree, taskDescription);
+    const executionMetadata = executionLookup.metadata;
+
+    if (executionLookup.warning) {
+      await recordEvent(pipeline, {
+        type: "routing_warning",
+        rootSessionID,
+        sessionID: triageSession.sessionID,
+        stage: "triage",
+        details: {
+          reason: executionLookup.warning,
+        },
+      });
+
+      await writeExecutionGraphEvent(pipeline, {
+        eventType: "routing_warning",
+        sessionID: triageSession.sessionID,
+        parentSessionID: triageSession.parentSessionID ?? rootSessionID,
+        stage: "triage",
+        taskRef: executionMetadata?.taskRef ?? "n/a",
+        agentID: "n/a",
+        tier: executionMetadata?.tier ?? settings.taskRouting.defaultTier,
+        skillID: executionMetadata?.skillID ?? "n/a",
+        parallelGroup: executionMetadata?.parallelGroup ?? "",
+        slot: "triage:0",
+        status: "warning",
+        reason: executionLookup.warning,
+      });
+    }
+
+    const requestedRole = executionMetadata?.role ?? "implementation";
+    const requestedTier = executionMetadata?.tier ?? settings.taskRouting.defaultTier;
+    const agentResolution = resolveAgentFromPools({
+      role: requestedRole,
+      requestedTier,
+      defaultTier: settings.taskRouting.defaultTier,
+      agentPools: settings.agentPools,
+      configuredAgentIDs,
+    });
+
+    if (!agentResolution.ok || !agentResolution.agentID || !agentResolution.tier) {
+      const blockedReason = agentResolution.reason;
+      pipeline.transition = "blocked";
+      pipeline.pendingTransition = undefined;
+      pipeline.updatedAt = Date.now();
+      await persistState();
+
+      await recordEvent(pipeline, {
+        type: "task_blocked",
+        rootSessionID,
+        sessionID: triageSession.sessionID,
+        stage: "triage",
+        details: {
+          reason: blockedReason,
+          role: requestedRole,
+          tier: requestedTier,
+          taskRef: executionMetadata?.taskRef ?? "unknown",
+        },
+      });
+
+      await writeExecutionGraphEvent(pipeline, {
+        eventType: "task_blocked",
+        sessionID: triageSession.sessionID,
+        parentSessionID: triageSession.parentSessionID ?? rootSessionID,
+        stage: "triage",
+        taskRef: executionMetadata?.taskRef ?? "n/a",
+        agentID: "unresolved",
+        tier: requestedTier,
+        skillID: executionMetadata?.skillID ?? "n/a",
+        parallelGroup: executionMetadata?.parallelGroup ?? "",
+        slot: "triage:0",
+        status: "blocked",
+        reason: blockedReason,
+      });
+
+      await promptSession(
+        rootSessionID,
+        [
+          "Pipeline is blocked before implementation spawn.",
+          blockedReason,
+          "Update orchestration.agent_pools or add the required agent IDs in .opencode/opencode.jsonc.",
+        ].join("\n"),
+        true,
+        pipeline.sessions[rootSessionID]?.directory,
+      );
+      return;
+    }
+
+    if (agentResolution.fallbackUsed && agentResolution.fallbackUsed !== "requested_tier") {
+      await recordEvent(pipeline, {
+        type: "routing_fallback",
+        rootSessionID,
+        sessionID: triageSession.sessionID,
+        stage: "triage",
+        details: {
+          role: requestedRole,
+          requestedTier,
+          resolvedTier: agentResolution.tier,
+          agentID: agentResolution.agentID,
+          reason: agentResolution.reason,
+        },
+      });
+
+      await writeExecutionGraphEvent(pipeline, {
+        eventType: "routing_fallback",
+        sessionID: triageSession.sessionID,
+        parentSessionID: triageSession.parentSessionID ?? rootSessionID,
+        stage: "triage",
+        taskRef: executionMetadata?.taskRef ?? "n/a",
+        agentID: agentResolution.agentID,
+        tier: agentResolution.tier,
+        skillID: executionMetadata?.skillID ?? "n/a",
+        parallelGroup: executionMetadata?.parallelGroup ?? "",
+        slot: "triage:0",
+        status: "resolved",
+        reason: agentResolution.reason,
+      });
+    }
 
     const availableSkills = await loadSkillDefinitions(worktree);
     const hasSpecExpertSkill = availableSkills.some((skill) => skill.id === SPEC_EXPERT_SKILL_ID);
-    const preferSpecExpert = hasSpecExpertSkill && shouldPreferSpecExpertFirst(taskDescription);
+    const preferSpecExpert = !executionMetadata?.skillID && hasSpecExpertSkill && shouldPreferSpecExpertFirst(taskDescription);
 
     const implementationRouting = preferSpecExpert
       ? await resolveTaskRoute({
@@ -1179,24 +1389,42 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
         })
       : null;
 
-    let routing = await resolveTaskRoute({
-      taskDescription,
-      directory: worktree,
-      worktree,
-      mode: preferSpecExpert ? "heuristic" : "llm",
-    });
+    let routing: RouteResult;
+    if (executionMetadata?.skillID) {
+      routing = {
+        skill_id: executionMetadata.skillID,
+        mode: "heuristic",
+        reason: `Tasklist EXECUTION metadata selected skill ${executionMetadata.skillID}.`,
+      };
+    } else {
+      routing = await resolveTaskRoute({
+        taskDescription,
+        directory: worktree,
+        worktree,
+        mode: preferSpecExpert ? "heuristic" : "llm",
+      });
 
-    if (preferSpecExpert) {
-      routing = applySpecExpertFirstPolicy(routing);
+      if (preferSpecExpert) {
+        routing = applySpecExpertFirstPolicy(routing);
+      }
     }
 
     pipeline.routing = {
       skillID: routing.skill_id,
-      reason: routing.reason,
+      reason: `${routing.reason} Agent resolver: ${agentResolution.reason}`,
       mode: routing.mode,
+      agentID: agentResolution.agentID,
+      role: requestedRole,
+      tier: agentResolution.tier,
+      taskRef: executionMetadata?.taskRef,
+      parallelGroup: executionMetadata?.parallelGroup,
+      dependsOn: executionMetadata?.dependsOn,
+      metadataSource: executionMetadata ? "tasklist" : "legacy",
     };
 
-    const taskID = buildTaskID(rootSessionID, routing.skill_id, taskDescription);
+    const taskID = executionMetadata?.taskRef
+      ? sanitizeTitleSegment(executionMetadata.taskRef)
+      : buildTaskID(rootSessionID, routing.skill_id, taskDescription);
     const worktreeContext = await provisionImplementationWorktree({
       taskID,
       skillID: routing.skill_id,
@@ -1254,14 +1482,15 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
         : buildImplementationPrompt(taskDescription, pipeline, childSession.id),
       false,
       worktreeContext.worktreePath,
-      "minion",
+      agentResolution.agentID,
     );
 
     await promptSession(
       rootSessionID,
       [
         `Implementation session ${childSession.id} created in ${worktreeContext.worktreePath}.`,
-        `Matchmaker selected skill ${routing.skill_id} via ${routing.mode} mode.`,
+        `Routing selected skill ${routing.skill_id} via ${routing.mode} mode.`,
+        `Execution agent: ${agentResolution.agentID} (role=${requestedRole}, tier=${agentResolution.tier}, source=${executionMetadata ? "tasklist" : "legacy"}).`,
         pipeline.specHandoff
           ? `Spec handoff required before coding session starts. Marker: ${pipeline.specHandoff.markerPath}`
           : null,
@@ -1313,12 +1542,52 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
     pipeline.updatedAt = Date.now();
     await persistState();
 
+    const reviewAgentResolution = resolveAgentFromPools({
+      role: "review",
+      requestedTier: settings.taskRouting.defaultTier,
+      defaultTier: settings.taskRouting.defaultTier,
+      agentPools: settings.agentPools,
+      configuredAgentIDs,
+    });
+
+    const reviewAgentID = reviewAgentResolution.ok && reviewAgentResolution.agentID
+      ? reviewAgentResolution.agentID
+      : LEGACY_ROLE_AGENT.review;
+
+    if (!reviewAgentResolution.ok) {
+      await recordEvent(pipeline, {
+        type: "routing_warning",
+        rootSessionID,
+        sessionID: implementationSession.sessionID,
+        stage: "review",
+        details: {
+          reason: reviewAgentResolution.reason,
+          fallback: reviewAgentID,
+        },
+      });
+
+      await writeExecutionGraphEvent(pipeline, {
+        eventType: "routing_warning",
+        sessionID: implementationSession.sessionID,
+        parentSessionID: implementationSession.parentSessionID ?? rootSessionID,
+        stage: "review",
+        taskRef: pipeline.routing?.taskRef ?? "n/a",
+        agentID: reviewAgentID,
+        tier: settings.taskRouting.defaultTier,
+        skillID: pipeline.routing?.skillID ?? "n/a",
+        parallelGroup: pipeline.routing?.parallelGroup ?? "",
+        slot: "review:0",
+        status: "warning",
+        reason: reviewAgentResolution.reason,
+      });
+    }
+
     await promptSession(
       childSession.id,
       buildReviewPrompt(pipeline),
       false,
       reviewDirectory,
-      "reviewer",
+      reviewAgentID,
     );
 
     await promptSession(
@@ -1471,6 +1740,7 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
         handledSignatures: [],
       },
       events: [],
+      executionSeq: 0,
       createdAt: now,
       updatedAt: now,
     };
@@ -1632,6 +1902,12 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
       `Pending: ${pending}`,
       `Worktree: ${pipeline.worktree?.worktreePath ?? "n/a"}`,
       `Routing: ${pipeline.routing ? `${pipeline.routing.skillID} (${pipeline.routing.mode})` : "n/a"}`,
+      `Execution Target: ${
+        pipeline.routing?.agentID
+          ? `${pipeline.routing.agentID} [${pipeline.routing.role ?? "n/a"}/${pipeline.routing.tier ?? "n/a"}]`
+          : "n/a"
+      }`,
+      `Task Ref: ${pipeline.routing?.taskRef ?? "n/a"}`,
       `Spec Handoff: ${
         pipeline.specHandoff
           ? `${pipeline.specHandoff.completed ? "completed" : "required"} -> ${pipeline.specHandoff.targetSkillID}`
@@ -1690,6 +1966,38 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
 
       await promptSession(targetSessionID, message, true, pipeline.sessions[targetSessionID]?.directory);
     }
+  }
+
+  async function writeExecutionGraphEvent(pipeline: PipelineState, input: ExecutionGraphEventInput): Promise<void> {
+    const nextSeq = typeof pipeline.executionSeq === "number" && pipeline.executionSeq > 0
+      ? pipeline.executionSeq + 1
+      : 1;
+    pipeline.executionSeq = nextSeq;
+    pipeline.updatedAt = Date.now();
+
+    const payload: ExecutionGraphEventEntry = {
+      seq: nextSeq,
+      ts: new Date().toISOString(),
+      rootSessionID: pipeline.rootSessionID,
+      eventType: input.eventType,
+      sessionID: input.sessionID,
+      parentSessionID: input.parentSessionID,
+      stage: input.stage,
+      taskRef: input.taskRef,
+      agentID: input.agentID,
+      tier: input.tier,
+      skillID: input.skillID,
+      parallelGroup: input.parallelGroup,
+      slot: input.slot,
+      status: input.status,
+      reason: input.reason,
+    };
+
+    await scheduleWrite(async () => {
+      await mkdir(dirname(executionGraphPath), { recursive: true });
+      await appendFile(executionGraphPath, `${JSON.stringify(payload)}\n`, "utf-8");
+      await writePersistedSnapshot();
+    });
   }
 
   async function persistState(): Promise<void> {
@@ -1782,6 +2090,8 @@ async function loadOrchestrationSettings(worktree: string): Promise<Orchestratio
         require_approval_before_spawn?: unknown;
         ignore_aborted_messages?: unknown;
         verbose_events?: unknown;
+        task_routing?: unknown;
+        agent_pools?: unknown;
       };
     };
 
@@ -1809,9 +2119,11 @@ async function loadOrchestrationSettings(worktree: string): Promise<Orchestratio
         typeof config.verbose_events === "boolean"
           ? config.verbose_events
           : defaultOrchestrationSettings.verboseEvents,
+      taskRouting: parseTaskRoutingSettings(config.task_routing),
+      agentPools: parseAgentPools(config.agent_pools),
     };
   } catch {
-    return defaultOrchestrationSettings;
+    return cloneOrchestrationSettings(defaultOrchestrationSettings);
   }
 }
 
@@ -1914,6 +2226,216 @@ function createEmptyPersistedState(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function cloneOrchestrationSettings(input: OrchestrationSettings): OrchestrationSettings {
+  return {
+    ...input,
+    taskRouting: {
+      ...input.taskRouting,
+    },
+    agentPools: cloneAgentPools(input.agentPools),
+  };
+}
+
+function cloneAgentPools(pools: AgentPools): AgentPools {
+  return {
+    planning: {
+      lite: [...pools.planning.lite],
+      standard: [...pools.planning.standard],
+      pro: [...pools.planning.pro],
+    },
+    implementation: {
+      lite: [...pools.implementation.lite],
+      standard: [...pools.implementation.standard],
+      pro: [...pools.implementation.pro],
+    },
+    review: {
+      lite: [...pools.review.lite],
+      standard: [...pools.review.standard],
+      pro: [...pools.review.pro],
+    },
+  };
+}
+
+function parseTaskRoutingSettings(input: unknown): TaskRoutingSettings {
+  if (!isRecord(input)) {
+    return {
+      ...defaultOrchestrationSettings.taskRouting,
+    };
+  }
+
+  const source = input.source === "tasklist_explicit" ? "tasklist_explicit" : "tasklist_explicit";
+  const defaultTier = normalizeExecutionTier(input.default_tier) ?? defaultOrchestrationSettings.taskRouting.defaultTier;
+
+  return {
+    source,
+    defaultTier,
+  };
+}
+
+function parseAgentPools(input: unknown): AgentPools {
+  const pools = cloneAgentPools(defaultOrchestrationSettings.agentPools);
+  if (!isRecord(input)) {
+    return pools;
+  }
+
+  for (const role of ["planning", "implementation", "review"] as const) {
+    const roleConfig = input[role];
+    if (!isRecord(roleConfig)) {
+      continue;
+    }
+
+    for (const tier of ["lite", "standard", "pro"] as const) {
+      const parsedCandidates = toStringArray(roleConfig[tier]);
+      if (parsedCandidates.length > 0) {
+        pools[role][tier] = parsedCandidates;
+      }
+    }
+  }
+
+  return pools;
+}
+
+function normalizeExecutionRole(value: unknown): ExecutionRole | null {
+  if (value === "planning" || value === "implementation" || value === "review") {
+    return value;
+  }
+
+  return null;
+}
+
+function normalizeExecutionTier(value: unknown): ExecutionTier | null {
+  if (value === "lite" || value === "standard" || value === "pro") {
+    return value;
+  }
+
+  return null;
+}
+
+function toStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const seen = new Set<string>();
+  const output: string[] = [];
+  for (const entry of value) {
+    if (typeof entry !== "string") {
+      continue;
+    }
+
+    const normalized = entry.trim();
+    if (!normalized || seen.has(normalized)) {
+      continue;
+    }
+
+    seen.add(normalized);
+    output.push(normalized);
+  }
+
+  return output;
+}
+
+function resolveAgentFromPools(input: {
+  role: ExecutionRole;
+  requestedTier: ExecutionTier;
+  defaultTier: ExecutionTier;
+  agentPools: AgentPools;
+  configuredAgentIDs: Set<string>;
+}): AgentResolution {
+  const { role, requestedTier, defaultTier, agentPools, configuredAgentIDs } = input;
+  const rolePools = agentPools[role];
+
+  const requestedAgent = firstConfiguredAgent(rolePools[requestedTier], configuredAgentIDs);
+  if (requestedAgent) {
+    return {
+      ok: true,
+      agentID: requestedAgent,
+      tier: requestedTier,
+      fallbackUsed: "requested_tier",
+      reason: `Resolved ${role}/${requestedTier} to '${requestedAgent}' from orchestration.agent_pools.`,
+    };
+  }
+
+  if (defaultTier !== requestedTier) {
+    const defaultAgent = firstConfiguredAgent(rolePools[defaultTier], configuredAgentIDs);
+    if (defaultAgent) {
+      return {
+        ok: true,
+        agentID: defaultAgent,
+        tier: defaultTier,
+        fallbackUsed: "default_tier",
+        reason: [
+          `Requested tier '${requestedTier}' for role '${role}' had no configured agent.`,
+          `Fell back to default tier '${defaultTier}' and selected '${defaultAgent}'.`,
+        ].join(" "),
+      };
+    }
+  }
+
+  const legacyAgentID = LEGACY_ROLE_AGENT[role];
+  if (hasConfiguredAgent(legacyAgentID, configuredAgentIDs)) {
+    return {
+      ok: true,
+      agentID: legacyAgentID,
+      tier: defaultTier,
+      fallbackUsed: "legacy_singleton",
+      reason: [
+        `No configured agent found in orchestration.agent_pools for role='${role}' tier='${requestedTier}'.`,
+        `Using legacy singleton '${legacyAgentID}' for backward compatibility.`,
+      ].join(" "),
+    };
+  }
+
+  return {
+    ok: false,
+    reason: [
+      `Blocked: no configured agent for role='${role}' tier='${requestedTier}'.`,
+      `Checked requested tier, default tier '${defaultTier}', and legacy '${legacyAgentID}'.`,
+    ].join(" "),
+  };
+}
+
+function firstConfiguredAgent(candidates: string[], configuredAgentIDs: Set<string>): string | null {
+  for (const candidate of candidates) {
+    if (hasConfiguredAgent(candidate, configuredAgentIDs)) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+function hasConfiguredAgent(agentID: string, configuredAgentIDs: Set<string>): boolean {
+  if (configuredAgentIDs.size === 0) {
+    return true;
+  }
+
+  return configuredAgentIDs.has(agentID);
+}
+
+async function loadConfiguredAgentIDs(worktree: string): Promise<Set<string>> {
+  const configPath = resolve(worktree, ".opencode", "opencode.jsonc");
+
+  try {
+    const raw = await readFile(configPath, "utf-8");
+    const parsed = parseJsonc(raw);
+    if (!isRecord(parsed) || !isRecord(parsed.agent)) {
+      return new Set<string>();
+    }
+
+    return new Set(Object.keys(parsed.agent));
+  } catch {
+    return new Set<string>();
+  }
+}
+
+function parseJsonc(raw: string): unknown {
+  const withoutBlockComments = raw.replace(/\/\*[\s\S]*?\*\//g, "");
+  const withoutLineComments = withoutBlockComments.replace(/^\s*\/\/.*$/gm, "");
+  const withoutTrailingCommas = withoutLineComments.replace(/,\s*([}\]])/g, "$1");
+  return JSON.parse(withoutTrailingCommas);
 }
 
 function parseQueuedCommand(rawLine: string): PipelineControlQueueCommand | null {
@@ -2142,6 +2664,185 @@ function extractTaskDescription(title: string): string {
 
   const withoutPrefix = normalized.replace(/^(triage|implementation|review):/i, "").trim();
   return withoutPrefix || normalized;
+}
+
+async function resolveTaskExecutionMetadata(worktree: string, taskDescription: string): Promise<TaskExecutionLookup> {
+  const taskRef = extractTaskReference(taskDescription);
+  if (!taskRef) {
+    return {
+      warning: [
+        "EXECUTION metadata lookup skipped because task reference was not found in task description.",
+        `Description='${taskDescription}'. Falling back to legacy routing defaults.`,
+      ].join(" "),
+    };
+  }
+
+  const tasklistPath = await resolveTasklistPath(worktree, taskDescription);
+  if (!tasklistPath) {
+    return {
+      warning: `Could not find *_Tasklist.md for task '${taskRef}'. Falling back to legacy routing defaults.`,
+    };
+  }
+
+  try {
+    const content = await readFile(tasklistPath, "utf-8");
+    const parsed = parseTaskExecutionMetadata(content, tasklistPath);
+    const metadata = parsed.get(taskRef);
+    if (!metadata) {
+      return {
+        warning: [
+          `Missing EXECUTION metadata for '${taskRef}' in ${tasklistPath}.`,
+          "Falling back to legacy role/tier routing behavior.",
+        ].join(" "),
+      };
+    }
+
+    return { metadata };
+  } catch {
+    return {
+      warning: `Unable to read tasklist '${tasklistPath}' for '${taskRef}'. Falling back to legacy routing defaults.`,
+    };
+  }
+}
+
+function extractTaskReference(taskDescription: string): string | null {
+  const matched = taskDescription.match(TASK_REF_PATTERN);
+  if (!matched || !matched[0]) {
+    return null;
+  }
+
+  return matched[0].toUpperCase();
+}
+
+async function resolveTasklistPath(worktree: string, taskDescription: string): Promise<string | null> {
+  const explicit = taskDescription.match(/([A-Za-z0-9_-]+_Tasklist\.md)/);
+  if (explicit && explicit[1]) {
+    const directPath = resolve(worktree, "agents", explicit[1]);
+    try {
+      const fileStats = await stat(directPath);
+      if (fileStats.isFile()) {
+        return directPath;
+      }
+    } catch {
+      // Fall through to discovery.
+    }
+  }
+
+  const discovered = await listTasklistPaths(worktree);
+  return discovered[0] ?? null;
+}
+
+async function listTasklistPaths(worktree: string): Promise<string[]> {
+  const agentsDirectory = resolve(worktree, "agents");
+  try {
+    const entries = await readdir(agentsDirectory, { withFileTypes: true });
+    const tasklistStats = await Promise.all(
+      entries
+        .filter((entry) => entry.isFile() && entry.name.endsWith("_Tasklist.md"))
+        .map(async (entry) => {
+          const absolutePath = resolve(agentsDirectory, entry.name);
+          const metadata = await stat(absolutePath);
+          return {
+            path: absolutePath,
+            mtimeMs: metadata.mtimeMs,
+          };
+        }),
+    );
+
+    tasklistStats.sort((left, right) => {
+      if (right.mtimeMs !== left.mtimeMs) {
+        return right.mtimeMs - left.mtimeMs;
+      }
+
+      return left.path.localeCompare(right.path);
+    });
+
+    return tasklistStats.map((entry) => entry.path);
+  } catch {
+    return [];
+  }
+}
+
+function parseTaskExecutionMetadata(content: string, tasklistPath: string): Map<string, TaskExecutionMetadata> {
+  const metadataByTask = new Map<string, TaskExecutionMetadata>();
+  const lines = content.split("\n");
+  let pendingTaskRef: string | null = null;
+
+  for (const line of lines) {
+    const taskMatch = line.match(/^\s*<!--\s*TASK:([^\s]+)\s*-->\s*$/i);
+    if (taskMatch && taskMatch[1]) {
+      pendingTaskRef = taskMatch[1].trim().toUpperCase();
+      continue;
+    }
+
+    if (!pendingTaskRef) {
+      continue;
+    }
+
+    const executionMatch = line.match(/^\s*<!--\s*EXECUTION:(.+)-->\s*$/i);
+    if (!executionMatch || !executionMatch[1]) {
+      continue;
+    }
+
+    const parsed = parseTaskExecutionComment(executionMatch[1].trim(), pendingTaskRef, tasklistPath);
+    if (parsed) {
+      metadataByTask.set(pendingTaskRef, parsed);
+    }
+
+    pendingTaskRef = null;
+  }
+
+  return metadataByTask;
+}
+
+function parseTaskExecutionComment(
+  rawExecutionJson: string,
+  taskRef: string,
+  tasklistPath: string,
+): TaskExecutionMetadata | null {
+  try {
+    const parsed = JSON.parse(rawExecutionJson) as {
+      execution?: {
+        role?: unknown;
+        tier?: unknown;
+        skill?: unknown;
+        parallel_group?: unknown;
+        depends_on?: unknown;
+      };
+    };
+
+    if (!isRecord(parsed.execution)) {
+      return null;
+    }
+
+    const role = normalizeExecutionRole(parsed.execution.role);
+    const tier = normalizeExecutionTier(parsed.execution.tier);
+    if (!role || !tier) {
+      return null;
+    }
+
+    const skillID = typeof parsed.execution.skill === "string" && parsed.execution.skill.trim()
+      ? parsed.execution.skill.trim()
+      : undefined;
+    const parallelGroup =
+      typeof parsed.execution.parallel_group === "string" && parsed.execution.parallel_group.trim()
+        ? parsed.execution.parallel_group.trim()
+        : undefined;
+
+    const dependsOn = toStringArray(parsed.execution.depends_on);
+
+    return {
+      taskRef,
+      role,
+      tier,
+      skillID,
+      parallelGroup,
+      dependsOn,
+      tasklistPath,
+    };
+  } catch {
+    return null;
+  }
 }
 
 function shouldPreferSpecExpertFirst(taskDescription: string): boolean {
@@ -2407,12 +3108,17 @@ export const __orchestratorTestUtils = {
   applyGlobalOffToPipelines,
   applyGlobalOnToPipelines,
   buildCommandDedupKey,
+  extractTaskReference,
   getNextStage,
   loadPersistedState,
+  parseAgentPools,
+  parseTaskExecutionMetadata,
+  parseTaskRoutingSettings,
   normalizeErrorSignature,
   normalizeStage,
   parseQueuedCommand,
   rememberPreHandledCommand,
+  resolveAgentFromPools,
   shouldIgnoreError,
   splitCommandQueueLines,
   pruneProcessedCommandDedupes,

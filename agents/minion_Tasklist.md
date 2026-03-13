@@ -266,6 +266,102 @@ Agents should execute one subphase at a time. To trigger implementation, the Lea
 <!-- TASK:T-3.6.6 -->
 - [x] **T-3.6.6** (Refs #1): Execute pre-push validation suite (`typecheck`, tool/plugin tests, integration tests) and record pass/fail evidence. (Manual Execution Task). Touch points: `.opencode/package.json`, `.opencode/tests/`
 
+### SUBPHASE-3.7: Explicit Tasklist Routing & Tiered Agent Resolution (V1)
+<!-- SUBPHASE:3.7 -->
+**Goal:** Enforce tasklist-explicit role/tier routing and deterministic fallback while preserving legacy single-agent behavior.
+**Entry criteria:** SUBPHASE-3.6 complete.
+**Exit criteria / QA checklist:**
+- [x] Orchestrator reads per-task `EXECUTION` metadata and uses it as the primary routing source.
+- [x] No V1 complexity inference exists in orchestration routing logic.
+- [x] Role/tier to concrete agent selection is deterministic from config-defined pools.
+- [x] Missing metadata triggers warning-level event and deterministic legacy fallback.
+- [x] Missing/unresolvable tier pool produces explicit blocked state and reason logging.
+**Proposed PR title:** feat: add explicit tasklist routing and deterministic tiered agent selection
+**Proposed commit message:** feat: enforce tasklist-explicit role-tier routing with deterministic fallback and legacy compatibility (Refs #1)
+
+**Tasks:**
+<!-- TASK:T-3.7.1 -->
+<!-- EXECUTION:{"execution":{"role":"implementation","tier":"standard","skill":"orchestration-specialist","parallel_group":"routing-core","depends_on":[]}} -->
+- [x] **T-3.7.1** (Refs #1): Define and implement parser contract for `<!-- EXECUTION:{...} -->` task metadata blocks in tasklist traversal flow. Touch points: `.opencode/plugins/orchestrator.ts`, `doc/routing_policy.md`
+<!-- TASK:T-3.7.2 -->
+<!-- EXECUTION:{"execution":{"role":"implementation","tier":"pro","skill":"orchestration-specialist","parallel_group":"routing-core","depends_on":["T-3.7.1"]}} -->
+- [x] **T-3.7.2** (Refs #1): Implement deterministic role/tier agent resolver using `orchestration.agent_pools` with first-match selection against `.opencode/opencode.jsonc` agent IDs. Touch points: `.opencode/plugins/orchestrator.ts`, `demonlord.config.json`
+<!-- TASK:T-3.7.3 -->
+<!-- EXECUTION:{"execution":{"role":"implementation","tier":"standard","skill":"orchestration-specialist","parallel_group":"routing-core","depends_on":["T-3.7.2"]}} -->
+- [x] **T-3.7.3** (Refs #1): Add deterministic fallback chain: requested tier -> `task_routing.default_tier` -> legacy singleton (`planner|minion|reviewer`) -> blocked transition with reason. Touch points: `.opencode/plugins/orchestrator.ts`, `doc/engineering_spec.md`
+<!-- TASK:T-3.7.4 -->
+<!-- EXECUTION:{"execution":{"role":"implementation","tier":"standard","skill":"orchestration-specialist","parallel_group":"routing-core","depends_on":["T-3.7.1"]}} -->
+- [x] **T-3.7.4** (Refs #1): Add warning-level event emission when routing metadata is missing and preserve backward-compatible default behavior for existing tasklists. Touch points: `.opencode/plugins/orchestrator.ts`, `_bmad-output/execution-graph.ndjson`
+<!-- TASK:T-3.7.5 -->
+<!-- EXECUTION:{"execution":{"role":"implementation","tier":"lite","skill":"config-guardian","parallel_group":"routing-config","depends_on":["T-3.7.2"]}} -->
+- [x] **T-3.7.5** (Refs #1): Extend configuration loader for docs-defined schema keys: `agent_pools`, `task_routing.source`, and `task_routing.default_tier` with migration-safe defaults. Touch points: `.opencode/plugins/orchestrator.ts`, `demonlord.config.json`, `README.md`, `USAGE.md`
+<!-- TASK:T-3.7.6 -->
+<!-- EXECUTION:{"execution":{"role":"review","tier":"pro","skill":"spec-expert","parallel_group":"routing-docs","depends_on":["T-3.7.5"]}} -->
+- [x] **T-3.7.6** (Refs #1): Update orchestration docs to lock V1 behavior: tasklist-explicit routing source, no complexity inference, deterministic fallback, and legacy compatibility requirements. Touch points: `doc/engineering_spec.md`, `doc/routing_policy.md`, `doc/engineering_reference.md`
+
+### SUBPHASE-3.8: Constrained Parallel Dispatch & Execution Graph Contract (V1)
+<!-- SUBPHASE:3.8 -->
+**Goal:** Add deterministic queue/dispatch controls with dependency-aware parallelism and concise execution-graph logging.
+**Entry criteria:** SUBPHASE-3.7 complete.
+**Exit criteria / QA checklist:**
+- [ ] Scheduler enforces global, per-role, and per-tier parallelism caps deterministically.
+- [ ] Dependency gating uses `execution.depends_on` and emits explicit blocked reasons.
+- [ ] Capacity shortfall queues tasks (never drops) and resumes FIFO within group.
+- [ ] Required execution-graph event types are emitted in monotonic sequence order.
+- [ ] `/pipeline status` includes concise spawn tree, sequence order, and overlap window summary.
+**Proposed PR title:** feat: add dependency-aware parallel dispatch and concise execution-graph logging
+**Proposed commit message:** feat: enforce constrained parallel orchestration with deterministic execution-graph events (Refs #1)
+
+**Tasks:**
+<!-- TASK:T-3.8.1 -->
+<!-- EXECUTION:{"execution":{"role":"implementation","tier":"pro","skill":"orchestration-specialist","parallel_group":"dispatch-core","depends_on":["T-3.7.3"]}} -->
+- [ ] **T-3.8.1** (Refs #1): Implement deterministic scheduler ordering and dispatch lifecycle (`task_queued`, `spawn_requested`, `spawn_started`, `spawn_completed`, `task_completed`) with FIFO semantics per stage/group. Touch points: `.opencode/plugins/orchestrator.ts`
+<!-- TASK:T-3.8.2 -->
+<!-- EXECUTION:{"execution":{"role":"implementation","tier":"standard","skill":"orchestration-specialist","parallel_group":"dispatch-core","depends_on":["T-3.8.1"]}} -->
+- [ ] **T-3.8.2** (Refs #1): Enforce dependency blocking (`task_blocked`) from `execution.depends_on` and unblock transitions only after prerequisite `task_completed` events. Touch points: `.opencode/plugins/orchestrator.ts`
+<!-- TASK:T-3.8.3 -->
+<!-- EXECUTION:{"execution":{"role":"implementation","tier":"standard","skill":"config-guardian","parallel_group":"dispatch-config","depends_on":["T-3.8.1"]}} -->
+- [ ] **T-3.8.3** (Refs #1): Add orchestration config parsing for `parallelism.max_parallel_total`, `parallelism.max_parallel_by_role`, and `parallelism.max_parallel_by_tier` with deterministic fallback to single-flight limits. Touch points: `.opencode/plugins/orchestrator.ts`, `demonlord.config.json`
+<!-- TASK:T-3.8.4 -->
+<!-- EXECUTION:{"execution":{"role":"implementation","tier":"pro","skill":"orchestration-specialist","parallel_group":"dispatch-graph","depends_on":["T-3.8.1"]}} -->
+- [ ] **T-3.8.4** (Refs #1): Implement concise execution graph NDJSON writer with required schema fields (`seq`, `ts`, `rootSessionID`, `eventType`, `sessionID`, `parentSessionID`, `stage`, `taskRef`, `agentID`, `tier`, `skillID`, `parallelGroup`, `slot`, `status`, optional `reason`) and dedupe semantics. Touch points: `.opencode/plugins/orchestrator.ts`, `_bmad-output/execution-graph.ndjson`
+<!-- TASK:T-3.8.5 -->
+<!-- EXECUTION:{"execution":{"role":"implementation","tier":"lite","skill":"orchestration-specialist","parallel_group":"dispatch-status","depends_on":["T-3.8.4"]}} -->
+- [ ] **T-3.8.5** (Refs #1): Extend `/pipeline status` and `pipelinectl status` summaries to show parent->child tree, execution order, and overlap windows from execution-graph data. Touch points: `.opencode/plugins/orchestrator.ts`, `agents/tools/pipelinectl.sh`, `USAGE.md`
+<!-- TASK:T-3.8.6 -->
+<!-- EXECUTION:{"execution":{"role":"review","tier":"lite","skill":"spec-expert","parallel_group":"dispatch-docs","depends_on":["T-3.8.5"]}} -->
+- [ ] **T-3.8.6** (Refs #1): Update architecture docs with deterministic ordering guarantees, event-type contract, and migration-safe config defaults. Touch points: `doc/engineering_spec.md`, `doc/routing_policy.md`, `README.md`
+
+### SUBPHASE-3.9: V1 Routing/Parallelism Determinism Tests & Regression Gates
+<!-- SUBPHASE:3.9 -->
+**Goal:** Add objective pass/fail coverage for tasklist-explicit routing, constrained parallelism, and execution-graph correctness.
+**Entry criteria:** SUBPHASE-3.8 complete.
+**Exit criteria / QA checklist:**
+- [ ] Tests prove deterministic agent selection from task metadata and pool ordering.
+- [ ] Tests prove deterministic fallback behavior for missing metadata and missing tiers.
+- [ ] Tests prove dependency blocking and cap-based queueing semantics.
+- [ ] Tests validate required execution-graph fields, ordering (`seq`), and dedupe behavior.
+- [ ] Regression tests confirm existing single-agent workflows still pass unchanged.
+**Proposed PR title:** test: add deterministic routing and execution-graph regression coverage
+**Proposed commit message:** test: validate explicit tier routing, constrained parallel dispatch, and legacy workflow compatibility (Refs #1)
+
+**Tasks:**
+<!-- TASK:T-3.9.1 -->
+<!-- EXECUTION:{"execution":{"role":"implementation","tier":"pro","skill":"orchestration-specialist","parallel_group":"tests-routing","depends_on":["T-3.7.5"]}} -->
+- [ ] **T-3.9.1** (Refs #1): Add orchestrator tests for role/tier resolution order from `agent_pools` and first-existing-agent selection behavior. Touch points: `.opencode/tests/plugins/orchestrator.test.ts`
+<!-- TASK:T-3.9.2 -->
+<!-- EXECUTION:{"execution":{"role":"implementation","tier":"standard","skill":"orchestration-specialist","parallel_group":"tests-routing","depends_on":["T-3.9.1"]}} -->
+- [ ] **T-3.9.2** (Refs #1): Add fallback tests for missing `EXECUTION` metadata and unresolved tier pools, including warning/block reason assertions. Touch points: `.opencode/tests/plugins/orchestrator.test.ts`, `.opencode/tests/integration/orchestration-flow.test.ts`
+<!-- TASK:T-3.9.3 -->
+<!-- EXECUTION:{"execution":{"role":"implementation","tier":"pro","skill":"orchestration-specialist","parallel_group":"tests-dispatch","depends_on":["T-3.8.3"]}} -->
+- [ ] **T-3.9.3** (Refs #1): Add integration tests for constrained parallel scheduler behavior (dependency blocking, queueing on cap limits, FIFO resume). Touch points: `.opencode/tests/integration/orchestration-flow.test.ts`
+<!-- TASK:T-3.9.4 -->
+<!-- EXECUTION:{"execution":{"role":"implementation","tier":"standard","skill":"orchestration-specialist","parallel_group":"tests-graph","depends_on":["T-3.8.4"]}} -->
+- [ ] **T-3.9.4** (Refs #1): Add execution-graph contract tests for required fields, monotonic `seq`, event ordering, and duplicate suppression behavior. Touch points: `.opencode/tests/plugins/orchestrator.test.ts`
+<!-- TASK:T-3.9.5 -->
+<!-- EXECUTION:{"execution":{"role":"review","tier":"pro","skill":"spec-expert","parallel_group":"tests-docs","depends_on":["T-3.9.4"]}} -->
+- [ ] **T-3.9.5** (Refs #1): Add acceptance matrix to docs with objective pass/fail criteria for routing, fallback, parallel dispatch, execution-graph correctness, and no-regression legacy workflow behavior. Touch points: `doc/engineering_spec.md`, `agents/minion_Plan.md`
+
 ---
 
 ## PHASE-4: Deterministic Quality Gates

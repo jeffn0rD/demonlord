@@ -47,6 +47,15 @@ This command will:
 - Wait for explicit pipeline transitions in manual mode (`/pipeline advance ...`)
 - Enforce quality gates through the `submit_implementation` tool
 
+Tasklist-explicit routing metadata (V1 contract) per runnable task:
+
+```md
+<!-- TASK:T-3.7.2 -->
+<!-- EXECUTION:{"execution":{"role":"implementation","tier":"pro","skill":"orchestration-specialist","parallel_group":"routing-core","depends_on":["T-3.7.1"]}} -->
+```
+
+If `EXECUTION` metadata is missing, orchestrator falls back deterministically to legacy behavior and emits a warning-level event.
+
 ### 3. Review and Approval
 Monitor Discord notifications for:
 - **Worktree creation requests**: Approve or reject based on the agent type and purpose
@@ -211,8 +220,17 @@ Discord integration is configured in `demonlord.config.json`:
 - **`orchestration.require_approval_before_spawn`**: Block child spawn until approved
 - **`orchestration.ignore_aborted_messages`**: Treat `MessageAbortedError` as non-fatal when true
 - **`orchestration.verbose_events`**: Enable concise operational event messages
+- **`orchestration.agent_pools`**: Role/tier to concrete agent ID mapping (first existing ID wins)
+- **`orchestration.task_routing.source`**: V1 source is `tasklist_explicit`
+- **`orchestration.task_routing.default_tier`**: Default tier used for deterministic metadata fallback
+- **`orchestration.parallelism.max_parallel_total`**: Global concurrent task cap
+- **`orchestration.parallelism.max_parallel_by_role`**: Per-role caps
+- **`orchestration.parallelism.max_parallel_by_tier`**: Per-tier caps
+- **`orchestration.execution_graph.enabled|path|verbosity`**: Concise NDJSON execution graph output controls
 - **`discord.enabled`**: Enable/disable Discord integration
 - **`discord.personas`**: Agent-specific Discord persona settings
+
+When execution graph logging is enabled, events are written to `_bmad-output/execution-graph.ndjson` with deterministic `seq` ordering and spawn/queue/block visibility.
 
 ### `.opencode/opencode.jsonc`
 - **Agent definitions**: Required `description` field for all agents

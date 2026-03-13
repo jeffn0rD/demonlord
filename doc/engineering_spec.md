@@ -21,10 +21,10 @@ Professional-grade software engineering requires the elimination of general-purp
 
 Primary Agent Personas
 
-1. Planner Agent: Operates to ingest GitHub issues, utilize glob and grep to identify specific target files in the codebase, and generate atomic .md plan files within the /agents/plans/ workspace. The Planner is architecturally restricted from making code changes.
+1. Planner Agent: Operates to ingest GitHub issues, utilize glob and grep to identify specific target files in the codebase, and generate atomic .md plan files within the /agents/plans/ workspace. The Planner is architecturally restricted from making code changes. V1 supports `planner` as the backward-compatible default and optional tier variants (`planner-lite`, `planner-pro`) through role/tier pool mapping.
 2. Orchestrator: Functions as the task router. It parses the Planner's output and invokes the custom route_task.ts Matchmaker to route tasks to the appropriate specialized skills.
-3. Minion Agents: Execution-focused entities spawned headlessly in parallel, isolated Git Worktrees via the OpenCode SDK. They operate within a restricted toolset to implement specific features or fixes.
-4. Reviewer Agent: Performs automated Pull Request (PR) analysis and triggers event-based notifications for human-in-the-loop (HITL) approval via Discord.
+3. Minion Agents: Execution-focused entities spawned headlessly in parallel, isolated Git Worktrees via the OpenCode SDK. They operate within a restricted toolset to implement specific features or fixes. V1 defines implementation tiers `minion-lite`, `minion-standard`, and `minion-pro` with deterministic fallback to `minion`.
+4. Reviewer Agent: Performs automated Pull Request (PR) analysis and triggers event-based notifications for human-in-the-loop (HITL) approval via Discord. V1 supports `reviewer-lite` and `reviewer-pro` with deterministic fallback to `reviewer`.
 
 Agent Skills and the "Matchmaker" Logic
 
@@ -173,6 +173,195 @@ To reduce noise during manual testing while preserving deterministic recovery:
 * `MessageAbortedError` can be treated as non-fatal when `orchestration.ignore_aborted_messages=true`.
 * Recovery prompts are emitted only for real execution errors and deduplicated once per normalized signature.
 * Structured orchestration events (`spawn requested/approved/blocked/completed`, `error`, `stopped`) are persisted for auditability.
+
+4A. V1 Deterministic Multi-Tier Routing and Execution Graph
+
+This section defines the mandatory V1 behavior for explicit tasklist-driven routing and concise execution visibility.
+
+Scope and compatibility requirements:
+
+* Complexity/tier selection source MUST be explicit tasklist metadata in V1 (`task_routing.source = "tasklist_explicit"`).
+* The orchestrator MUST NOT infer complexity in V1.
+* Manual-first controls (`/pipeline`, `pipelinectl`) MUST remain the authoritative control path.
+* Backward compatibility with existing single-agent IDs (`planner`, `orchestrator`, `minion`, `reviewer`) MUST be preserved.
+
+Agent Tiering Model (Role Families)
+
+V1 role families and tiers:
+
+* planning role family: `planner-lite`, `planner-pro` (optional)
+* implementation role family: `minion-lite`, `minion-standard`, `minion-pro`
+* review role family: `reviewer-lite`, `reviewer-pro`
+
+Deterministic selection rules:
+
+1. The orchestrator MUST read `execution.role` and `execution.tier` from task metadata.
+2. It MUST resolve candidates from `orchestration.agent_pools[role][tier]` in listed order.
+3. It MUST select the first candidate that exists under `.opencode/opencode.jsonc.agent`.
+4. If no candidate exists, it MUST apply deterministic fallback in this order:
+   a) `orchestration.task_routing.default_tier` for the same role;
+   b) legacy singleton ID (`planner` | `minion` | `reviewer`) for that role;
+   c) hard block with `task_blocked` if still unresolved.
+5. Every fallback decision MUST be logged in the execution graph with `reason`.
+
+Explicit Tasklist Routing Contract (V1)
+
+Tasklist metadata is the routing source of truth. Each runnable task SHOULD include an adjacent `EXECUTION` metadata block.
+
+Required fields:
+
+* `execution.role`: `planning` | `implementation` | `review`
+* `execution.tier`: `lite` | `standard` | `pro`
+
+Optional fields:
+
+* `execution.skill`: explicit skill override ID (string)
+* `execution.parallel_group`: queue affinity token (string)
+* `execution.depends_on`: array of task IDs (for example `T-3.7.1`)
+
+Canonical task annotation format (deterministic JSON in markdown comment):
+
+```md
+<!-- TASK:T-3.7.2 -->
+<!-- EXECUTION:{"execution":{"role":"implementation","tier":"pro","skill":"orchestration-specialist","parallel_group":"routing-core","depends_on":["T-3.7.1"]}} -->
+- **T-3.7.2**: Implement role/tier agent resolution in orchestrator spawn flow.
+```
+
+Missing metadata behavior:
+
+* If `EXECUTION` metadata is absent, the orchestrator MUST preserve legacy behavior (`role=implementation`, `tier=orchestration.task_routing.default_tier`, agent fallback to `minion`) and emit a warning-level log event.
+* Missing metadata MUST NOT fail existing single-agent pipelines.
+
+Constrained Parallel Execution Policy
+
+Stage and dispatch rules:
+
+* Global stage sequence MUST remain `triage -> implementation -> review`.
+* Controlled parallelism is allowed only for implementation tasks that are dependency-ready.
+* `execution.depends_on` MUST be fully satisfied before a task is eligible for spawn.
+
+Deterministic queue semantics:
+
+1. Task order source MUST be tasklist appearance order (`taskIndex`).
+2. Scheduler order key MUST be: `stage`, then `parallel_group` (empty string sorts first), then FIFO by `taskIndex`.
+3. If dependency is unresolved, task state MUST be `blocked` with explicit `reason`.
+4. If capacity is unavailable (`max_parallel_total`, role cap, or tier cap), task state MUST be `queued`; tasks are never dropped.
+5. When capacity becomes available, queued tasks MUST resume in deterministic order (same key as above).
+
+Execution Graph Log Contract (Concise, Machine-Readable)
+
+Default artifact path: `_bmad-output/execution-graph.ndjson`
+
+Each event line MUST contain:
+
+* `seq` (strictly increasing integer per root pipeline)
+* `ts` (UTC ISO-8601 timestamp)
+* `rootSessionID`, `eventType`
+* `sessionID`, `parentSessionID`
+* `stage`, `taskRef`, `agentID`, `tier`, `skillID`
+* `parallelGroup`, `slot`, `status`
+* optional `reason`
+
+Required `eventType` values:
+
+* `pipeline_started`
+* `task_queued`
+* `task_blocked`
+* `spawn_requested`
+* `spawn_started`
+* `spawn_completed`
+* `task_completed`
+* `pipeline_completed`
+
+Ordering and dedupe guarantees:
+
+* Events MUST be appended atomically, one NDJSON object per line.
+* `seq` allocation MUST be monotonic and gap-free for committed writes.
+* Duplicate transitions for the same `(rootSessionID, taskRef, eventType, status)` MUST be deduped.
+* Deduped attempts MUST NOT reorder subsequent committed events.
+
+Example event:
+
+```json
+{"seq":14,"ts":"2026-03-13T12:03:55.004Z","rootSessionID":"root-42","eventType":"task_blocked","sessionID":"sess-impl-2","parentSessionID":"root-42","stage":"implementation","taskRef":"T-3.8.3","agentID":"minion-pro","tier":"pro","skillID":"backend-specialist","parallelGroup":"impl-core","slot":"implementation:2","status":"blocked","reason":"depends_on unresolved: T-3.8.1"}
+```
+
+Human status summary contract (`/pipeline status`):
+
+* MUST include parent->child spawn tree with task refs and agent IDs.
+* MUST include deterministic execution order by `seq`.
+* MUST include overlap windows as `[startSeq-endSeq]` per parallel group.
+
+Config Schema Contract (migration-safe)
+
+`demonlord.config.json` extension under `orchestration`:
+
+```json
+{
+  "orchestration": {
+    "agent_pools": {
+      "planning": {
+        "lite": ["planner"],
+        "pro": ["planner-pro", "planner"]
+      },
+      "implementation": {
+        "lite": ["minion-lite", "minion"],
+        "standard": ["minion-standard", "minion"],
+        "pro": ["minion-pro", "minion"]
+      },
+      "review": {
+        "lite": ["reviewer-lite", "reviewer"],
+        "pro": ["reviewer-pro", "reviewer"]
+      }
+    },
+    "task_routing": {
+      "source": "tasklist_explicit",
+      "default_tier": "standard"
+    },
+    "parallelism": {
+      "max_parallel_total": 1,
+      "max_parallel_by_role": {
+        "planning": 1,
+        "implementation": 1,
+        "review": 1
+      },
+      "max_parallel_by_tier": {
+        "lite": 1,
+        "standard": 1,
+        "pro": 1
+      }
+    },
+    "execution_graph": {
+      "enabled": true,
+      "path": "_bmad-output/execution-graph.ndjson",
+      "verbosity": "concise"
+    }
+  }
+}
+```
+
+Default and backward-compatibility behavior:
+
+* If `agent_pools` is absent, runtime MUST use legacy single-agent IDs.
+* If `task_routing` is absent, runtime MUST assume `source="tasklist_explicit"` and `default_tier="standard"` while preserving legacy fallback when metadata is missing.
+* If `parallelism` is absent, effective limits MUST default to `1` for total/role/tier (single-flight behavior).
+* If `execution_graph` is absent, runtime MUST default to enabled concise logging at `_bmad-output/execution-graph.ndjson`.
+* Orchestrator MUST continue to treat tasklist metadata as the sole V1 tier source and MUST NOT derive tier from heuristic complexity signals.
+
+V1 Acceptance Criteria (pass/fail)
+
+1. Agent selection is deterministic from task metadata and `agent_pools`, with stable first-match behavior.
+2. Missing metadata follows deterministic legacy fallback and emits warning-level execution-graph events.
+3. Parallel dispatch never violates dependency rules or configured caps; blocked/queued states are explicit.
+4. Execution graph events satisfy required schema, ordering guarantees, and dedupe rules.
+5. Existing single-agent workflows (`planner`, `orchestrator`, `minion`, `reviewer`) run without regression.
+
+V1 Risks and Non-Goals
+
+* Non-goal: automatic complexity scoring or LLM-inferred tiering.
+* Non-goal: dynamic autoscaling based on token/cost telemetry.
+* Risk: malformed task metadata can reduce throughput; mitigation is strict parser validation plus deterministic fallback.
+* Risk: over-restrictive parallel caps can starve throughput; mitigation is explicit queue visibility in execution graph and `/pipeline status`.
 
 5. Deterministic Quality Gates & Plugin Architecture
 

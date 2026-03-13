@@ -7,12 +7,72 @@ This document defines deterministic routing behavior for Demonlord so agent sess
 - Route ambiguous work to specification analysis first.
 - Improve heuristic routing accuracy using skill-level routing hints.
 - Keep implementation sessions focused by injecting narrow, file-level context.
+- Enforce deterministic role/tier routing from explicit tasklist metadata (V1).
+- Provide concise, machine-readable spawn and scheduling visibility.
 
 ## First-Pass Policy
 
 - If task intent is ambiguous, requirement-heavy, or documentation-seeking, prefer `spec-expert` before implementation routing.
 - Ambiguity signals include terms like `unclear`, `ambiguous`, `conflict`, `spec`, `requirements`, `tasklist`, `plan`, and `codename`.
 - When policy triggers, orchestrator requests heuristic routing and enforces `spec-expert` to produce a scoped brief before coding.
+
+## V1 Tasklist-Explicit Routing Contract
+
+- Routing source MUST be `orchestration.task_routing.source = "tasklist_explicit"`.
+- The orchestrator MUST NOT infer complexity/tier in V1.
+- Each runnable task SHOULD define deterministic `EXECUTION` metadata adjacent to the task marker.
+- Parser contract: orchestrator scans `<!-- TASK:... -->` markers and consumes the nearest following `<!-- EXECUTION:{...} -->` block for that task reference.
+- Task reference extraction is deterministic (`T-<phase>.<subphase>.<task>`); if no reference is present in the request/session context, orchestrator emits a warning and falls back.
+
+Canonical metadata shape:
+
+```md
+<!-- TASK:T-3.7.4 -->
+<!-- EXECUTION:{"execution":{"role":"implementation","tier":"standard","skill":"backend-specialist","parallel_group":"impl-core","depends_on":["T-3.7.1"]}} -->
+- **T-3.7.4**: ...
+```
+
+Field contract:
+
+- `execution.role`: `planning` | `implementation` | `review`
+- `execution.tier`: `lite` | `standard` | `pro`
+- `execution.skill` (optional): explicit skill override
+- `execution.parallel_group` (optional): queue affinity token
+- `execution.depends_on` (optional): task IDs that MUST complete first
+
+Missing metadata fallback (deterministic):
+
+- Runtime MUST preserve legacy behavior with warning-level event emission.
+- Effective defaults: `role=implementation`, `tier=orchestration.task_routing.default_tier`, agent fallback to `minion`.
+- Warning and fallback decisions are appended to `_bmad-output/execution-graph.ndjson` with an explicit `reason`.
+
+## Deterministic Tier Selection and Fallback
+
+- Candidate IDs MUST be read from `orchestration.agent_pools[role][tier]` in listed order.
+- Runtime MUST select the first ID present in `.opencode/opencode.jsonc.agent`.
+- If unresolved, fallback order MUST be:
+  1) same role + `orchestration.task_routing.default_tier`
+  2) legacy singleton (`planner` | `minion` | `reviewer`)
+  3) explicit block (`task_blocked`) with reason
+
+## Constrained Parallel Dispatch Rules
+
+- Stage model remains `triage -> implementation -> review`.
+- Only dependency-ready implementation tasks may run in parallel.
+- Capacity limits MUST be enforced by:
+  - `orchestration.parallelism.max_parallel_total`
+  - `orchestration.parallelism.max_parallel_by_role`
+  - `orchestration.parallelism.max_parallel_by_tier`
+- FIFO ordering applies within the same stage and `parallel_group`.
+- If capacity is unavailable, task MUST stay `queued` (never dropped).
+- If dependencies are unresolved, task MUST be `blocked` with explicit reason.
+
+## Execution Graph Event Policy
+
+- Runtime MUST append concise NDJSON events to `_bmad-output/execution-graph.ndjson` when enabled.
+- Required event types: `pipeline_started`, `task_queued`, `task_blocked`, `spawn_requested`, `spawn_started`, `spawn_completed`, `task_completed`, `pipeline_completed`.
+- Each event MUST include: `seq`, `ts`, `rootSessionID`, `eventType`, `sessionID`, `parentSessionID`, `stage`, `taskRef`, `agentID`, `tier`, `skillID`, `parallelGroup`, `slot`, `status`, and optional `reason`.
+- Events MUST be monotonic by `seq` and deduped by `(rootSessionID, taskRef, eventType, status)`.
 
 ## Spec Handoff Marker Contract
 

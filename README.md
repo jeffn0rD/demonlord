@@ -67,6 +67,8 @@ The system operates through a three-stage lifecycle:
 2. **Implementation**: The Orchestrator spawns Minion agents in isolated worktrees to execute tasks
 3. **Review**: The Reviewer agent analyzes output and requests human approval via Discord
 
+Routing in V1 is explicit from tasklist metadata. Runnable tasks can declare `execution.role`, `execution.tier`, optional `execution.skill`, optional `execution.parallel_group`, and optional `execution.depends_on`. Missing metadata falls back deterministically to legacy behavior with warning-level logging.
+
 All code changes must pass through the `submit_implementation` quality gate, which enforces your repository's linting and testing standards.
 
 ## Configuration
@@ -128,6 +130,39 @@ The `demonlord.config.json` file includes both worktree and orchestration contro
 ```
 
 This allows you to require approval for specific agent types and keep orchestration manual by default during development/testing.
+
+### V1 Routing and Parallelism Extensions
+
+Active orchestration schema extensions for deterministic tasklist-explicit multi-tier routing:
+
+```json
+{
+  "orchestration": {
+    "agent_pools": {
+      "planning": { "lite": ["planner"], "pro": ["planner-pro", "planner"] },
+      "implementation": {
+        "lite": ["minion-lite", "minion"],
+        "standard": ["minion-standard", "minion"],
+        "pro": ["minion-pro", "minion"]
+      },
+      "review": { "lite": ["reviewer-lite", "reviewer"], "pro": ["reviewer-pro", "reviewer"] }
+    },
+    "task_routing": { "source": "tasklist_explicit", "default_tier": "standard" },
+    "parallelism": {
+      "max_parallel_total": 1,
+      "max_parallel_by_role": { "planning": 1, "implementation": 1, "review": 1 },
+      "max_parallel_by_tier": { "lite": 1, "standard": 1, "pro": 1 }
+    },
+    "execution_graph": {
+      "enabled": true,
+      "path": "_bmad-output/execution-graph.ndjson",
+      "verbosity": "concise"
+    }
+  }
+}
+```
+
+Routing behavior is deterministic: orchestrator reads `EXECUTION` metadata from tasklists, resolves role/tier against `agent_pools`, then falls back in order (`default_tier` -> legacy singleton) before blocking with explicit reason logs.
 
 ## Usage
 

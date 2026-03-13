@@ -53,6 +53,11 @@ describe("orchestrator snapshot and queue helpers", () => {
         requireApprovalBeforeSpawn: true,
         ignoreAbortedMessages: true,
         verboseEvents: true,
+        taskRouting: {
+          source: "tasklist_explicit",
+          defaultTier: "standard",
+        },
+        agentPools: __orchestratorTestUtils.parseAgentPools({}),
       });
 
       assert.equal(migrated.version, 2);
@@ -140,6 +145,11 @@ describe("orchestrator snapshot and queue helpers", () => {
         requireApprovalBeforeSpawn: true,
         ignoreAbortedMessages: true,
         verboseEvents: false,
+        taskRouting: {
+          source: "tasklist_explicit",
+          defaultTier: "standard",
+        },
+        agentPools: __orchestratorTestUtils.parseAgentPools({}),
       },
     );
     const autoNotIgnored = __orchestratorTestUtils.shouldIgnoreError(
@@ -150,6 +160,11 @@ describe("orchestrator snapshot and queue helpers", () => {
         requireApprovalBeforeSpawn: true,
         ignoreAbortedMessages: true,
         verboseEvents: false,
+        taskRouting: {
+          source: "tasklist_explicit",
+          defaultTier: "standard",
+        },
+        agentPools: __orchestratorTestUtils.parseAgentPools({}),
       },
     );
 
@@ -250,5 +265,78 @@ describe("orchestrator snapshot and queue helpers", () => {
     assert.equal(invalid.ok, false);
     assert.match(invalid.missing.join(" "), /DEMONLORD_SPEC_HANDOFF_READY/);
     assert.match(invalid.missing.join(" "), /## Constraints/);
+  });
+
+  test("parses explicit EXECUTION metadata from tasklist comments", () => {
+    const tasklist = [
+      "<!-- TASK:T-3.7.2 -->",
+      '<!-- EXECUTION:{"execution":{"role":"implementation","tier":"pro","skill":"orchestration-specialist","parallel_group":"routing-core","depends_on":["T-3.7.1"]}} -->',
+      "- [ ] **T-3.7.2**: ...",
+    ].join("\n");
+
+    const parsed = __orchestratorTestUtils.parseTaskExecutionMetadata(tasklist, "/tmp/minion_Tasklist.md");
+    const metadata = parsed.get("T-3.7.2");
+
+    assert.equal(metadata?.role, "implementation");
+    assert.equal(metadata?.tier, "pro");
+    assert.equal(metadata?.skillID, "orchestration-specialist");
+    assert.equal(metadata?.parallelGroup, "routing-core");
+    assert.deepEqual(metadata?.dependsOn, ["T-3.7.1"]);
+  });
+
+  test("resolves agent IDs deterministically with tier fallback chain", () => {
+    const pools = __orchestratorTestUtils.parseAgentPools({
+      implementation: {
+        standard: ["minion-standard"],
+        pro: ["minion-pro"],
+      },
+    });
+
+    const direct = __orchestratorTestUtils.resolveAgentFromPools({
+      role: "implementation",
+      requestedTier: "pro",
+      defaultTier: "standard",
+      agentPools: pools,
+      configuredAgentIDs: new Set(["minion-pro", "minion"]),
+    });
+
+    const defaultFallback = __orchestratorTestUtils.resolveAgentFromPools({
+      role: "implementation",
+      requestedTier: "pro",
+      defaultTier: "standard",
+      agentPools: pools,
+      configuredAgentIDs: new Set(["minion", "minion-standard"]),
+    });
+
+    const legacyFallback = __orchestratorTestUtils.resolveAgentFromPools({
+      role: "implementation",
+      requestedTier: "pro",
+      defaultTier: "standard",
+      agentPools: pools,
+      configuredAgentIDs: new Set(["minion"]),
+    });
+
+    const blocked = __orchestratorTestUtils.resolveAgentFromPools({
+      role: "implementation",
+      requestedTier: "pro",
+      defaultTier: "standard",
+      agentPools: pools,
+      configuredAgentIDs: new Set(["reviewer"]),
+    });
+
+    assert.equal(direct.ok, true);
+    assert.equal(direct.agentID, "minion-pro");
+    assert.equal(direct.fallbackUsed, "requested_tier");
+
+    assert.equal(defaultFallback.ok, true);
+    assert.equal(defaultFallback.agentID, "minion-standard");
+    assert.equal(defaultFallback.fallbackUsed, "default_tier");
+
+    assert.equal(legacyFallback.ok, true);
+    assert.equal(legacyFallback.agentID, "minion");
+    assert.equal(legacyFallback.fallbackUsed, "legacy_singleton");
+
+    assert.equal(blocked.ok, false);
+    assert.match(blocked.reason, /Blocked:/);
   });
 });

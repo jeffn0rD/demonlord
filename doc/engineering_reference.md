@@ -17,10 +17,21 @@ Strategic Impact: This structure prevents branch collisions and file-locking, al
 The Event-Driven Pipeline The software factory operates through event-driven orchestration via OpenCode plugins that ensures quality at every transition. Pipeline progress is tracked in explicit persisted state rather than inferred from session title text:
 
 1. Triage: A Planner Agent analyzes GitHub issues, uses built-in tools like glob and grep to identify target code areas, and generates a .md plan file.
-2. Implementation: Specialized minions execute tasks within their assigned worktrees, spawned via the OpenCode SDK (`client.session.create()`).
+2. Implementation: Specialized minions execute tasks within their assigned worktrees, spawned via the OpenCode SDK (`client.session.create()`). In V1, role/tier routing is sourced from explicit tasklist metadata (`execution.role`, `execution.tier`) rather than orchestrator complexity inference.
+   - Parser contract: task metadata is read from adjacent markdown comments (`<!-- TASK:... -->` then `<!-- EXECUTION:{...} -->`) in `*_Tasklist.md` files.
+   - Missing metadata behavior: emit warning-level routing event and fall back to legacy defaults (`implementation`, `task_routing.default_tier`, `minion`).
+   - Unresolvable pools: transition is deterministically blocked with explicit reason logging.
    - Spec-first enforcement: ambiguous or requirement-heavy requests route through `spec-expert` first, and coding sessions only start after a valid spec handoff marker is written.
 3. Deterministic Gates (The "Black Box"): This is a critical quality intercept. Agents are stripped of native git commands and must call a TypeScript custom tool, submit_implementation(). This tool programmatically runs lints and tests; if they fail, the function intercepts the stack trace and feeds it back to the agent for auto-correction.
 4. Review: Upon `session.idle` event, a plugin triggers the Reviewer Agent to analyze the output before posting a Discord notification for human-in-the-loop approval via Slash Commands (e.g., /approve, /reject).
+
+V1 role/tier families and compatibility:
+
+* planning: `planner-lite` | `planner-pro` (optional pool variants)
+* implementation: `minion-lite` | `minion-standard` | `minion-pro`
+* review: `reviewer-lite` | `reviewer-pro`
+* backward compatibility: if pools or tier IDs are unavailable, deterministic fallback resolves to `planner`, `minion`, `reviewer`.
+* fallback chain: requested tier -> `task_routing.default_tier` -> legacy singleton -> blocked state when no configured agent exists.
 
 Orchestration Modes and Controls
 
@@ -46,6 +57,14 @@ When slash-command handling is limited by core hook behavior, operators can use 
 * `pipelinectl stop [session]`
 
 The orchestrator plugin injects deterministic shell context via `shell.env` (`OPENCODE_SESSION_ID`, `OPENCODE_WORKTREE`, `OPENCODE_ORCHESTRATION_STATE`, `OPENCODE_ORCHESTRATION_COMMAND_QUEUE`) and prepends worktree tool paths so `pipelinectl` runs without manual session/worktree copy-paste.
+
+V1 constrained parallel dispatch and visibility:
+
+* Stage model remains `triage -> implementation -> review`.
+* Implementation tasks may run in controlled parallel only when `execution.depends_on` is satisfied.
+* Scheduler enforces `orchestration.parallelism.max_parallel_total`, `orchestration.parallelism.max_parallel_by_role`, and `orchestration.parallelism.max_parallel_by_tier`.
+* Queue behavior is deterministic FIFO within the same stage/group; capacity shortfalls queue tasks, unresolved dependencies block tasks with explicit reasons.
+* Concise machine-readable execution graph events are written to `_bmad-output/execution-graph.ndjson` when enabled.
 
 
 --------------------------------------------------------------------------------
