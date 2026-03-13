@@ -41,6 +41,13 @@ In manual mode, use local pipeline controls in the CLI:
 - **`/pipeline stop [session]` / `/pipeline off`**: Stop one pipeline or disable orchestration
 - **`/pipeline approve [session]`**: Approve blocked spawn without Discord dependency
 
+If slash-command handling is constrained, use the deterministic shell fallback:
+- **`./agents/tools/pipelinectl.sh status [session]`**
+- **`./agents/tools/pipelinectl.sh off|on`**
+- **`./agents/tools/pipelinectl.sh advance <triage|implementation|review> [session]`**
+- **`./agents/tools/pipelinectl.sh approve [session]`**
+- **`./agents/tools/pipelinectl.sh stop [session]`**
+
 ## Agent Roles and Responsibilities
 
 ### Planner Agent
@@ -148,6 +155,8 @@ Control the orchestration pipeline locally via CLI commands:
 - **`/pipeline off`**
 - **`/pipeline approve [session]`**
 
+Shell fallback commands (`pipelinectl`) enqueue deterministic control intents into `_bmad-output/orchestration-commands.ndjson`, consumed by the orchestrator plugin. This path avoids direct LLM reasoning turns for control operations.
+
 ### Configuration
 Discord integration is configured in `demonlord.config.json`:
 ```json
@@ -217,6 +226,10 @@ Discord integration is configured in `demonlord.config.json`:
 **`/pipeline` commands show reasoning text before output**
 - **Solution**: Apply the local OpenCode command-hook patch in `doc/opencode_command_noReply_patch.md`
 - **Check**: Confirm Demonlord pre-hooks set `output.noReply = true` for `/pipeline` and `/approve` on patched core builds
+
+**`pipelinectl` rejects command as stale/invalid**
+- **Solution**: Run `./agents/tools/pipelinectl.sh status` and retry with the latest state
+- **Check**: Verify target stage and pending approval state before `advance`/`approve`
 
 **Discord messages not appearing**
 - **Solution**: Verify `.env` contains correct Discord webhook URLs

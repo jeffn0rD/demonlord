@@ -36,6 +36,16 @@ Operational control is exposed via `/pipeline` commands:
 * `/pipeline stop [session]` and `/pipeline off`: halt one pipeline or disable orchestration globally.
 * `/pipeline approve [session]`: approve spawn without requiring Discord connectivity.
 
+When slash-command handling is limited by core hook behavior, operators can use local shell control:
+
+* `pipelinectl status [session]`
+* `pipelinectl off|on`
+* `pipelinectl advance <triage|implementation|review> [session]`
+* `pipelinectl approve [session]`
+* `pipelinectl stop [session]`
+
+The orchestrator plugin injects deterministic shell context via `shell.env` (`OPENCODE_SESSION_ID`, `OPENCODE_WORKTREE`, `OPENCODE_ORCHESTRATION_STATE`, `OPENCODE_ORCHESTRATION_COMMAND_QUEUE`) so shell commands can run without manual session/worktree copy-paste.
+
 
 --------------------------------------------------------------------------------
 

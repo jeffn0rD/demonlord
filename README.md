@@ -120,7 +120,32 @@ This allows you to require approval for specific agent types and keep orchestrat
 - **`/pipeline advance <triage|implementation|review> [session]`**: Trigger explicit stage transition
 - **`/pipeline stop [session]`**: Stop a specific pipeline
 - **`/pipeline off`**: Disable orchestration globally
+- **`pipelinectl status [session]`**: Shell fallback for deterministic pipeline status
+- **`pipelinectl off|on|advance|approve|stop`**: Shell fallback control commands via queue handoff
 - **`/worktrees`**: (Future) List and manage active worktrees
+
+### Local Shell Control Fallback
+
+When slash-command UX is constrained, use the shell fallback:
+
+```bash
+# from repository root
+./agents/tools/pipelinectl.sh status
+./agents/tools/pipelinectl.sh advance implementation
+./agents/tools/pipelinectl.sh approve
+```
+
+The orchestrator plugin injects `OPENCODE_SESSION_ID`, `OPENCODE_WORKTREE`, and orchestration state/queue paths via `shell.env`, so these commands can run without manual context lookup.
+
+Verification example:
+
+```bash
+./agents/tools/pipelinectl.sh status
+./agents/tools/pipelinectl.sh off
+./agents/tools/pipelinectl.sh on
+```
+
+Expected behavior: deterministic status text, then queued control messages for `off/on`, followed by updated status after queue processing.
 
 ### Discord Integration
 Receive notifications and control agents via Discord slash commands:
@@ -147,6 +172,8 @@ This ensures that all code meets your quality standards before being committed.
 - **Skill matching issues**: Ensure `SKILL.md` files have proper YAML frontmatter with `name` and `description`
 - **Worktree creation fails**: Verify sufficient disk space (minimum 2GB) and Git permissions
 - **`/pipeline` still shows LLM reasoning**: Apply the local OpenCode command-hook patch documented in `doc/opencode_command_noReply_patch.md`
+- **`pipelinectl` says session context missing**: run within an active OpenCode shell session or export `OPENCODE_SESSION_ID`
+- **Queued shell command rejected as stale**: rerun `pipelinectl status` and retry with fresh state
 - **Bootstrap takes too long**: Check network connectivity and npm registry access
 
 ## Validation Requirements

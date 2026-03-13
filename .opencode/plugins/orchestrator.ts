@@ -1,10 +1,10 @@
 import type { Plugin } from "@opencode-ai/plugin";
 import type { Event, Session } from "@opencode-ai/sdk";
 import { execFile } from "child_process";
-import { appendFile, mkdir, readFile, writeFile } from "fs/promises";
+import { appendFile, mkdir, readFile, rename, writeFile } from "fs/promises";
 import { dirname, resolve } from "path";
 import { promisify } from "util";
-import { resolveTaskRoute, type RouteResult } from "../tools/matchmaker";
+import { resolveTaskRoute, type RouteResult } from "../tools/matchmaker.ts";
 
 type PipelineStage = "triage" | "implementation" | "review";
 type TransitionState = "idle" | "awaiting_approval" | "in_progress" | "blocked" | "completed" | "stopped";
@@ -89,12 +89,38 @@ interface PipelineState {
 }
 
 interface PersistedOrchestrationState {
-  version: 1;
+  version: 2;
+  updatedAt: string;
   runtime: {
     off: boolean;
+    enabled: boolean;
+    configuredMode: OrchestrationMode;
+    effectiveMode: OrchestrationMode;
   };
   sessionToRoot: Record<string, string>;
   pipelines: Record<string, PipelineState>;
+  pipelineSummaries: Record<string, PipelineSummary>;
+  commandQueue: CommandQueueState;
+}
+
+interface PipelineSummary {
+  rootSessionID: string;
+  currentStage: PipelineStage;
+  transition: TransitionState;
+  stopped: boolean;
+  stopReason?: StopReason;
+  updatedAt: number;
+  pendingTransition?: PendingTransition;
+  nextSessionID?: string;
+  routing?: RoutingContext;
+  worktree?: WorktreeContext;
+}
+
+interface CommandQueueState {
+  path: string;
+  lastProcessedLine: number;
+  lastProcessedAt?: string;
+  processedDedupes: Record<string, number>;
 }
 
 interface PipelineReference {
@@ -107,6 +133,25 @@ interface PipelineCommandInput {
   name: string;
   sessionID: string;
   arguments: string;
+}
+
+interface PipelineControlQueueCommand {
+  version: 1;
+  id: string;
+  source: "pipelinectl";
+  action: "off" | "on" | "advance" | "approve" | "stop";
+  sessionID: string;
+  targetSessionID?: string;
+  stage?: PipelineStage;
+  dedupeKey: string;
+  requestedAt: string;
+  expectation?: {
+    rootSessionID?: string;
+    stage?: PipelineStage;
+    transition?: TransitionState;
+    pipelineUpdatedAt?: number;
+    pendingRequired?: boolean;
+  };
 }
 
 const execFileAsync = promisify(execFile);
@@ -127,11 +172,17 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
 
   const statePath = resolve(worktree, "_bmad-output", "orchestration-state.json");
   const eventLogPath = resolve(worktree, "_bmad-output", "orchestration-events.ndjson");
+  const commandQueuePath = resolve(worktree, "_bmad-output", "orchestration-commands.ndjson");
   const spawnScriptPath = resolve(worktree, "agents", "tools", "spawn_worktree.sh");
   const idleInFlight = new Set<string>();
   const preHandledCommands = new Map<string, number>();
-  const state = await loadPersistedState(statePath);
+  const state = await loadPersistedState(statePath, commandQueuePath, settings);
+  state.commandQueue.path = commandQueuePath;
+  state.updatedAt = new Date().toISOString();
   let writeQueue: Promise<void> = Promise.resolve();
+  let commandQueueInFlight = false;
+
+  await persistState();
 
   return {
     "command.execute.before": async (input, output) => {
@@ -139,6 +190,8 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
       if (commandName !== "pipeline") {
         return;
       }
+
+      await processQueuedCommands();
 
       const commandInput: PipelineCommandInput = {
         name: commandName,
@@ -150,8 +203,35 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
       await handlePipelineCommand(commandInput);
 
       output.parts = [];
+      setNoReplyIfSupported(output);
+    },
+    "shell.env": async (input, output) => {
+      output.env.OPENCODE_WORKTREE = worktree;
+      output.env.OPENCODE_ORCHESTRATION_STATE = statePath;
+      output.env.OPENCODE_ORCHESTRATION_COMMAND_QUEUE = commandQueuePath;
+      output.env.OPENCODE_ORCHESTRATION_MODE = getEffectiveMode();
+
+      const sessionID = input.sessionID;
+      if (!sessionID) {
+        return;
+      }
+
+      output.env.OPENCODE_SESSION_ID = sessionID;
+      const resolved = await resolvePipelineReference(sessionID);
+      if (!resolved) {
+        return;
+      }
+
+      output.env.OPENCODE_PIPELINE_ROOT_SESSION_ID = resolved.rootSessionID;
+      output.env.OPENCODE_PIPELINE_STAGE = resolved.pipeline.currentStage;
+      output.env.OPENCODE_PIPELINE_TRANSITION = resolved.pipeline.transition;
+      if (resolved.pipeline.worktree?.worktreePath) {
+        output.env.OPENCODE_PIPELINE_WORKTREE = resolved.pipeline.worktree.worktreePath;
+      }
     },
     event: async ({ event }) => {
+      await processQueuedCommands();
+
       if (event.type === "session.created") {
         await registerSession(event.properties.info);
         return;
@@ -362,25 +442,7 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
 
     if (action === "off") {
       state.runtime.off = true;
-      for (const pipeline of Object.values(state.pipelines)) {
-        if (pipeline.terminalNotified) {
-          pipeline.stopped = true;
-          pipeline.stopReason = "completed";
-          pipeline.transition = "completed";
-          pipeline.updatedAt = Date.now();
-          continue;
-        }
-
-        if (pipeline.stopReason === "manual") {
-          pipeline.updatedAt = Date.now();
-          continue;
-        }
-
-        pipeline.stopped = true;
-        pipeline.stopReason = "global_off";
-        pipeline.transition = "stopped";
-        pipeline.updatedAt = Date.now();
-      }
+      applyGlobalOffToPipelines(state.pipelines);
 
       await persistState();
       await promptSession(sessionID, "Global orchestration mode is now OFF for this worktree.", true);
@@ -389,31 +451,7 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
 
     if (action === "on") {
       state.runtime.off = false;
-
-      let resumed = 0;
-      for (const pipeline of Object.values(state.pipelines)) {
-        if (pipeline.stopReason !== "global_off") {
-          continue;
-        }
-
-        if (pipeline.terminalNotified) {
-          pipeline.stopReason = "completed";
-          pipeline.stopped = true;
-          pipeline.transition = "completed";
-          pipeline.updatedAt = Date.now();
-          continue;
-        }
-
-        pipeline.stopped = false;
-        pipeline.stopReason = undefined;
-        pipeline.transition = pipeline.pendingTransition
-          ? pipeline.pendingTransition.approvalRequired && !pipeline.pendingTransition.approved
-            ? "awaiting_approval"
-            : "idle"
-          : "idle";
-        pipeline.updatedAt = Date.now();
-        resumed += 1;
-      }
+      const resumed = applyGlobalOnToPipelines(state.pipelines);
 
       await persistState();
       await promptSession(
@@ -539,6 +577,196 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
         );
       }
     }
+  }
+
+  async function processQueuedCommands(): Promise<void> {
+    if (commandQueueInFlight) {
+      return;
+    }
+
+    commandQueueInFlight = true;
+    try {
+      const lines = await readCommandQueueLines(commandQueuePath);
+      if (state.commandQueue.lastProcessedLine > lines.length) {
+        state.commandQueue.lastProcessedLine = lines.length;
+      }
+
+      let changed = false;
+      const startIndex = Math.max(0, state.commandQueue.lastProcessedLine);
+      for (let index = startIndex; index < lines.length; index += 1) {
+        state.commandQueue.lastProcessedLine = index + 1;
+        changed = true;
+
+        const rawLine = lines[index]?.trim();
+        if (!rawLine) {
+          continue;
+        }
+
+        const queued = parseQueuedCommand(rawLine);
+        if (!queued) {
+          continue;
+        }
+
+        pruneProcessedCommandDedupes(state.commandQueue.processedDedupes);
+        const dedupeExpiry = state.commandQueue.processedDedupes[queued.dedupeKey];
+        if (typeof dedupeExpiry === "number" && dedupeExpiry > Date.now()) {
+          await promptSession(
+            queued.sessionID,
+            `Command '${queued.action}' ignored because dedupe key '${queued.dedupeKey}' is already in-flight.`,
+            true,
+          );
+          continue;
+        }
+
+        state.commandQueue.processedDedupes[queued.dedupeKey] = Date.now() + 300_000;
+        const validated = await validateQueuedCommand(queued);
+        if (!validated.ok) {
+          await promptSession(queued.sessionID, validated.reason, true);
+          continue;
+        }
+
+        await handlePipelineCommand({
+          name: "pipeline",
+          sessionID: queued.sessionID,
+          arguments: validated.commandArguments,
+        });
+      }
+
+      if (changed) {
+        state.commandQueue.lastProcessedAt = new Date().toISOString();
+        state.updatedAt = new Date().toISOString();
+        await persistState();
+      }
+    } finally {
+      commandQueueInFlight = false;
+    }
+  }
+
+  async function validateQueuedCommand(
+    command: PipelineControlQueueCommand,
+  ): Promise<{ ok: true; commandArguments: string } | { ok: false; reason: string }> {
+    if (command.action === "off" || command.action === "on") {
+      return {
+        ok: true,
+        commandArguments: command.action,
+      };
+    }
+
+    const resolved = await resolvePipelineForCommand(command.sessionID, command.targetSessionID);
+    if (!resolved) {
+      return {
+        ok: false,
+        reason: `Rejected '${command.action}': no pipeline found for '${command.targetSessionID ?? command.sessionID}'.`,
+      };
+    }
+
+    const { rootSessionID, pipeline } = resolved;
+    const expected = command.expectation;
+
+    if (expected?.rootSessionID && expected.rootSessionID !== rootSessionID) {
+      return {
+        ok: false,
+        reason: [
+          `Rejected '${command.action}': pipeline root changed (${expected.rootSessionID} -> ${rootSessionID}).`,
+          "Refresh with `pipelinectl status` and retry.",
+        ].join("\n"),
+      };
+    }
+
+    if (typeof expected?.pipelineUpdatedAt === "number" && pipeline.updatedAt !== expected.pipelineUpdatedAt) {
+      return {
+        ok: false,
+        reason: [
+          `Rejected '${command.action}': pipeline state is stale (expected updatedAt=${expected.pipelineUpdatedAt}, current=${pipeline.updatedAt}).`,
+          "Refresh with `pipelinectl status` and retry.",
+        ].join("\n"),
+      };
+    }
+
+    if (expected?.stage && pipeline.currentStage !== expected.stage) {
+      return {
+        ok: false,
+        reason: [
+          `Rejected '${command.action}': stage changed (expected ${expected.stage}, current ${pipeline.currentStage}).`,
+          "Refresh with `pipelinectl status` and retry.",
+        ].join("\n"),
+      };
+    }
+
+    if (expected?.transition && pipeline.transition !== expected.transition) {
+      return {
+        ok: false,
+        reason: [
+          `Rejected '${command.action}': transition changed (expected ${expected.transition}, current ${pipeline.transition}).`,
+          "Refresh with `pipelinectl status` and retry.",
+        ].join("\n"),
+      };
+    }
+
+    if (command.action === "advance") {
+      if (!command.stage) {
+        return {
+          ok: false,
+          reason: "Rejected 'advance': missing target stage. Use `pipelinectl advance <triage|implementation|review>`.",
+        };
+      }
+
+      const expectedNext = getNextStage(pipeline.currentStage);
+      if (expectedNext !== command.stage) {
+        return {
+          ok: false,
+          reason: `Rejected 'advance': invalid transition from ${pipeline.currentStage} to ${command.stage}; expected ${expectedNext ?? "none"}.`,
+        };
+      }
+
+      const targetSuffix = command.targetSessionID ? ` ${command.targetSessionID}` : "";
+      return {
+        ok: true,
+        commandArguments: `advance ${command.stage}${targetSuffix}`,
+      };
+    }
+
+    if (command.action === "approve") {
+      if (!pipeline.pendingTransition) {
+        return {
+          ok: false,
+          reason: "Rejected 'approve': no pending transition requires approval.",
+        };
+      }
+
+      if (expected?.pendingRequired && !pipeline.pendingTransition.approvalRequired) {
+        return {
+          ok: false,
+          reason: "Rejected 'approve': pending transition no longer requires approval.",
+        };
+      }
+
+      const targetSuffix = command.targetSessionID ? ` ${command.targetSessionID}` : "";
+      return {
+        ok: true,
+        commandArguments: `approve${targetSuffix}`,
+      };
+    }
+
+    if (command.action === "stop") {
+      if (pipeline.stopped) {
+        return {
+          ok: false,
+          reason: `Rejected 'stop': pipeline ${rootSessionID} is already stopped (${pipeline.stopReason ?? "unknown"}).`,
+        };
+      }
+
+      const targetSuffix = command.targetSessionID ? ` ${command.targetSessionID}` : "";
+      return {
+        ok: true,
+        commandArguments: `stop${targetSuffix}`,
+      };
+    }
+
+    return {
+      ok: false,
+      reason: `Rejected command '${command.action}': unsupported action.`,
+    };
   }
 
   async function requestTransition(input: {
@@ -1101,7 +1329,7 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
       : "none";
     const statusLines = [
       `Pipeline: ${pipeline.rootSessionID}`,
-      `Mode: ${state.runtime.off ? "off" : settings.mode}`,
+      `Mode: ${getEffectiveMode()}`,
       `Stage: ${pipeline.currentStage}`,
       `Transition: ${pipeline.transition}`,
       `Stopped: ${pipeline.stopped ? `yes (${pipeline.stopReason ?? "unknown"})` : "no"}`,
@@ -1140,12 +1368,13 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
     }
 
     pipeline.updatedAt = Date.now();
+    state.updatedAt = new Date().toISOString();
     const serialized = `${JSON.stringify(normalized)}\n`;
 
     await scheduleWrite(async () => {
       await mkdir(dirname(eventLogPath), { recursive: true });
       await appendFile(eventLogPath, serialized, "utf-8");
-      await writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`, "utf-8");
+      await writePersistedSnapshot();
     });
 
     if (settings.verboseEvents && normalized.type !== "status_snapshot") {
@@ -1163,10 +1392,75 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
   }
 
   async function persistState(): Promise<void> {
+    state.updatedAt = new Date().toISOString();
     await scheduleWrite(async () => {
-      await mkdir(dirname(statePath), { recursive: true });
-      await writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`, "utf-8");
+      await writePersistedSnapshot();
     });
+  }
+
+  async function writePersistedSnapshot(): Promise<void> {
+    await mkdir(dirname(statePath), { recursive: true });
+    const snapshot = buildPersistedSnapshot();
+    await writeJsonAtomically(statePath, snapshot);
+  }
+
+  function buildPersistedSnapshot(): PersistedOrchestrationState {
+    const pipelineSummaries: Record<string, PipelineSummary> = {};
+    for (const [rootSessionID, pipeline] of Object.entries(state.pipelines)) {
+      pipelineSummaries[rootSessionID] = {
+        rootSessionID,
+        currentStage: pipeline.currentStage,
+        transition: pipeline.transition,
+        stopped: pipeline.stopped,
+        stopReason: pipeline.stopReason,
+        updatedAt: pipeline.updatedAt,
+        pendingTransition: pipeline.pendingTransition,
+        nextSessionID: pipeline.nextSessionID,
+        routing: pipeline.routing,
+        worktree: pipeline.worktree,
+      };
+    }
+
+    return {
+      version: 2,
+      updatedAt: state.updatedAt,
+      runtime: {
+        off: state.runtime.off,
+        enabled: settings.enabled,
+        configuredMode: settings.mode,
+        effectiveMode: getEffectiveMode(),
+      },
+      sessionToRoot: state.sessionToRoot,
+      pipelines: state.pipelines,
+      pipelineSummaries,
+      commandQueue: {
+        path: commandQueuePath,
+        lastProcessedLine: state.commandQueue.lastProcessedLine,
+        lastProcessedAt: state.commandQueue.lastProcessedAt,
+        processedDedupes: state.commandQueue.processedDedupes,
+      },
+    };
+  }
+
+  async function readCommandQueueLines(filePath: string): Promise<string[]> {
+    try {
+      const raw = await readFile(filePath, "utf-8");
+      return raw.split("\n");
+    } catch {
+      return [];
+    }
+  }
+
+  function getEffectiveMode(): OrchestrationMode {
+    if (!settings.enabled) {
+      return "off";
+    }
+
+    if (state.runtime.off || settings.mode === "off") {
+      return "off";
+    }
+
+    return settings.mode;
   }
 
   async function scheduleWrite(operation: () => Promise<void>): Promise<void> {
@@ -1219,32 +1513,186 @@ async function loadOrchestrationSettings(worktree: string): Promise<Orchestratio
   }
 }
 
-async function loadPersistedState(filePath: string): Promise<PersistedOrchestrationState> {
+async function loadPersistedState(
+  filePath: string,
+  commandQueuePath: string,
+  settings: OrchestrationSettings,
+): Promise<PersistedOrchestrationState> {
   try {
     const raw = await readFile(filePath, "utf-8");
-    const parsed = JSON.parse(raw) as Partial<PersistedOrchestrationState>;
-    if (parsed.version !== 1) {
-      throw new Error("Unsupported orchestration state version");
+    const parsed = JSON.parse(raw) as Partial<PersistedOrchestrationState> & {
+      version?: number;
+      runtime?: { off?: unknown };
+      sessionToRoot?: unknown;
+      pipelines?: unknown;
+      commandQueue?: Partial<CommandQueueState>;
+    };
+
+    if (parsed.version === 2) {
+      const runtimeOff = parsed.runtime?.off === true;
+      return {
+        version: 2,
+        updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : new Date().toISOString(),
+        runtime: {
+          off: runtimeOff,
+          enabled: settings.enabled,
+          configuredMode: settings.mode,
+          effectiveMode: runtimeOff || settings.mode === "off" ? "off" : settings.mode,
+        },
+        sessionToRoot: isRecord(parsed.sessionToRoot) ? (parsed.sessionToRoot as Record<string, string>) : {},
+        pipelines: isRecord(parsed.pipelines) ? (parsed.pipelines as Record<string, PipelineState>) : {},
+        pipelineSummaries: {},
+        commandQueue: {
+          path: commandQueuePath,
+          lastProcessedLine:
+            typeof parsed.commandQueue?.lastProcessedLine === "number" && parsed.commandQueue.lastProcessedLine >= 0
+              ? parsed.commandQueue.lastProcessedLine
+              : 0,
+          lastProcessedAt:
+            typeof parsed.commandQueue?.lastProcessedAt === "string"
+              ? parsed.commandQueue.lastProcessedAt
+              : undefined,
+          processedDedupes: isRecord(parsed.commandQueue?.processedDedupes)
+            ? (parsed.commandQueue?.processedDedupes as Record<string, number>)
+            : {},
+        },
+      };
     }
+
+    if (parsed.version === 1) {
+      return {
+        version: 2,
+        updatedAt: new Date().toISOString(),
+        runtime: {
+          off: parsed.runtime?.off === true,
+          enabled: settings.enabled,
+          configuredMode: settings.mode,
+          effectiveMode: parsed.runtime?.off === true || settings.mode === "off" ? "off" : settings.mode,
+        },
+        sessionToRoot: isRecord(parsed.sessionToRoot) ? (parsed.sessionToRoot as Record<string, string>) : {},
+        pipelines: isRecord(parsed.pipelines) ? (parsed.pipelines as Record<string, PipelineState>) : {},
+        pipelineSummaries: {},
+        commandQueue: {
+          path: commandQueuePath,
+          lastProcessedLine: 0,
+          processedDedupes: {},
+        },
+      };
+    }
+
+    return createEmptyPersistedState(commandQueuePath, settings);
+  } catch {
+    return createEmptyPersistedState(commandQueuePath, settings);
+  }
+}
+
+function createEmptyPersistedState(
+  commandQueuePath: string,
+  settings: OrchestrationSettings,
+): PersistedOrchestrationState {
+  return {
+    version: 2,
+    updatedAt: new Date().toISOString(),
+    runtime: {
+      off: false,
+      enabled: settings.enabled,
+      configuredMode: settings.mode,
+      effectiveMode: settings.mode === "off" ? "off" : settings.mode,
+    },
+    sessionToRoot: {},
+    pipelines: {},
+    pipelineSummaries: {},
+    commandQueue: {
+      path: commandQueuePath,
+      lastProcessedLine: 0,
+      processedDedupes: {},
+    },
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function parseQueuedCommand(rawLine: string): PipelineControlQueueCommand | null {
+  try {
+    const parsed = JSON.parse(rawLine) as Partial<PipelineControlQueueCommand>;
+    const action = parsed.action;
+    if (
+      parsed.version !== 1 ||
+      parsed.source !== "pipelinectl" ||
+      (action !== "off" && action !== "on" && action !== "advance" && action !== "approve" && action !== "stop") ||
+      typeof parsed.id !== "string" ||
+      typeof parsed.sessionID !== "string" ||
+      typeof parsed.dedupeKey !== "string" ||
+      typeof parsed.requestedAt !== "string"
+    ) {
+      return null;
+    }
+
+    const stage = normalizeStage(parsed.stage);
+    const expectation = isRecord(parsed.expectation)
+      ? {
+          rootSessionID:
+            typeof parsed.expectation.rootSessionID === "string" ? parsed.expectation.rootSessionID : undefined,
+          stage: normalizeStage(parsed.expectation.stage) ?? undefined,
+          transition: isTransitionState(parsed.expectation.transition)
+            ? parsed.expectation.transition
+            : undefined,
+          pipelineUpdatedAt:
+            typeof parsed.expectation.pipelineUpdatedAt === "number" ? parsed.expectation.pipelineUpdatedAt : undefined,
+          pendingRequired:
+            typeof parsed.expectation.pendingRequired === "boolean" ? parsed.expectation.pendingRequired : undefined,
+        }
+      : undefined;
 
     return {
       version: 1,
-      runtime: {
-        off: parsed.runtime?.off === true,
-      },
-      sessionToRoot: parsed.sessionToRoot ?? {},
-      pipelines: parsed.pipelines ?? {},
+      id: parsed.id,
+      source: "pipelinectl",
+      action,
+      sessionID: parsed.sessionID,
+      targetSessionID: typeof parsed.targetSessionID === "string" ? parsed.targetSessionID : undefined,
+      stage: stage ?? undefined,
+      dedupeKey: parsed.dedupeKey,
+      requestedAt: parsed.requestedAt,
+      expectation,
     };
   } catch {
-    return {
-      version: 1,
-      runtime: {
-        off: false,
-      },
-      sessionToRoot: {},
-      pipelines: {},
-    };
+    return null;
   }
+}
+
+function pruneProcessedCommandDedupes(cache: Record<string, number>): void {
+  const now = Date.now();
+  for (const [key, expiresAt] of Object.entries(cache)) {
+    if (typeof expiresAt !== "number" || expiresAt <= now) {
+      delete cache[key];
+    }
+  }
+}
+
+function isTransitionState(value: unknown): value is TransitionState {
+  return (
+    value === "idle" ||
+    value === "awaiting_approval" ||
+    value === "in_progress" ||
+    value === "blocked" ||
+    value === "completed" ||
+    value === "stopped"
+  );
+}
+
+function setNoReplyIfSupported(output: { parts: unknown[] }): void {
+  const mutable = output as { noReply?: boolean };
+  mutable.noReply = true;
+}
+
+async function writeJsonAtomically(filePath: string, payload: unknown): Promise<void> {
+  const tempPath = `${filePath}.tmp-${process.pid}-${Date.now()}`;
+  const serialized = `${JSON.stringify(payload, null, 2)}\n`;
+  await writeFile(tempPath, serialized, "utf-8");
+  await rename(tempPath, filePath);
 }
 
 function shouldIgnoreError(error: unknown, settings: OrchestrationSettings): boolean {
@@ -1402,6 +1850,58 @@ function getNextStage(stage: PipelineStage): PipelineStage | null {
   return null;
 }
 
+function applyGlobalOffToPipelines(pipelines: Record<string, PipelineState>): void {
+  for (const pipeline of Object.values(pipelines)) {
+    if (pipeline.terminalNotified) {
+      pipeline.stopped = true;
+      pipeline.stopReason = "completed";
+      pipeline.transition = "completed";
+      pipeline.updatedAt = Date.now();
+      continue;
+    }
+
+    if (pipeline.stopReason === "manual") {
+      pipeline.updatedAt = Date.now();
+      continue;
+    }
+
+    pipeline.stopped = true;
+    pipeline.stopReason = "global_off";
+    pipeline.transition = "stopped";
+    pipeline.updatedAt = Date.now();
+  }
+}
+
+function applyGlobalOnToPipelines(pipelines: Record<string, PipelineState>): number {
+  let resumed = 0;
+
+  for (const pipeline of Object.values(pipelines)) {
+    if (pipeline.stopReason !== "global_off") {
+      continue;
+    }
+
+    if (pipeline.terminalNotified) {
+      pipeline.stopReason = "completed";
+      pipeline.stopped = true;
+      pipeline.transition = "completed";
+      pipeline.updatedAt = Date.now();
+      continue;
+    }
+
+    pipeline.stopped = false;
+    pipeline.stopReason = undefined;
+    pipeline.transition = pipeline.pendingTransition
+      ? pipeline.pendingTransition.approvalRequired && !pipeline.pendingTransition.approved
+        ? "awaiting_approval"
+        : "idle"
+      : "idle";
+    pipeline.updatedAt = Date.now();
+    resumed += 1;
+  }
+
+  return resumed;
+}
+
 function buildImplementationPrompt(taskDescription: string, pipeline: PipelineState, childSessionID: string): string {
   const taskID = pipeline.worktree?.taskID ?? "unknown-task";
   const skillID = pipeline.routing?.skillID ?? "unrouted";
@@ -1465,5 +1965,15 @@ function extractScriptValue(stdout: string, label: string): string {
 
   return match[1].trim();
 }
+
+export const __orchestratorTestUtils = {
+  applyGlobalOffToPipelines,
+  applyGlobalOnToPipelines,
+  loadPersistedState,
+  parseQueuedCommand,
+  pruneProcessedCommandDedupes,
+  setNoReplyIfSupported,
+  writeJsonAtomically,
+};
 
 export default OrchestratorPlugin;

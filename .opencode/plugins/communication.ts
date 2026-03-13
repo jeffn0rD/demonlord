@@ -43,6 +43,7 @@ const CommunicationPlugin: Plugin = async ({ client, worktree }) => {
       rememberPreHandledApproval(preHandledApprovals, commandInput);
       await forwardApproveCommand(commandInput);
       output.parts = [];
+      setNoReplyIfSupported(output);
     },
     event: async ({ event }: { event: Event }) => {
       if (event.type !== "command.executed") {
@@ -160,3 +161,8 @@ async function loadSettings(worktree: string): Promise<CommunicationSettings> {
 
 export const plugin = CommunicationPlugin;
 export default CommunicationPlugin;
+
+function setNoReplyIfSupported(output: { parts: unknown[] }): void {
+  const mutable = output as { noReply?: boolean };
+  mutable.noReply = true;
+}

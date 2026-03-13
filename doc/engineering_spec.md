@@ -120,6 +120,30 @@ Patch details are versioned in `doc/opencode_command_noReply_patch.md`, includin
 * verification commands and expected behavior
 * rollback steps
 
+Local Shell Control Plane (`pipelinectl`)
+
+To guarantee deterministic operator control even when slash-command UX is constrained, Demonlord includes a shell fallback command (`agents/tools/pipelinectl.sh`) that reads orchestration snapshot state and appends validated control intents to a plugin-consumed command queue.
+
+Control-plane artifacts:
+
+* Snapshot: `_bmad-output/orchestration-state.json` (versioned, atomic temp-write+rename).
+* Queue: `_bmad-output/orchestration-commands.ndjson` (append-only control intents).
+* Session context: injected by plugin via `shell.env` (`OPENCODE_SESSION_ID`, `OPENCODE_WORKTREE`, state/queue paths).
+
+Snapshot contract highlights (v2):
+
+* `updatedAt`: top-level snapshot freshness timestamp.
+* `runtime`: configured/effective orchestration mode and global-off status.
+* `pipelineSummaries`: root-session keyed stage/transition/stopped/stopReason and pending-transition metadata.
+* `commandQueue`: queue path, last processed line, and dedupe metadata.
+
+Failure and recovery behavior:
+
+* Invalid/stale shell commands are rejected with explicit remediation (`pipelinectl status`, then retry).
+* Duplicate queue commands are deduped by deterministic keys to avoid repeated state mutations.
+* Queue processing advances linearly and persists offsets, preventing replays after restarts.
+* Snapshot writes remain atomic to prevent partial reads during concurrent operator activity.
+
 Horizontal Scaling via Git Worktrees
 
 The adoption of Git Worktrees over standard branching is a critical architectural decision:
