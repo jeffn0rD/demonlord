@@ -36,6 +36,8 @@ Preflight and recovery options:
 - `--skip-bootstrap`: inject assets only
 - `--rollback`: restore managed paths from `.demonlord-install-backup/latest`
 
+Installer sync is deterministic for managed assets: local-source installs skip transient entries inside `.opencode` (for example `node_modules`, `.cache`, and editor temp files) so reruns stay reproducible across machines.
+
 ### Inject Demonlord Into Your Repository
 
 Use this project as a template source and copy these assets into your target repository root:

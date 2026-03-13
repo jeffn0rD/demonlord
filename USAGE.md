@@ -21,6 +21,8 @@ Useful flags:
 - `--skip-bootstrap` (copy/update assets only)
 - `--rollback` (restore from `.demonlord-install-backup/latest`)
 
+Deterministic sync note: local template installs intentionally skip transient `.opencode` entries (for example `node_modules`, `.cache`, and temp editor files) so copied assets match clean-source behavior.
+
 ### 1) Inject Demonlord Assets
 
 Copy Demonlord assets into your target repository root (`.opencode/`, `agents/`, `scripts/`, `doc/`, `demonlord.config.json`, `.env.example`).

@@ -4,6 +4,7 @@ set -euo pipefail
 
 ASSET_DIRS=(".opencode" "agents" "doc")
 ASSET_FILES=("scripts/bootstrap.sh" "scripts/install-demonlord.sh" "demonlord.config.json" ".env.example")
+TRANSIENT_ENTRY_NAMES=("node_modules" ".cache" ".npm" ".pnpm-store" ".turbo")
 
 DRY_RUN=0
 RUN_BOOTSTRAP=1
@@ -101,6 +102,54 @@ copy_asset() {
   run_cmd rm -rf "$destination_path"
   run_cmd cp -a "$source_path" "$destination_path"
   log "  - synced $label"
+}
+
+is_transient_entry() {
+  local entry_name="$1"
+  local item=""
+
+  for item in "${TRANSIENT_ENTRY_NAMES[@]}"; do
+    if [[ "$entry_name" == "$item" ]]; then
+      return 0
+    fi
+  done
+
+  case "$entry_name" in
+    *.tmp|*.swp|*~|.DS_Store)
+      return 0
+      ;;
+  esac
+
+  return 1
+}
+
+copy_filtered_directory() {
+  local source_path="$1"
+  local destination_path="$2"
+  local label="$3"
+  local entry_name=""
+  local entry=""
+  local entries=()
+
+  run_cmd mkdir -p "$(dirname "$destination_path")"
+  run_cmd rm -rf "$destination_path"
+  run_cmd mkdir -p "$destination_path"
+
+  shopt -s dotglob nullglob
+  entries=("$source_path"/*)
+  shopt -u dotglob nullglob
+
+  for entry in "${entries[@]}"; do
+    entry_name="$(basename "$entry")"
+    if is_transient_entry "$entry_name"; then
+      log "  - skipped $label/$entry_name (transient)"
+      continue
+    fi
+
+    run_cmd cp -a "$entry" "$destination_path/$entry_name"
+  done
+
+  log "  - synced $label (filtered)"
 }
 
 backup_existing_assets() {
@@ -209,13 +258,21 @@ fi
 if is_git_source "$SOURCE_ARG"; then
   SOURCE_FROM_GIT=1
   command -v git >/dev/null 2>&1 || fail "git is required to clone source repositories"
-  TEMP_SOURCE_DIR="$(mktemp -d)"
-  run_cmd git clone --depth 1 "$SOURCE_ARG" "$TEMP_SOURCE_DIR/source"
-  SOURCE_ARG="$TEMP_SOURCE_DIR/source"
+  if [[ $DRY_RUN -eq 1 ]]; then
+    if git ls-remote --exit-code "$SOURCE_ARG" HEAD >/dev/null 2>&1; then
+      log "[dry-run] validated remote source reachability: $SOURCE_ARG"
+    else
+      fail "Unable to reach remote source: $SOURCE_ARG"
+    fi
+  else
+    TEMP_SOURCE_DIR="$(mktemp -d)"
+    run_cmd git clone --depth 1 "$SOURCE_ARG" "$TEMP_SOURCE_DIR/source"
+    SOURCE_ARG="$TEMP_SOURCE_DIR/source"
+  fi
 fi
 
 if [[ $DRY_RUN -eq 1 && $SOURCE_FROM_GIT -eq 1 ]]; then
-  log "[dry-run] source validation skipped for remote git source"
+  log "[dry-run] remote source preflight passed; skipping local asset checks"
 else
   [[ -d "$SOURCE_ARG" ]] || fail "Source path does not exist: $SOURCE_ARG"
   SOURCE_ARG="$(cd "$SOURCE_ARG" && pwd)"
@@ -247,7 +304,11 @@ else
 
   asset=""
   for asset in "${ASSET_DIRS[@]}"; do
-    copy_asset "$SOURCE_ARG/$asset" "$TARGET_DIR/$asset" "$asset"
+    if [[ "$asset" == ".opencode" ]]; then
+      copy_filtered_directory "$SOURCE_ARG/$asset" "$TARGET_DIR/$asset" "$asset"
+    else
+      copy_asset "$SOURCE_ARG/$asset" "$TARGET_DIR/$asset" "$asset"
+    fi
   done
   for asset in "${ASSET_FILES[@]}"; do
     copy_asset "$SOURCE_ARG/$asset" "$TARGET_DIR/$asset" "$asset"
