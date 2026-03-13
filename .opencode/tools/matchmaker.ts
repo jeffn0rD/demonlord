@@ -26,6 +26,16 @@ interface ResolveTaskRouteInput {
   mode?: "llm" | "heuristic";
 }
 
+interface RouteTaskArgs {
+  task_description: string;
+  mode?: "llm" | "heuristic";
+}
+
+interface RouteTaskContext {
+  directory: string;
+  worktree: string;
+}
+
 interface LlmRouteAttempt {
   result: RouteResult | null;
   failureReason?: string;
@@ -46,7 +56,7 @@ const route_task = tool({
       .optional()
       .describe("Routing strategy. Defaults to llm with automatic heuristic fallback."),
   },
-  async execute(args: any, context: any) {
+  async execute(args: RouteTaskArgs, context: RouteTaskContext) {
     try {
       const resolved = await resolveTaskRoute({
         taskDescription: args.task_description,
@@ -392,3 +402,9 @@ function formatUnknownError(error: unknown): string {
 }
 
 export default route_task;
+
+export const __matchmakerTestUtils = {
+  parseSkillFrontmatter,
+  parseRouterOutput,
+  routeHeuristically,
+};

@@ -130,4 +130,67 @@ describe("orchestrator snapshot and queue helpers", () => {
 
     assert.equal(output.noReply, true);
   });
+
+  test("ignores MessageAbortedError only in manual mode when configured", () => {
+    const manualIgnored = __orchestratorTestUtils.shouldIgnoreError(
+      { name: "MessageAbortedError", message: "aborted" },
+      {
+        enabled: true,
+        mode: "manual",
+        requireApprovalBeforeSpawn: true,
+        ignoreAbortedMessages: true,
+        verboseEvents: false,
+      },
+    );
+    const autoNotIgnored = __orchestratorTestUtils.shouldIgnoreError(
+      { name: "MessageAbortedError", message: "aborted" },
+      {
+        enabled: true,
+        mode: "auto",
+        requireApprovalBeforeSpawn: true,
+        ignoreAbortedMessages: true,
+        verboseEvents: false,
+      },
+    );
+
+    assert.equal(manualIgnored, true);
+    assert.equal(autoNotIgnored, false);
+  });
+
+  test("normalizes error signatures to support deterministic dedupe", () => {
+    const first = __orchestratorTestUtils.normalizeErrorSignature(
+      { name: "NetworkError", message: "request 123 failed for ticket 99" },
+      "implementation",
+    );
+    const second = __orchestratorTestUtils.normalizeErrorSignature(
+      { name: "NetworkError", message: "request 456 failed for ticket 01" },
+      "implementation",
+    );
+
+    assert.equal(first, second);
+  });
+
+  test("uses pre-handled command cache as idempotency guard", () => {
+    const cache = new Map<string, number>();
+    const command = {
+      name: "pipeline",
+      sessionID: "ses-root",
+      arguments: "status",
+    };
+
+    __orchestratorTestUtils.rememberPreHandledCommand(cache, command);
+
+    assert.equal(__orchestratorTestUtils.wasPreHandled(cache, command), true);
+    assert.equal(__orchestratorTestUtils.wasPreHandled(cache, command), false);
+  });
+
+  test("returns deterministic stage progression order", () => {
+    assert.equal(__orchestratorTestUtils.getNextStage("triage"), "implementation");
+    assert.equal(__orchestratorTestUtils.getNextStage("implementation"), "review");
+    assert.equal(__orchestratorTestUtils.getNextStage("review"), null);
+
+    assert.equal(__orchestratorTestUtils.normalizeStage("triage"), "triage");
+    assert.equal(__orchestratorTestUtils.normalizeStage("review"), "review");
+    assert.equal(__orchestratorTestUtils.normalizeStage("invalid"), null);
+  });
 });

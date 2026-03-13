@@ -2049,11 +2049,18 @@ function extractScriptValue(stdout: string, label: string): string {
 export const __orchestratorTestUtils = {
   applyGlobalOffToPipelines,
   applyGlobalOnToPipelines,
+  buildCommandDedupKey,
+  getNextStage,
   loadPersistedState,
+  normalizeErrorSignature,
+  normalizeStage,
   parseQueuedCommand,
+  rememberPreHandledCommand,
+  shouldIgnoreError,
   splitCommandQueueLines,
   pruneProcessedCommandDedupes,
   setNoReplyIfSupported,
+  wasPreHandled,
   writeJsonAtomically,
 };
 

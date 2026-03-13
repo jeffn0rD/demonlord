@@ -1,12 +1,17 @@
 {
+  "type": "module",
   "scripts": {
     "build": "npm run typecheck",
     "typecheck": "tsc -p tsconfig.json",
     "test": "node --test --experimental-strip-types tests/**/*.test.ts",
+    "test:tools": "node --test --experimental-strip-types tests/tools/**/*.test.ts",
+    "test:plugins": "node --test --experimental-strip-types tests/plugins/**/*.test.ts",
+    "test:integration": "node --test --experimental-strip-types tests/integration/**/*.test.ts",
+    "verify:phase3": "npm run typecheck && npm run test:tools && npm run test:plugins && npm run test:integration",
     "pipelinectl": "bash ../agents/tools/pipelinectl.sh"
   },
   "dependencies": {
-    "@opencode-ai/plugin": "1.2.25",
+    "@opencode-ai/plugin": "0.0.0-dev-202603130005",
     "discord.js": "^14.22.1"
   },
   "devDependencies": {
