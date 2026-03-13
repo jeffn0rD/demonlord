@@ -97,6 +97,7 @@ This document outlines the architecture and phased implementation plan for "Demo
 - Complex multi-repository spanning tasks (deferred to V2 to prioritize intra-repo stability first).
 - Automated deployment to staging directly from agent output (deferred pending QA maturity and CI/CD integration).
 - Advanced Party Mode features like voice integration or video conferencing (deferred to focus on core text-based collaboration first).
+- Standalone one-command installer flow (copy/download one script, run once, then start OpenCode) is deferred until late-phase stabilization and validation hardening.
 
 ## Open Questions
 - Should the `voy-search` vector database file be committed to the repository, or strictly generated on-the-fly during a bootstrap step?

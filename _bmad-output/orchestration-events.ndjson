@@ -1,8 +1,0 @@
-{"type":"error_ignored","rootSessionID":"ses_31da94581ffe4HUbdNUPLGMZlG","sessionID":"ses_31da94581ffe4HUbdNUPLGMZlG","stage":"triage","details":{"reason":"MessageAbortedError ignored in manual mode"},"at":"2026-03-12T21:45:29.056Z"}
-{"type":"error_ignored","rootSessionID":"ses_31bfca53bffexOv9dXIePXFZxD","sessionID":"ses_31bfca53bffexOv9dXIePXFZxD","stage":"triage","details":{"reason":"MessageAbortedError ignored in manual mode"},"at":"2026-03-12T21:46:17.690Z"}
-{"type":"status_snapshot","rootSessionID":"ses_31bfca53bffexOv9dXIePXFZxD","sessionID":"ses_31bfca53bffexOv9dXIePXFZxD","stage":"triage","details":{"transition":"idle"},"at":"2026-03-12T21:46:17.708Z"}
-{"type":"status_snapshot","rootSessionID":"ses_31bc83599ffeIn1jnAZtvFhB0D","sessionID":"ses_31bc83599ffeIn1jnAZtvFhB0D","stage":"triage","details":{"transition":"idle"},"at":"2026-03-12T22:43:07.507Z"}
-{"type":"error_ignored","rootSessionID":"ses_31bc83599ffeIn1jnAZtvFhB0D","sessionID":"ses_31bc83599ffeIn1jnAZtvFhB0D","stage":"triage","details":{"reason":"MessageAbortedError ignored in manual mode"},"at":"2026-03-12T22:43:25.479Z"}
-{"type":"error_ignored","rootSessionID":"ses_31b8e4edcffegeZJi5biNIQZGp","sessionID":"ses_31b8e4edcffegeZJi5biNIQZGp","stage":"triage","details":{"reason":"MessageAbortedError ignored in manual mode"},"at":"2026-03-12T23:48:13.081Z"}
-{"type":"status_snapshot","rootSessionID":"ses_31b542785ffekUSRL70ClrKtnX","sessionID":"ses_31b542785ffekUSRL70ClrKtnX","stage":"triage","details":{"transition":"idle"},"at":"2026-03-13T00:49:53.285Z"}
-{"type":"error_ignored","rootSessionID":"ses_31b542785ffekUSRL70ClrKtnX","sessionID":"ses_31b542785ffekUSRL70ClrKtnX","stage":"triage","details":{"reason":"MessageAbortedError ignored in manual mode"},"at":"2026-03-13T00:50:01.019Z"}

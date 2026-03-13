@@ -1,5 +1,13 @@
 # Demonlord Usage Guide
 
+## First-Time Setup
+
+Run the bootstrap installer once per repository clone:
+
+```bash
+./scripts/bootstrap.sh
+```
+
 ## Daily Workflow
 
 ### 1. Issue Triage
@@ -42,6 +50,11 @@ In manual mode, use local pipeline controls in the CLI:
 - **`/pipeline approve [session]`**: Approve blocked spawn without Discord dependency
 
 If slash-command handling is constrained, use the deterministic shell fallback:
+
+```bash
+./scripts/bootstrap.sh
+```
+
 - **`pipelinectl status [session]`**
 - **`pipelinectl off|on`**
 - **`pipelinectl advance <triage|implementation|review> [session]`**
@@ -232,6 +245,10 @@ Discord integration is configured in `demonlord.config.json`:
 **`pipelinectl` rejects command as stale/invalid**
 - **Solution**: Run `pipelinectl status` and retry with the latest state
 - **Check**: Verify target stage and pending approval state before `advance`/`approve`
+
+**`pipelinectl: command not found`**
+- **Solution**: Run `./scripts/bootstrap.sh`, restart shell, and ensure `~/.local/bin` is in `PATH`
+- **Check**: Run `type pipelinectl` and verify it resolves to `~/.local/bin/pipelinectl`
 
 **Discord messages not appearing**
 - **Solution**: Verify `.env` contains correct Discord webhook URLs

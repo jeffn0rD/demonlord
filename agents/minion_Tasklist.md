@@ -336,3 +336,23 @@ Agents should execute one subphase at a time. To trigger implementation, the Lea
 - **T-5.2.5** (Refs #1): Validate simplified test generation and auto-fix loop with various test frameworks and failure scenarios. Touch points: `.opencode/tests/testing/`
 <!-- TASK:T-5.2.6 -->
 - **T-5.2.6** (Refs #1): Clean up any test branches/worktrees, tag the repository as a GitHub Template, and draft the `v1.0.0` GitHub Release notes. (Manual Execution Task).
+
+### SUBPHASE-5.3: One-Command Installer Bootstrap
+<!-- SUBPHASE:5.3 -->
+**Goal:** Support a future "copy one script, run once, then start OpenCode" install flow for new repositories.
+**Entry criteria:** SUBPHASE-5.2 complete.
+**Exit criteria / QA checklist:**
+- [ ] A standalone installer script can provision Demonlord into an arbitrary repository from a single command.
+- [ ] Installer handles dependency install, command shims, and required config scaffolding idempotently.
+- [ ] Installer has a `--dry-run` mode and explicit rollback/retry guidance for partial failures.
+- [ ] Docs include "quick install" and troubleshooting for offline/proxy environments.
+**Proposed PR title:** feat: add one-command demonlord installer bootstrap
+**Proposed commit message:** feat: implement standalone installer for one-command demonlord setup (Refs #1)
+
+**Tasks:**
+<!-- TASK:T-5.3.1 -->
+- **T-5.3.1** (Refs #1): Create a standalone installer entrypoint (curl/wget-able script) that validates prerequisites, injects/updates Demonlord assets, and is safe to rerun. Touch points: `scripts/install-demonlord.sh`, `README.md`
+<!-- TASK:T-5.3.2 -->
+- **T-5.3.2** (Refs #1): Extend bootstrap workflow to support one-command provisioning in fresh repos (dependencies, `pipelinectl` shims, minimum config defaults) with deterministic outputs. Touch points: `scripts/bootstrap.sh`, `.opencode/`, `demonlord.config.json`
+<!-- TASK:T-5.3.3 -->
+- **T-5.3.3** (Refs #1): Add installer verification checks and docs for first-run validation (`opencode` start, `pipelinectl status`, required env placeholders). Touch points: `USAGE.md`, `README.md`, `doc/engineering_spec.md`

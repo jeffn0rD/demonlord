@@ -21,9 +21,9 @@ Demonlord replaces manual coding workflows with specialized AI agents that work 
    git clone https://github.com/your-org/demonlord .opencode
    ```
 
-2. **Install dependencies**:
+2. **Run bootstrap installer** (installs `.opencode` dependencies and shell command shims):
    ```bash
-   cd .opencode && npm install
+   ./scripts/bootstrap.sh
    ```
 
 3. **Configure environment**:
@@ -40,6 +40,8 @@ Demonlord replaces manual coding workflows with specialized AI agents that work 
 5. **Begin development**:
    - Use `/triage` to analyze GitHub issues and generate implementation plans
    - Use `/implement` to execute the generated plans
+
+Bootstrap policy: any repeatable install/setup behavior (dependencies, command shims, generated local runtime helpers) should be added to `scripts/bootstrap.sh` so bringing Demonlord into a new repository stays a one-command setup.
 
 ## Architecture
 
@@ -129,6 +131,10 @@ This allows you to require approval for specific agent types and keep orchestrat
 When slash-command UX is constrained, use the shell fallback:
 
 ```bash
+./scripts/bootstrap.sh
+```
+
+```bash
 # from repository root
 pipelinectl status
 pipelinectl advance implementation
@@ -175,6 +181,7 @@ This ensures that all code meets your quality standards before being committed.
 - **Worktree creation fails**: Verify sufficient disk space (minimum 2GB) and Git permissions
 - **`/pipeline` still shows LLM reasoning**: Apply the local OpenCode command-hook patch documented in `doc/opencode_command_noReply_patch.md`
 - **`pipelinectl` says session context missing**: run within an active OpenCode shell session or export `OPENCODE_SESSION_ID`
+- **`pipelinectl: command not found`**: run `./scripts/bootstrap.sh`, then restart shell and confirm `~/.local/bin` is on `PATH`
 - **Queued shell command rejected as stale**: rerun `pipelinectl status` and retry with fresh state
 - **Bootstrap takes too long**: Check network connectivity and npm registry access
 
@@ -182,7 +189,7 @@ This ensures that all code meets your quality standards before being committed.
 
 Before production deployment, verify:
 - **Environment**: Node.js v18+, Git v2.30+, Bun runtime available
-- **Bootstrap**: `cd .opencode && npm install` completes in <60 seconds
+- **Bootstrap**: `./scripts/bootstrap.sh` completes in <60 seconds
 - **End-to-end**: Simple "Hello World" task completes within 5 minutes
 - **Error handling**: System gracefully handles network timeouts and disk space issues
 

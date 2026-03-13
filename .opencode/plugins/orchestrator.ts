@@ -173,6 +173,7 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
   const statePath = resolve(worktree, "_bmad-output", "orchestration-state.json");
   const eventLogPath = resolve(worktree, "_bmad-output", "orchestration-events.ndjson");
   const commandQueuePath = resolve(worktree, "_bmad-output", "orchestration-commands.ndjson");
+  const shellBootstrapPath = resolve(worktree, "_bmad-output", "pipelinectl-shell.env.sh");
   const spawnScriptPath = resolve(worktree, "agents", "tools", "spawn_worktree.sh");
   const idleInFlight = new Set<string>();
   const preHandledCommands = new Map<string, number>();
@@ -182,6 +183,7 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
   let writeQueue: Promise<void> = Promise.resolve();
   let commandQueueInFlight = false;
 
+  await ensureShellBootstrapFile(shellBootstrapPath, worktree);
   await persistState();
 
   return {
@@ -207,7 +209,23 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
     },
     "shell.env": async (input, output) => {
       const toolsPath = resolve(worktree, "agents", "tools");
-      output.env.PATH = `${worktree}${delimiter}${toolsPath}${delimiter}${process.env.PATH ?? ""}`;
+      const cwdRoot = resolve(input.cwd);
+      const parentWorktree = resolve(worktree, "..");
+      const pathPrefixes = dedupePathEntries([
+        cwdRoot,
+        resolve(cwdRoot, "agents", "tools"),
+        worktree,
+        toolsPath,
+        parentWorktree,
+        resolve(parentWorktree, "agents", "tools"),
+      ]);
+      const inheritedPath = output.env.PATH ?? process.env.PATH ?? "";
+      output.env.PATH =
+        pathPrefixes.length > 0
+          ? `${pathPrefixes.join(delimiter)}${inheritedPath ? `${delimiter}${inheritedPath}` : ""}`
+          : inheritedPath;
+      output.env.BASH_ENV = shellBootstrapPath;
+      output.env.OPENCODE_PIPELINECTL = resolve(worktree, "agents", "tools", "pipelinectl.sh");
       output.env.OPENCODE_WORKTREE = worktree;
       output.env.OPENCODE_ORCHESTRATION_STATE = statePath;
       output.env.OPENCODE_ORCHESTRATION_COMMAND_QUEUE = commandQueuePath;
@@ -1698,6 +1716,31 @@ function splitCommandQueueLines(raw: string): string[] {
     lines.pop();
   }
   return lines;
+}
+
+function dedupePathEntries(entries: string[]): string[] {
+  const normalized = entries.map((entry) => entry.trim()).filter((entry) => entry.length > 0);
+  return Array.from(new Set(normalized));
+}
+
+async function ensureShellBootstrapFile(filePath: string, worktree: string): Promise<void> {
+  await mkdir(dirname(filePath), { recursive: true });
+  await writeFile(filePath, buildShellBootstrapScript(worktree), "utf-8");
+}
+
+function buildShellBootstrapScript(worktree: string): string {
+  const quotedWorktree = JSON.stringify(worktree);
+  return [
+    `__demonlord_pipeline_root=${quotedWorktree}`,
+    "pipelinectl() {",
+    "  local root=\"${OPENCODE_WORKTREE:-$__demonlord_pipeline_root}\"",
+    "  \"$root/agents/tools/pipelinectl.sh\" \"$@\"",
+    "}",
+    "piplinectl() {",
+    "  pipelinectl \"$@\"",
+    "}",
+    "export -f pipelinectl piplinectl >/dev/null 2>&1 || true",
+  ].join("\n");
 }
 
 function pruneProcessedCommandDedupes(cache: Record<string, number>): void {
