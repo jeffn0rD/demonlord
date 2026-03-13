@@ -300,7 +300,7 @@ async function loadSnapshot(filePath: string): Promise<OrchestrationSnapshot | n
       runtime: parsed.runtime,
       sessionToRoot: parsed.sessionToRoot ?? {},
       pipelines: parsed.pipelines ?? {},
-      pipelineSummaries: parsed.pipelineSummaries ?? {},
+      pipelineSummaries: parsed.pipelineSummaries,
     };
   } catch {
     return null;
@@ -308,7 +308,7 @@ async function loadSnapshot(filePath: string): Promise<OrchestrationSnapshot | n
 }
 
 function renderStatus(snapshot: OrchestrationSnapshot, envSessionID?: string, explicitSessionID?: string): string {
-  const pipelines = snapshot.pipelineSummaries ?? snapshot.pipelines ?? {};
+  const pipelines = getPipelineMap(snapshot);
   const roots = Object.keys(pipelines);
   if (roots.length === 0) {
     return "No pipelines found in orchestration snapshot.";
@@ -353,7 +353,7 @@ function formatPipelineStatus(target: PipelineTarget, snapshot: OrchestrationSna
 }
 
 function resolvePipeline(snapshot: OrchestrationSnapshot, sessionID?: string): PipelineTarget | null {
-  const pipelines = snapshot.pipelineSummaries ?? snapshot.pipelines ?? {};
+  const pipelines = getPipelineMap(snapshot);
   const sessionToRoot = snapshot.sessionToRoot ?? {};
   if (sessionID) {
     const rootSessionID = sessionToRoot[sessionID] ?? (pipelines[sessionID] ? sessionID : undefined);
@@ -377,6 +377,15 @@ function resolvePipeline(snapshot: OrchestrationSnapshot, sessionID?: string): P
     .sort((left, right) => right.pipeline.updatedAt - left.pipeline.updatedAt)[0];
 
   return latest ?? null;
+}
+
+function getPipelineMap(snapshot: OrchestrationSnapshot): Record<string, PipelineStateSnapshot> {
+  const summaries = snapshot.pipelineSummaries ?? {};
+  if (Object.keys(summaries).length > 0) {
+    return summaries;
+  }
+
+  return snapshot.pipelines ?? {};
 }
 
 function buildQueueCommand(input: {

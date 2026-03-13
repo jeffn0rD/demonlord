@@ -132,6 +132,30 @@ describe("pipelinectl", () => {
     const queued = await readQueueFile(fixture.queuePath);
     assert.equal(queued.length, 0);
   });
+
+  test("falls back to pipelines when pipelineSummaries is missing", async () => {
+    const fixture = await createFixture({
+      pipelines: {
+        "ses-root": {
+          rootSessionID: "ses-root",
+          currentStage: "triage",
+          transition: "idle",
+          stopped: false,
+          updatedAt: 500,
+        },
+      },
+      sessionToRoot: {
+        "ses-root": "ses-root",
+      },
+      includeSummaries: false,
+    });
+    const capture = createCaptureIO();
+
+    const exitCode = await runPipelineCtl(["status"], fixture.env, capture.io);
+
+    assert.equal(exitCode, 0);
+    assert.match(capture.stdout.join(""), /Pipeline: ses-root/);
+  });
 });
 
 function createCaptureIO(): CaptureIO {
@@ -156,6 +180,7 @@ async function createFixture(input: {
   sessionToRoot: Record<string, string>;
   runtimeOff?: boolean;
   effectiveMode?: string;
+  includeSummaries?: boolean;
 }): Promise<{ env: NodeJS.ProcessEnv; queuePath: string }> {
   const root = await mkdtemp(join(tmpdir(), "pipelinectl-test-"));
   temporaryDirectories.push(root);
@@ -165,30 +190,31 @@ async function createFixture(input: {
 
   const statePath = resolve(outputDir, "orchestration-state.json");
   const queuePath = resolve(outputDir, "orchestration-commands.ndjson");
+  const snapshot: Record<string, unknown> = {
+    version: 2,
+    updatedAt: new Date(0).toISOString(),
+    runtime: {
+      off: input.runtimeOff ?? false,
+      enabled: true,
+      configuredMode: "manual",
+      effectiveMode: input.effectiveMode ?? "manual",
+    },
+    sessionToRoot: input.sessionToRoot,
+    pipelines: input.pipelines,
+    commandQueue: {
+      path: queuePath,
+      lastProcessedLine: 0,
+      processedDedupes: {},
+    },
+  };
+
+  if (input.includeSummaries !== false) {
+    snapshot.pipelineSummaries = input.pipelines;
+  }
+
   await writeFile(
     statePath,
-    `${JSON.stringify(
-      {
-        version: 2,
-        updatedAt: new Date(0).toISOString(),
-        runtime: {
-          off: input.runtimeOff ?? false,
-          enabled: true,
-          configuredMode: "manual",
-          effectiveMode: input.effectiveMode ?? "manual",
-        },
-        sessionToRoot: input.sessionToRoot,
-        pipelines: input.pipelines,
-        pipelineSummaries: input.pipelines,
-        commandQueue: {
-          path: queuePath,
-          lastProcessedLine: 0,
-          processedDedupes: {},
-        },
-      },
-      null,
-      2,
-    )}\n`,
+    `${JSON.stringify(snapshot, null, 2)}\n`,
     "utf-8",
   );
 

@@ -2,6 +2,7 @@
   "name": "demonlord-template",
   "version": "1.0.0",
   "private": true,
+  "type": "module",
   "scripts": {
     "lint": "exit 0",
     "test": "exit 0"
