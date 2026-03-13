@@ -1,11 +1,14 @@
 import { tool } from "@opencode-ai/plugin/tool";
-import { mkdir, readFile, writeFile } from "fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "fs/promises";
 import { dirname, isAbsolute, relative, resolve } from "path";
 
 const SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
 const AGENT_ID_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 const DEFAULT_EXPORT_DIRECTORY = ["_bmad-output", "party-mode"] as const;
 const DEFAULT_EXPORT_PREFIX = "party-mode-transcript";
+const BLOCKED_EXPORT_ROOTS = new Set([".opencode", "agents", ".github"]);
+
+let atomicWriteCounter = 0;
 
 export type PartyModeAction =
   | "start"
@@ -156,6 +159,8 @@ export async function executePartyModeAction(
               ...DEFAULT_EXPORT_DIRECTORY,
               `${DEFAULT_EXPORT_PREFIX}-${normalized.sessionID}.md`,
             );
+        const relativeExportPath = relative(worktreeRoot, exportPath);
+        assertAllowedExportRelativePath(relativeExportPath);
         const exportContent = renderTranscript(state);
 
         try {
@@ -170,7 +175,6 @@ export async function executePartyModeAction(
           };
         }
 
-        const relativeExportPath = relative(worktreeRoot, exportPath);
         state.transcript.push(`Transcript exported to ${relativeExportPath}`);
         state.updatedAt = new Date().toISOString();
         await saveState(stateDirectory, statePath, state);
@@ -317,6 +321,17 @@ function assertWithinWorktree(worktreeRoot: string, candidatePath: string): void
   }
 }
 
+function assertAllowedExportRelativePath(relativePath: string): void {
+  const segments = relativePath.split(/[\\/]+/).filter((segment) => segment.length > 0);
+  const rootSegment = segments[0];
+
+  if (rootSegment && BLOCKED_EXPORT_ROOTS.has(rootSegment)) {
+    throw new Error(
+      "export_path cannot target protected directories (.opencode, agents, .github). Use _bmad-output/ instead.",
+    );
+  }
+}
+
 async function loadState(statePath: string): Promise<PartyState | null> {
   try {
     const raw = await readFile(statePath, "utf-8");
@@ -359,7 +374,20 @@ async function loadState(statePath: string): Promise<PartyState | null> {
 
 async function saveState(directory: string, statePath: string, state: PartyState): Promise<void> {
   await mkdir(directory, { recursive: true });
-  await writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`, "utf-8");
+  await writeTextAtomically(statePath, `${JSON.stringify(state, null, 2)}\n`);
+}
+
+async function writeTextAtomically(targetPath: string, content: string): Promise<void> {
+  atomicWriteCounter += 1;
+  const temporaryPath = `${targetPath}.${process.pid}.${atomicWriteCounter}.tmp`;
+
+  await writeFile(temporaryPath, content, "utf-8");
+  try {
+    await rename(temporaryPath, targetPath);
+  } catch (error) {
+    await rm(temporaryPath, { force: true });
+    throw error;
+  }
 }
 
 function mutateState(
@@ -464,5 +492,10 @@ function renderTranscript(state: PartyState): string {
 
   return `${lines.join("\n")}\n`;
 }
+
+export const __partyModeTestUtils = {
+  assertAllowedExportRelativePath,
+  writeTextAtomically,
+};
 
 export default partyModeTool;
