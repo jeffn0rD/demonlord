@@ -18,6 +18,7 @@ interface SubmitImplementationArgs {
 
 interface SubmitImplementationContext {
   worktree: string;
+  runCommand?: (worktreeRoot: string, command: string) => Promise<CommandResult>;
 }
 
 interface CommandResult {
@@ -31,6 +32,7 @@ interface FrameworkDetection {
   apiRunner: ApiTestRunner;
   e2eRunner: E2ETestRunner;
   fileExtension: "ts" | "js";
+  detectionError?: string;
 }
 
 interface GeneratedTestArtifacts {
@@ -69,6 +71,15 @@ interface BunShellPromiseLike extends Promise<BunShellResultLike> {
 
 type BunShellFunction = (template: TemplateStringsArray, ...values: unknown[]) => BunShellPromiseLike;
 
+const MAX_AUTO_FIX_ATTEMPTS = 3;
+const SENSITIVE_FILE_PATTERNS = [
+  /(^|\/)\.env(\..+)?$/i,
+  /(^|\/)id_rsa$/i,
+  /(^|\/)credentials\.json$/i,
+  /(^|\/)secrets?(\/|$)/i,
+  /(^|\/)passwords?(\/|$)/i,
+];
+
 const submit_implementation = tool({
   description:
     "Validate implementation with lint/test gates, generate lightweight API/E2E test scaffolds, then commit and push.",
@@ -97,15 +108,19 @@ const submit_implementation = tool({
   },
   async execute(args: SubmitImplementationArgs, context: SubmitImplementationContext) {
     const worktreeRoot = resolve(context.worktree);
+    const executeCommand = context.runCommand ?? runCommand;
     const autoFix = args.auto_fix ?? true;
     const generateTests = args.generate_tests ?? true;
     const frameworks = await detectFrameworks(worktreeRoot);
     const notes: string[] = [];
+    if (frameworks.detectionError) {
+      notes.push(`Framework detection fallback: ${frameworks.detectionError}`);
+    }
 
     const changedFiles =
       args.changed_files && args.changed_files.length > 0
         ? normalizeChangedFiles(args.changed_files)
-        : await detectChangedFiles(worktreeRoot);
+        : await detectChangedFiles(worktreeRoot, executeCommand);
 
     let generated: GeneratedTestArtifacts = { files: [], notes: [] };
     if (generateTests) {
@@ -115,15 +130,19 @@ const submit_implementation = tool({
       notes.push("Test generation skipped by request (generate_tests=false).");
     }
 
-    let lintResult = await runCommand(worktreeRoot, "npm run lint");
+    let lintResult = await executeCommand(worktreeRoot, "npm run lint");
     const autoFixActions: string[] = [];
+
     if (lintResult.exitCode !== 0 && autoFix) {
-      autoFixActions.push("Attempted lint autofix via npm run lint -- --fix.");
-      const lintFixResult = await runCommand(worktreeRoot, "npm run lint -- --fix");
-      if (lintFixResult.exitCode === 0) {
-        lintResult = await runCommand(worktreeRoot, "npm run lint");
-      } else {
-        lintResult = mergeCommandOutput(lintResult, lintFixResult, "lint:auto-fix");
+      for (let i = 0; i < MAX_AUTO_FIX_ATTEMPTS; i++) {
+        autoFixActions.push(`Attempted lint autofix (try ${i + 1}) via npm run lint -- --fix.`);
+        const lintFixResult = await executeCommand(worktreeRoot, "npm run lint -- --fix");
+        if (lintFixResult.exitCode !== 0) {
+          lintResult = mergeCommandOutput(lintResult, lintFixResult, "lint:auto-fix");
+          break;
+        }
+        lintResult = await executeCommand(worktreeRoot, "npm run lint");
+        if (lintResult.exitCode === 0) break;
       }
     }
 
@@ -142,16 +161,19 @@ const submit_implementation = tool({
       return JSON.stringify(result, null, 2);
     }
 
-    let testResult = await runCommand(worktreeRoot, "npm run test");
+    let testResult = await executeCommand(worktreeRoot, "npm run test");
     if (testResult.exitCode !== 0 && autoFix) {
       const snapshotFixCommand = inferSnapshotFixCommand(frameworks.apiRunner);
       if (snapshotFixCommand) {
-        autoFixActions.push(`Attempted snapshot refresh via ${snapshotFixCommand}.`);
-        const snapshotFixResult = await runCommand(worktreeRoot, snapshotFixCommand);
-        if (snapshotFixResult.exitCode === 0) {
-          testResult = await runCommand(worktreeRoot, "npm run test");
-        } else {
-          testResult = mergeCommandOutput(testResult, snapshotFixResult, "test:auto-fix");
+        for (let i = 0; i < MAX_AUTO_FIX_ATTEMPTS; i++) {
+          autoFixActions.push(`Attempted snapshot refresh via ${snapshotFixCommand} (try ${i + 1}).`);
+          const snapshotFixResult = await executeCommand(worktreeRoot, snapshotFixCommand);
+          if (snapshotFixResult.exitCode !== 0) {
+            testResult = mergeCommandOutput(testResult, snapshotFixResult, "test:auto-fix");
+            break;
+          }
+          testResult = await executeCommand(worktreeRoot, "npm run test");
+          if (testResult.exitCode === 0) break;
         }
       }
     }
@@ -178,8 +200,61 @@ const submit_implementation = tool({
       return JSON.stringify(result, null, 2);
     }
 
-    const commitAndPushCommand = `git add -A && git commit -m ${quoteForBash(args.commit_message)} && git push`;
-    const commitResult = await runCommand(worktreeRoot, commitAndPushCommand);
+    const stageList = normalizeChangedFiles([...changedFiles, ...generated.files]);
+
+    const sensitiveFiles = stageList.filter((filePath) =>
+      SENSITIVE_FILE_PATTERNS.some((pattern) => pattern.test(filePath.toLowerCase())),
+    );
+    if (sensitiveFiles.length > 0) {
+      const result: SubmissionResult = {
+        ok: false,
+        stage: "commit_push",
+        frameworks,
+        generated_tests: generated.files,
+        notes: [`Detected sensitive files in staging scope: ${sensitiveFiles.join(", ")}. Commit aborted.`],
+        lint: lintResult,
+        test: testResult,
+        stack_trace: "Security check failed: sensitive files detected.",
+      };
+      return JSON.stringify(result, null, 2);
+    }
+
+    if (stageList.length === 0) {
+      const result: SubmissionResult = {
+        ok: false,
+        stage: "commit_push",
+        frameworks,
+        generated_tests: generated.files,
+        notes: ["No files to stage. Ensure changes are detected."],
+        lint: lintResult,
+        test: testResult,
+        stack_trace: "No files staged for commit.",
+      };
+      return JSON.stringify(result, null, 2);
+    }
+
+    const detectedWorktreeChanges = await detectChangedFiles(worktreeRoot, executeCommand);
+    const stagedSet = new Set(stageList);
+    const unexpectedChanges = detectedWorktreeChanges.filter((filePath) => !stagedSet.has(filePath));
+    if (unexpectedChanges.length > 0) {
+      const result: SubmissionResult = {
+        ok: false,
+        stage: "commit_push",
+        frameworks,
+        generated_tests: generated.files,
+        notes: [
+          `Unexpected changed files not in staging scope: ${unexpectedChanges.join(", ")}. Update changed_files or clean the worktree.`,
+        ],
+        lint: lintResult,
+        test: testResult,
+        stack_trace: "Staging scope check failed: unexpected worktree changes detected.",
+      };
+      return JSON.stringify(result, null, 2);
+    }
+
+    const escapedFiles = stageList.map((filePath) => quoteForBash(filePath)).join(" ");
+    const commitAndPushCommand = `git add ${escapedFiles} && git commit -m ${quoteForBash(args.commit_message)} && git push`;
+    const commitResult = await executeCommand(worktreeRoot, commitAndPushCommand);
     if (commitResult.exitCode !== 0) {
       const result: SubmissionResult = {
         ok: false,
@@ -220,11 +295,14 @@ async function detectFrameworks(worktreeRoot: string): Promise<FrameworkDetectio
   try {
     const raw = await readFile(packagePath, "utf-8");
     packageJson = JSON.parse(raw) as PackageJsonLike;
-  } catch {
+  } catch (error) {
+    const detectionError =
+      error instanceof Error ? error.message : "Unable to read package.json for framework detection.";
     return {
       apiRunner: "unknown",
       e2eRunner: "none",
       fileExtension: "ts",
+      detectionError,
     };
   }
 
@@ -290,7 +368,7 @@ function hasDependency(dependencies: Record<string, string>, key: string): boole
   return Object.prototype.hasOwnProperty.call(dependencies, key);
 }
 
-async function detectChangedFiles(worktreeRoot: string): Promise<string[]> {
+async function detectChangedFiles(worktreeRoot: string, runner: (worktreeRoot: string, command: string) => Promise<CommandResult>): Promise<string[]> {
   const commands = [
     "git diff --name-only --cached",
     "git diff --name-only",
@@ -299,7 +377,7 @@ async function detectChangedFiles(worktreeRoot: string): Promise<string[]> {
   const files = new Set<string>();
 
   for (const command of commands) {
-    const result = await runCommand(worktreeRoot, command);
+    const result = await runner(worktreeRoot, command);
     if (result.exitCode !== 0) {
       continue;
     }
@@ -682,6 +760,7 @@ function quoteForBash(value: string): string {
 }
 
 export const __submitImplementationTestUtils = {
+  CONVENTIONAL_COMMIT_PATTERN,
   detectApiRunner,
   detectE2ERunner,
   toSemanticKey,
