@@ -1,5 +1,8 @@
 How to build/run your patched OpenCode
 From /home/jeff0r/work/opencode:
+Patch reference (preserved):
+- See `doc/opencode_command_noReply_patch.md` for the exact local core diff and verification steps.
+
 1) Install deps
 - bun install
 2) Fastest way to run patched version (no full build)

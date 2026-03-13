@@ -56,11 +56,13 @@ This document outlines the architecture and phased implementation plan for "Demo
   - Stage inference from session metadata/title text can cause misrouted transitions. **Mitigation**: Persist explicit pipeline state keyed by root session and require deterministic transition checks.
   - Auto-progress behavior can be noisy during testing (aborts, throwaway prompts). **Mitigation**: Default to config-driven manual mode and suppress non-fatal aborted-message recovery prompts.
   - Current OpenCode command hooks may still route slash commands through an LLM request path. **Mitigation**: Add a deterministic shell control-plane fallback (`!pipelinectl ...`) backed by plugin-managed state and command queue files.
+  - Even with pre-hook handling, control commands can still feel non-deterministic unless hook-level no-reply is available in core. **Mitigation**: On patched OpenCode builds, set `output.noReply=true` in `/pipeline` and `/approve` pre-hooks and verify zero reasoning-turn UX for control commands.
   - Worktree creation may fail due to disk space or Git permission issues. **Mitigation**: Pre-validate disk space and Git permissions before attempting worktree creation, with clear error messages and cleanup procedures.
 - **Enhancements:**
   - Implement `project-context.md` generation and loading for consistent agent behavior
   - Support Party Mode agent coordination within shared worktrees
-  - Add `/pipeline` operational controls (`status`, `advance`, `stop`, `off`) for first-class session tree visibility and explicit stage transitions
+  - Add `/pipeline` operational controls (`status`, `advance`, `stop`, `off`, `on`) for first-class session tree visibility and explicit stage transitions
+  - Enable no-reply command short-circuit for `/pipeline` and `/approve` on patched OpenCode core to avoid LLM reasoning turns for control operations
   - Add local shell-based `pipelinectl` controls (`status`, `advance`, `approve`, `stop`, `off`, `on`) that operate via deterministic state sync
   - Expose session/worktree shell context through plugin-managed environment variables for fast operator workflows during active agent execution
   - Add config-driven spawn approvals with local command fallback so orchestration remains usable without Discord

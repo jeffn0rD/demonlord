@@ -107,6 +107,19 @@ To remove dependence on title inference and ad hoc DB inspection, operators use 
 * `/pipeline stop [session]` and global `/pipeline off`: Stops one pipeline or disables orchestration globally.
 * `/pipeline approve [session]`: Local approval path for blocked spawn transitions (works without Discord).
 
+Local Command Hook Patch (Optional, Personal/Local Use)
+
+Some OpenCode builds still run slash commands through a visible LLM reasoning turn even when plugins handle control commands in `command.execute.before`. For local/personal workflows, Demonlord supports a compatibility patch to OpenCode core that adds `noReply` to the command pre-hook output contract.
+
+When applied, orchestrator/communication plugins can set `output.noReply = true` for `/pipeline` and `/approve`, producing deterministic control responses without an LLM reasoning turn.
+
+Patch details are versioned in `doc/opencode_command_noReply_patch.md`, including:
+
+* target files in `/home/jeff0r/work/opencode`
+* minimal diff for `packages/plugin/src/index.ts` and `packages/opencode/src/session/prompt.ts`
+* verification commands and expected behavior
+* rollback steps
+
 Horizontal Scaling via Git Worktrees
 
 The adoption of Git Worktrees over standard branching is a critical architectural decision:

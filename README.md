@@ -146,6 +146,7 @@ This ensures that all code meets your quality standards before being committed.
 - **Permission errors**: Check `.env` contains required tokens
 - **Skill matching issues**: Ensure `SKILL.md` files have proper YAML frontmatter with `name` and `description`
 - **Worktree creation fails**: Verify sufficient disk space (minimum 2GB) and Git permissions
+- **`/pipeline` still shows LLM reasoning**: Apply the local OpenCode command-hook patch documented in `doc/opencode_command_noReply_patch.md`
 - **Bootstrap takes too long**: Check network connectivity and npm registry access
 
 ## Validation Requirements

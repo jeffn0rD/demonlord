@@ -9,7 +9,8 @@
     "ses_31bc83599ffeIn1jnAZtvFhB0D": "ses_31bc83599ffeIn1jnAZtvFhB0D",
     "ses_31ba06544ffeCSmwGPdWao5jt8": "ses_31ba06544ffeCSmwGPdWao5jt8",
     "ses_31b99ace6ffe61V4eQM2mPeW9g": "ses_31b99ace6ffe61V4eQM2mPeW9g",
-    "ses_31b8e4edcffegeZJi5biNIQZGp": "ses_31b8e4edcffegeZJi5biNIQZGp"
+    "ses_31b8e4edcffegeZJi5biNIQZGp": "ses_31b8e4edcffegeZJi5biNIQZGp",
+    "ses_31b542785ffekUSRL70ClrKtnX": "ses_31b542785ffekUSRL70ClrKtnX"
   },
   "pipelines": {
     "ses_31da94581ffe4HUbdNUPLGMZlG": {
@@ -45,7 +46,7 @@
         }
       ],
       "createdAt": 1773351929045,
-      "updatedAt": 1773359832414
+      "updatedAt": 1773362756813
     },
     "ses_31bfca53bffexOv9dXIePXFZxD": {
       "rootSessionID": "ses_31bfca53bffexOv9dXIePXFZxD",
@@ -219,6 +220,51 @@
       ],
       "createdAt": 1773359182116,
       "updatedAt": 1773359585956
+    },
+    "ses_31b542785ffekUSRL70ClrKtnX": {
+      "rootSessionID": "ses_31b542785ffekUSRL70ClrKtnX",
+      "currentStage": "triage",
+      "transition": "idle",
+      "sessions": {
+        "ses_31b542785ffekUSRL70ClrKtnX": {
+          "sessionID": "ses_31b542785ffekUSRL70ClrKtnX",
+          "stage": "triage",
+          "children": [],
+          "status": "active",
+          "directory": "/home/jeff0r/work/demonlord"
+        }
+      },
+      "terminalNotified": false,
+      "stopped": false,
+      "error": {
+        "inProgress": false,
+        "attempts": 0,
+        "handledSignatures": []
+      },
+      "events": [
+        {
+          "type": "status_snapshot",
+          "rootSessionID": "ses_31b542785ffekUSRL70ClrKtnX",
+          "sessionID": "ses_31b542785ffekUSRL70ClrKtnX",
+          "stage": "triage",
+          "details": {
+            "transition": "idle"
+          },
+          "at": "2026-03-13T00:49:53.285Z"
+        },
+        {
+          "type": "error_ignored",
+          "rootSessionID": "ses_31b542785ffekUSRL70ClrKtnX",
+          "sessionID": "ses_31b542785ffekUSRL70ClrKtnX",
+          "stage": "triage",
+          "details": {
+            "reason": "MessageAbortedError ignored in manual mode"
+          },
+          "at": "2026-03-13T00:50:01.019Z"
+        }
+      ],
+      "createdAt": 1773362993276,
+      "updatedAt": 1773363001037
     }
   }
 }

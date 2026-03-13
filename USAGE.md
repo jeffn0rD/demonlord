@@ -214,6 +214,10 @@ Discord integration is configured in `demonlord.config.json`:
 - **Solution**: Check Git permissions and available disk space
 - **Check**: Verify worktree directory path in `demonlord.config.json`
 
+**`/pipeline` commands show reasoning text before output**
+- **Solution**: Apply the local OpenCode command-hook patch in `doc/opencode_command_noReply_patch.md`
+- **Check**: Confirm Demonlord pre-hooks set `output.noReply = true` for `/pipeline` and `/approve` on patched core builds
+
 **Discord messages not appearing**
 - **Solution**: Verify `.env` contains correct Discord webhook URLs
 - **Check**: Ensure `discord.enabled` is set to `true`

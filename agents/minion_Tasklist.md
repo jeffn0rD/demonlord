@@ -185,6 +185,7 @@ Agents should execute one subphase at a time. To trigger implementation, the Lea
 **Exit criteria / QA checklist:**
 - [ ] Orchestrator persists a deterministic, atomic state snapshot suitable for external CLI reads.
 - [ ] A local `pipelinectl` command supports `status`, `off`, `on`, `advance`, `approve`, and `stop` with actionable error messages.
+- [ ] `/pipeline` and `/approve` pre-hook handlers set `output.noReply=true` (when core supports it) so control commands return deterministic output without LLM reasoning turns.
 - [ ] Shell mode receives required session/worktree context (e.g., `OPENCODE_SESSION_ID`, `OPENCODE_WORKTREE`) through plugin-managed environment injection.
 - [ ] CLI-to-plugin control handoff is deterministic (command queue or equivalent), deduplicated, and does not corrupt pipeline state on invalid inputs.
 - [ ] `doc/engineering_spec.md` documents the shell control-plane architecture, state schema, and failure/recovery behavior.
@@ -205,6 +206,8 @@ Agents should execute one subphase at a time. To trigger implementation, the Lea
 - **T-3.4A.5** (Refs #1): Add/expand tests covering shell control-plane behaviors: atomic state read consistency, invalid command rejection, dedupe, and off/on resume semantics. Touch points: `.opencode/tests/plugins/orchestrator.test.ts`, `.opencode/tests/integration/orchestration-flow.test.ts`, `.opencode/tests/tools/pipelinectl.test.ts`
 <!-- TASK:T-3.4A.6 -->
 - **T-3.4A.6** (Refs #1): Update architecture and operator docs for the new fallback path, including command reference and troubleshooting. Touch points: `doc/engineering_spec.md`, `doc/engineering_reference.md`, `README.md`, `USAGE.md`
+<!-- TASK:T-3.4A.7 -->
+- **T-3.4A.7** (Refs #1): When running on patched OpenCode core with `command.execute.before` no-reply support, update `.opencode/plugins/orchestrator.ts` and `.opencode/plugins/communication.ts` pre-hooks to set `output.noReply = true` for `/pipeline` and `/approve`, and verify no LLM reasoning turn appears for control commands. Touch points: `.opencode/plugins/orchestrator.ts`, `.opencode/plugins/communication.ts`, `.opencode/tests/plugins/orchestrator.test.ts`
 
 ### SUBPHASE-3.5: Party Mode Security Hardening & State Convergence
 <!-- SUBPHASE:3.5 -->
