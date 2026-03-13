@@ -214,6 +214,39 @@ describe("orchestrator snapshot and queue helpers", () => {
     assert.equal(autoNotIgnored, false);
   });
 
+  test("always ignores intentional pre-hook stop control error", () => {
+    const baseSettings = {
+      enabled: true,
+      mode: "auto" as const,
+      requireApprovalBeforeSpawn: true,
+      ignoreAbortedMessages: false,
+      verboseEvents: false,
+      pipelineCommandShortCircuit: "prehook_error" as const,
+      taskRouting: {
+        source: "tasklist_explicit" as const,
+        defaultTier: "standard" as const,
+      },
+      agentPools: __orchestratorTestUtils.parseAgentPools({}),
+      parallelism: {
+        maxParallelTotal: 1,
+        maxParallelByRole: { planning: 1, implementation: 1, review: 1 },
+        maxParallelByTier: { lite: 1, standard: 1, pro: 1 },
+      },
+    };
+
+    const byCode = __orchestratorTestUtils.shouldIgnoreError(
+      { code: "DEMONLORD_PIPELINE_PREHOOK_STOP", message: "intentional halt" },
+      baseSettings,
+    );
+    const byCodeManual = __orchestratorTestUtils.shouldIgnoreError(
+      { code: "DEMONLORD_PIPELINE_PREHOOK_STOP", message: "intentional halt" },
+      { ...baseSettings, mode: "manual" },
+    );
+
+    assert.equal(byCode, true);
+    assert.equal(byCodeManual, true);
+  });
+
   test("normalizes error signatures to support deterministic dedupe", () => {
     const first = __orchestratorTestUtils.normalizeErrorSignature(
       { name: "NetworkError", message: "request 123 failed for ticket 99" },

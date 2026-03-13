@@ -368,6 +368,7 @@ const SPEC_EXPERT_SKILL_ID = "spec-expert";
 const SPEC_HANDOFF_READY_MARKER = "<!-- DEMONLORD_SPEC_HANDOFF_READY -->";
 const SPEC_HANDOFF_REQUIRED_HEADINGS = ["## Scope", "## Constraints"];
 const TASK_REF_PATTERN = /\bT-\d+(?:\.\d+)+\b/i;
+const PIPELINE_PREHOOK_STOP_ERROR_CODE = "DEMONLORD_PIPELINE_PREHOOK_STOP";
 
 const AMBIGUITY_HINT_PATTERN = /(not sure|unsure|unclear|ambiguous|conflict|recommend|recommendation)/;
 
@@ -667,14 +668,15 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
       return;
     }
 
-    if (shouldIgnoreError(event.properties.error, settings)) {
+    const ignoredReason = getIgnoredErrorReason(event.properties.error, settings);
+    if (ignoredReason) {
       await recordEvent(pipeline, {
         type: "error_ignored",
         rootSessionID: pipeline.rootSessionID,
         sessionID,
         stage: session.stage,
         details: {
-          reason: "MessageAbortedError ignored in manual mode",
+          reason: ignoredReason,
         },
       });
       return;
@@ -3708,7 +3710,7 @@ function setNoReplyIfSupported(output: { parts: unknown[] }): void {
 }
 
 class PipelineControlPrehookStopError extends Error {
-  code = "DEMONLORD_PIPELINE_PREHOOK_STOP";
+  code = PIPELINE_PREHOOK_STOP_ERROR_CODE;
 
   constructor() {
     super("Demonlord halted '/pipeline' command in pre-hook to short-circuit LLM request issuance (strategy=prehook_error).");
@@ -3770,11 +3772,19 @@ async function writeJsonAtomically(filePath: string, payload: unknown): Promise<
 }
 
 function shouldIgnoreError(error: unknown, settings: OrchestrationSettings): boolean {
-  if (!settings.ignoreAbortedMessages || settings.mode !== "manual") {
-    return false;
+  return getIgnoredErrorReason(error, settings) !== null;
+}
+
+function getIgnoredErrorReason(error: unknown, settings: OrchestrationSettings): string | null {
+  if (extractErrorCode(error) === PIPELINE_PREHOOK_STOP_ERROR_CODE) {
+    return "Intentional pipeline pre-hook stop ignored";
   }
 
-  return extractErrorName(error) === "MessageAbortedError";
+  if (!settings.ignoreAbortedMessages || settings.mode !== "manual") {
+    return null;
+  }
+
+  return extractErrorName(error) === "MessageAbortedError" ? "MessageAbortedError ignored in manual mode" : null;
 }
 
 function normalizeErrorSignature(error: unknown, stage: PipelineStage): string {
@@ -3797,6 +3807,24 @@ function extractErrorName(error: unknown): string | null {
 
   if (error instanceof Error && error.name) {
     return error.name;
+  }
+
+  return null;
+}
+
+function extractErrorCode(error: unknown): string | null {
+  if (typeof error === "object" && error !== null) {
+    const candidate = error as { code?: unknown };
+    if (typeof candidate.code === "string") {
+      return candidate.code;
+    }
+  }
+
+  if (error instanceof Error) {
+    const candidate = error as Error & { code?: unknown };
+    if (typeof candidate.code === "string") {
+      return candidate.code;
+    }
   }
 
   return null;

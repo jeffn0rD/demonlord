@@ -72,6 +72,7 @@ write_minimum_config() {
     "mode": "manual",
     "require_approval_before_spawn": true,
     "ignore_aborted_messages": true,
+    "pipeline_command_short_circuit": "no_reply",
     "verbose_events": true
   },
   "discord": {

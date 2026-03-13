@@ -202,6 +202,117 @@ describe("orchestrator integration flow", () => {
     }
   });
 
+  test("command.execute.before short-circuits /pipeline with no_reply while handling command", async () => {
+    const root = await mkdtemp(join(tmpdir(), "orchestrator-prehook-no-reply-"));
+
+    try {
+      await writeConfig(
+        root,
+        {
+          enabled: true,
+          mode: "manual",
+          require_approval_before_spawn: true,
+          ignore_aborted_messages: true,
+          verbose_events: false,
+        },
+        { pipeline_command_short_circuit: "no_reply" },
+      );
+
+      const client = createMockClient(root);
+      const plugin = await createPlugin(client, root);
+
+      await emitEvent(plugin, sessionCreatedEvent("ses-prehook-no-reply", root, "triage: prehook no reply"));
+
+      const output: { parts: unknown[]; noReply?: boolean } = {
+        parts: [{ type: "text", text: "placeholder" }],
+      };
+      await emitCommandBefore(plugin, {
+        command: "pipeline",
+        sessionID: "ses-prehook-no-reply",
+        arguments: "status",
+      }, output);
+
+      assert.equal(output.noReply, true);
+      assert.deepEqual(output.parts, []);
+      assert.equal(
+        client.prompts.some(
+          (entry) => entry.sessionID === "ses-prehook-no-reply" && entry.text.includes("Pipeline: ses-prehook-no-reply"),
+        ),
+        true,
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("command.execute.before prehook_error throws after command handling without recovery side effects", async () => {
+    const root = await mkdtemp(join(tmpdir(), "orchestrator-prehook-error-"));
+
+    try {
+      await writeConfig(
+        root,
+        {
+          enabled: true,
+          mode: "manual",
+          require_approval_before_spawn: true,
+          ignore_aborted_messages: true,
+          verbose_events: false,
+        },
+        { pipeline_command_short_circuit: "prehook_error" },
+      );
+
+      const client = createMockClient(root);
+      const plugin = await createPlugin(client, root);
+
+      await emitEvent(plugin, sessionCreatedEvent("ses-prehook-error", root, "triage: prehook error"));
+
+      const output: { parts: unknown[]; noReply?: boolean } = {
+        parts: [{ type: "text", text: "placeholder" }],
+      };
+      await assert.rejects(
+        () =>
+          emitCommandBefore(
+            plugin,
+            {
+              command: "pipeline",
+              sessionID: "ses-prehook-error",
+              arguments: "status",
+            },
+            output,
+          ),
+        /strategy=prehook_error/i,
+      );
+
+      assert.deepEqual(output.parts, []);
+      assert.equal(output.noReply, undefined);
+      assert.equal(
+        client.prompts.some((entry) => entry.sessionID === "ses-prehook-error" && entry.text.includes("Pipeline: ses-prehook-error")),
+        true,
+      );
+
+      await emitEvent(
+        plugin,
+        sessionErrorEvent("ses-prehook-error", {
+          name: "PipelineControlPrehookStopError",
+          code: "DEMONLORD_PIPELINE_PREHOOK_STOP",
+          message: "intentional halt",
+        }),
+      );
+
+      const snapshot = await readSnapshot<PipelineFixture>(root);
+      const pipeline = snapshot.pipelines["ses-prehook-error"];
+      const events = await readEventLog(root);
+
+      assert.equal(pipeline.error.attempts, 0);
+      assert.equal(pipeline.error.handledSignatures.length, 0);
+      assert.equal(events.filter((entry) => entry.type === "error_ignored").length, 1);
+      assert.equal(events.filter((entry) => entry.type === "error").length, 0);
+      assert.equal(client.prompts.filter((entry) => entry.text.includes("Recovery attempt")).length, 0);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test("repeated idle events do not duplicate spawn requests", async () => {
     const root = await mkdtemp(join(tmpdir(), "orchestrator-idle-"));
 
@@ -1356,6 +1467,19 @@ async function emitEvent(
   await plugin.event?.({ event });
 }
 
+async function emitCommandBefore(
+  plugin: Awaited<ReturnType<typeof OrchestratorPlugin>>,
+  input: { command: string; sessionID: string; arguments: string },
+  output: { parts: unknown[]; noReply?: boolean },
+): Promise<void> {
+  const hook = plugin["command.execute.before"];
+  if (!hook) {
+    return;
+  }
+
+  await hook(input as Parameters<typeof hook>[0], output as Parameters<typeof hook>[1]);
+}
+
 function buildSession(id: string, directory: string, title: string, parentID?: string): Session {
   return {
     id,
@@ -1458,19 +1582,39 @@ function sessionIdleEvent(sessionID: string): Event {
   };
 }
 
-function sessionErrorEvent(sessionID: string, message: string): Event {
+function sessionErrorEvent(
+  sessionID: string,
+  error:
+    | string
+    | {
+      name?: string;
+      code?: string;
+      message?: string;
+    },
+): Event {
+  const normalizedError =
+    typeof error === "string"
+      ? {
+        name: "UnknownError",
+        data: {
+          message: error,
+        },
+      }
+      : {
+        name: error.name ?? "UnknownError",
+        ...(typeof error.code === "string" ? { code: error.code } : {}),
+        data: {
+          message: error.message ?? "unknown error",
+        },
+      };
+
   return {
     type: "session.error",
     properties: {
       sessionID,
-      error: {
-        name: "UnknownError",
-        data: {
-          message,
-        },
-      },
+      error: normalizedError,
     },
-  };
+  } as Event;
 }
 
 async function writeConfig(
