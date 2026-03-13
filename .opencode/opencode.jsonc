@@ -4,7 +4,7 @@
     "planner": {
       "description": "Analyzes GitHub issues, identifies target files using glob/grep, and generates atomic plan files in /agents/plans/",
       "mode": "primary",
-      "model": "openrouter/openai/gpt-5.4-codex",
+      "model": "openrouter/openai/gpt-5.3-codex",
       "variant": "high"
     },
     "orchestrator": {
@@ -16,20 +16,20 @@
     "minion": {
       "description": "Execution-focused agent that implements specific features or fixes within an isolated worktree",
       "mode": "subagent",
-      "model": "openrouter/openai/gpt-5.4-codex",
+      "model": "openrouter/openai/gpt-5.3-codex",
       "variant": "high"
     },
     "reviewer": {
       "description": "Performs automated PR analysis and triggers notifications for human-in-the-loop approval",
       "mode": "subagent",
-      "model": "openrouter/openai/gpt-5.4-codex",
+      "model": "openrouter/openai/gpt-5.3-codex",
       "variant": "high"
     }
   },
   "provider": {
     "openrouter": {
       "models": {
-        "openai/gpt-5.4-codex": {
+        "openai/gpt-5.3-codex": {
           "options": {
             "reasoningEffort": "high"
           }

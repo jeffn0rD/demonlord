@@ -37,6 +37,7 @@ The factory operates on an event-driven orchestration state machine (implemented
 ### 2. Orchestration & Spawning (`/implement`)
 *   The Orchestrator reads the plan.
 *   It invokes the `matchmaker.ts` tool, passing the task requirements to find the exact Minion Skill (e.g., `frontend-specialist`) matching the job.
+*   For ambiguous/spec-heavy requests, it runs a spec-first pass and requires a marker artifact (`_bmad-output/spec-handoff-<taskID>.md`) with scope/constraints before coding begins.
 *   A bash script (`spawn_worktree.sh`) generates an isolated sibling directory.
 *   The specialized minion is spawned headlessly inside the worktree using the OpenCode SDK.
 

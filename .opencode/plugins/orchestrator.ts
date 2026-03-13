@@ -4,7 +4,7 @@ import { execFile } from "child_process";
 import { appendFile, mkdir, readFile, rename, writeFile } from "fs/promises";
 import { delimiter, dirname, resolve } from "path";
 import { promisify } from "util";
-import { resolveTaskRoute, type RouteResult } from "../tools/matchmaker.ts";
+import { loadSkillDefinitions, resolveTaskRoute, type RouteResult } from "../tools/matchmaker.ts";
 
 type PipelineStage = "triage" | "implementation" | "review";
 type TransitionState = "idle" | "awaiting_approval" | "in_progress" | "blocked" | "completed" | "stopped";
@@ -30,6 +30,17 @@ interface WorktreeContext {
   taskID: string;
   worktreePath: string;
   branchName: string;
+}
+
+interface SpecHandoffState {
+  required: boolean;
+  completed: boolean;
+  markerPath: string;
+  markerSessionID?: string;
+  targetSkillID: string;
+  targetRoutingMode: RouteResult["mode"];
+  targetReason: string;
+  completedAt?: number;
 }
 
 interface PipelineSessionState {
@@ -79,6 +90,7 @@ interface PipelineState {
   nextSessionID?: string;
   routing?: RoutingContext;
   worktree?: WorktreeContext;
+  specHandoff?: SpecHandoffState;
   terminalNotified: boolean;
   stopped: boolean;
   stopReason?: StopReason;
@@ -114,6 +126,7 @@ interface PipelineSummary {
   nextSessionID?: string;
   routing?: RoutingContext;
   worktree?: WorktreeContext;
+  specHandoff?: SpecHandoffState;
 }
 
 interface CommandQueueState {
@@ -163,6 +176,27 @@ const defaultOrchestrationSettings: OrchestrationSettings = {
   ignoreAbortedMessages: true,
   verboseEvents: true,
 };
+
+const SPEC_EXPERT_SKILL_ID = "spec-expert";
+const SPEC_HANDOFF_READY_MARKER = "<!-- DEMONLORD_SPEC_HANDOFF_READY -->";
+const SPEC_HANDOFF_REQUIRED_HEADINGS = ["## Scope", "## Constraints"];
+
+const AMBIGUITY_HINT_PATTERN = /(not sure|unsure|unclear|ambiguous|conflict|recommend|recommendation)/;
+
+const SPEC_DISCOVERY_TOKENS = new Set([
+  "spec",
+  "specs",
+  "requirement",
+  "requirements",
+  "acceptance",
+  "tasklist",
+  "plan",
+  "codename",
+  "constraint",
+  "constraints",
+  "docs",
+  "documentation",
+]);
 
 const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
   const settings = await loadOrchestrationSettings(worktree);
@@ -307,6 +341,13 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
         return;
       }
 
+      if (session.stage === "implementation") {
+        const handoffHandled = await maybeHandleSpecHandoffIdle(rootSessionID, pipeline, session);
+        if (handoffHandled) {
+          return;
+        }
+      }
+
       if (settings.mode === "manual") {
         if (pipeline.transition !== "awaiting_approval") {
           pipeline.transition = "idle";
@@ -449,6 +490,148 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
       .join("\n");
 
     await promptSession(rootSessionID, completionNote, true, pipeline.sessions[rootSessionID]?.directory);
+  }
+
+  async function maybeHandleSpecHandoffIdle(
+    rootSessionID: string,
+    pipeline: PipelineState,
+    session: PipelineSessionState,
+  ): Promise<boolean> {
+    const handoff = pipeline.specHandoff;
+    if (!handoff || !handoff.required || handoff.completed) {
+      return false;
+    }
+
+    if (handoff.markerSessionID && handoff.markerSessionID !== session.sessionID) {
+      return false;
+    }
+
+    const validation = await validateSpecHandoffMarkerFile(handoff.markerPath);
+    if (!validation.ok) {
+      pipeline.transition = "blocked";
+      pipeline.updatedAt = Date.now();
+      await persistState();
+
+      await recordEvent(pipeline, {
+        type: "spec_handoff_missing",
+        rootSessionID,
+        sessionID: session.sessionID,
+        stage: "implementation",
+        details: {
+          markerPath: handoff.markerPath,
+          missing: validation.missing.join(", "),
+        },
+      });
+
+      const reminder = [
+        "Spec-first policy requires a handoff artifact before implementation can start.",
+        `Write this file: ${handoff.markerPath}`,
+        `Required marker token: ${SPEC_HANDOFF_READY_MARKER}`,
+        `Required headings: ${SPEC_HANDOFF_REQUIRED_HEADINGS.join(", ")}`,
+        "After writing the file, return to idle to continue pipeline progression.",
+      ].join("\n");
+
+      await promptSession(session.sessionID, reminder, false, session.directory, "minion");
+      return true;
+    }
+
+    handoff.completed = true;
+    handoff.completedAt = Date.now();
+    handoff.markerSessionID = session.sessionID;
+    session.status = "completed";
+
+    const taskID = pipeline.worktree?.taskID ?? sanitizeTitleSegment(rootSessionID);
+    const implementationDirectory = pipeline.worktree?.worktreePath ?? session.directory ?? worktree;
+
+    try {
+      const childSession = await createChildSession({
+        parentSessionID: session.sessionID,
+        stage: "implementation",
+        directory: implementationDirectory,
+        titleSuffix: `${taskID}:${handoff.targetSkillID}`,
+      });
+
+      if (!childSession?.id) {
+        throw new Error("Failed to create implementation session after spec handoff.");
+      }
+
+      registerKnownSession(
+        childSession,
+        rootSessionID,
+        "implementation",
+        session.sessionID,
+        childSession.directory ?? implementationDirectory,
+      );
+
+      pipeline.routing = {
+        skillID: handoff.targetSkillID,
+        mode: handoff.targetRoutingMode,
+        reason: `Spec handoff marker verified at ${handoff.markerPath}. ${handoff.targetReason}`,
+      };
+      pipeline.nextSessionID = childSession.id;
+      pipeline.transition = "idle";
+      pipeline.updatedAt = Date.now();
+      await persistState();
+
+      await recordEvent(pipeline, {
+        type: "spec_handoff_completed",
+        rootSessionID,
+        sessionID: session.sessionID,
+        stage: "implementation",
+        details: {
+          markerPath: handoff.markerPath,
+          targetSkill: handoff.targetSkillID,
+        },
+      });
+
+      const rootSession = await getSession(rootSessionID, pipeline.sessions[rootSessionID]?.directory);
+      const taskDescription = extractTaskDescription(rootSession?.title ?? pipeline.worktree?.taskID ?? rootSessionID);
+
+      await promptSession(
+        childSession.id,
+        buildImplementationPrompt(taskDescription, pipeline, childSession.id),
+        false,
+        implementationDirectory,
+        "minion",
+      );
+
+      await promptSession(
+        rootSessionID,
+        [
+          `Spec handoff verified at ${handoff.markerPath}.`,
+          `Implementation session ${childSession.id} started with skill ${handoff.targetSkillID}.`,
+        ].join("\n"),
+        true,
+        pipeline.sessions[rootSessionID]?.directory,
+      );
+    } catch (error) {
+      pipeline.transition = "blocked";
+      pipeline.updatedAt = Date.now();
+      await persistState();
+
+      await recordEvent(pipeline, {
+        type: "spec_handoff_error",
+        rootSessionID,
+        sessionID: session.sessionID,
+        stage: "implementation",
+        details: {
+          summary: formatError(error),
+        },
+      });
+
+      await promptSession(
+        rootSessionID,
+        [
+          "Spec handoff was verified but follow-up implementation session spawn failed.",
+          `Reason: ${formatError(error)}`,
+          "Pipeline is blocked until operator intervention.",
+        ].join("\n"),
+        true,
+        pipeline.sessions[rootSessionID]?.directory,
+      );
+    }
+
+    return true;
   }
 
   async function handlePipelineCommand(commandInput: PipelineCommandInput): Promise<void> {
@@ -736,6 +919,16 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
         };
       }
 
+      if (pipeline.currentStage === "implementation" && command.stage === "review" && pipeline.specHandoff && !pipeline.specHandoff.completed) {
+        return {
+          ok: false,
+          reason: [
+            "Rejected 'advance': spec handoff is incomplete.",
+            `Expected marker file: ${pipeline.specHandoff.markerPath}`,
+          ].join("\n"),
+        };
+      }
+
       const expectedNext = getNextStage(pipeline.currentStage);
       if (expectedNext !== command.stage) {
         return {
@@ -814,6 +1007,21 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
     if (pipeline.pendingTransition) {
       if (notifySessionID) {
         await promptSession(notifySessionID, "A transition is already pending for this pipeline.", true);
+      }
+      return;
+    }
+
+    if (from === "implementation" && to === "review" && pipeline.specHandoff && !pipeline.specHandoff.completed) {
+      if (notifySessionID) {
+        await promptSession(
+          notifySessionID,
+          [
+            "Cannot advance to review: spec handoff is incomplete.",
+            `Expected marker file: ${pipeline.specHandoff.markerPath}`,
+            `Required token: ${SPEC_HANDOFF_READY_MARKER}`,
+          ].join("\n"),
+          true,
+        );
       }
       return;
     }
@@ -957,12 +1165,30 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
     const session = await getSession(triageSession.sessionID, triageSession.directory);
     const taskDescription = extractTaskDescription(session?.title ?? triageSession.sessionID);
 
-    const routing = await resolveTaskRoute({
+    const availableSkills = await loadSkillDefinitions(worktree);
+    const hasSpecExpertSkill = availableSkills.some((skill) => skill.id === SPEC_EXPERT_SKILL_ID);
+    const preferSpecExpert = hasSpecExpertSkill && shouldPreferSpecExpertFirst(taskDescription);
+
+    const implementationRouting = preferSpecExpert
+      ? await resolveTaskRoute({
+          taskDescription,
+          directory: worktree,
+          worktree,
+          mode: "llm",
+          excludeSkillIDs: [SPEC_EXPERT_SKILL_ID],
+        })
+      : null;
+
+    let routing = await resolveTaskRoute({
       taskDescription,
       directory: worktree,
       worktree,
-      mode: "llm",
+      mode: preferSpecExpert ? "heuristic" : "llm",
     });
+
+    if (preferSpecExpert) {
+      routing = applySpecExpertFirstPolicy(routing);
+    }
 
     pipeline.routing = {
       skillID: routing.skill_id,
@@ -978,6 +1204,18 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
     });
     pipeline.worktree = worktreeContext;
 
+    const specHandoff = preferSpecExpert && implementationRouting
+      ? {
+          required: true,
+          completed: false,
+          markerPath: resolve(worktreeContext.worktreePath, "_bmad-output", `spec-handoff-${taskID}.md`),
+          targetSkillID: implementationRouting.skill_id,
+          targetRoutingMode: implementationRouting.mode,
+          targetReason: implementationRouting.reason,
+        }
+      : undefined;
+    pipeline.specHandoff = specHandoff;
+
     const childSession = await createChildSession({
       parentSessionID: triageSession.sessionID,
       stage: "implementation",
@@ -987,6 +1225,10 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
 
     if (!childSession?.id) {
       throw new Error("Failed to create implementation session.");
+    }
+
+    if (pipeline.specHandoff) {
+      pipeline.specHandoff.markerSessionID = childSession.id;
     }
 
     registerKnownSession(
@@ -1007,7 +1249,9 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
 
     await promptSession(
       childSession.id,
-      buildImplementationPrompt(taskDescription, pipeline, childSession.id),
+      pipeline.specHandoff
+        ? buildSpecHandoffPrompt(taskDescription, pipeline, childSession.id, pipeline.specHandoff)
+        : buildImplementationPrompt(taskDescription, pipeline, childSession.id),
       false,
       worktreeContext.worktreePath,
       "minion",
@@ -1018,7 +1262,12 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
       [
         `Implementation session ${childSession.id} created in ${worktreeContext.worktreePath}.`,
         `Matchmaker selected skill ${routing.skill_id} via ${routing.mode} mode.`,
-      ].join("\n"),
+        pipeline.specHandoff
+          ? `Spec handoff required before coding session starts. Marker: ${pipeline.specHandoff.markerPath}`
+          : null,
+      ]
+        .filter((line): line is string => Boolean(line))
+        .join("\n"),
       true,
       pipeline.sessions[rootSessionID]?.directory,
     );
@@ -1383,6 +1632,11 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
       `Pending: ${pending}`,
       `Worktree: ${pipeline.worktree?.worktreePath ?? "n/a"}`,
       `Routing: ${pipeline.routing ? `${pipeline.routing.skillID} (${pipeline.routing.mode})` : "n/a"}`,
+      `Spec Handoff: ${
+        pipeline.specHandoff
+          ? `${pipeline.specHandoff.completed ? "completed" : "required"} -> ${pipeline.specHandoff.targetSkillID}`
+          : "n/a"
+      }`,
       "Session Tree:",
       ...renderSessionTree(pipeline, pipeline.rootSessionID, 0),
     ];
@@ -1465,6 +1719,7 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
         nextSessionID: pipeline.nextSessionID,
         routing: pipeline.routing,
         worktree: pipeline.worktree,
+        specHandoff: pipeline.specHandoff,
       };
     }
 
@@ -1768,6 +2023,41 @@ function setNoReplyIfSupported(output: { parts: unknown[] }): void {
   mutable.noReply = true;
 }
 
+async function validateSpecHandoffMarkerFile(filePath: string): Promise<{ ok: boolean; missing: string[] }> {
+  try {
+    const content = await readFile(filePath, "utf-8");
+    return validateSpecHandoffMarkerContent(content);
+  } catch {
+    return {
+      ok: false,
+      missing: ["file not found"],
+    };
+  }
+}
+
+function validateSpecHandoffMarkerContent(content: string): { ok: boolean; missing: string[] } {
+  const missing: string[] = [];
+  if (!content.includes(SPEC_HANDOFF_READY_MARKER)) {
+    missing.push(SPEC_HANDOFF_READY_MARKER);
+  }
+
+  for (const heading of SPEC_HANDOFF_REQUIRED_HEADINGS) {
+    const pattern = new RegExp(`^${escapeRegExp(heading)}\\s*$`, "im");
+    if (!pattern.test(content)) {
+      missing.push(heading);
+    }
+  }
+
+  return {
+    ok: missing.length === 0,
+    missing,
+  };
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 async function writeJsonAtomically(filePath: string, payload: unknown): Promise<void> {
   const tempPath = `${filePath}.tmp-${process.pid}-${Date.now()}`;
   const serialized = `${JSON.stringify(payload, null, 2)}\n`;
@@ -1854,6 +2144,42 @@ function extractTaskDescription(title: string): string {
   return withoutPrefix || normalized;
 }
 
+function shouldPreferSpecExpertFirst(taskDescription: string): boolean {
+  const normalized = taskDescription.toLowerCase();
+  if (AMBIGUITY_HINT_PATTERN.test(normalized)) {
+    return true;
+  }
+
+  const tokens = normalized
+    .split(/[^a-z0-9-]+/)
+    .map((token) => token.trim())
+    .filter((token) => token.length >= 3);
+
+  for (const token of tokens) {
+    if (SPEC_DISCOVERY_TOKENS.has(token)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function applySpecExpertFirstPolicy(routing: RouteResult): RouteResult {
+  if (routing.skill_id === SPEC_EXPERT_SKILL_ID) {
+    return {
+      ...routing,
+      mode: "heuristic",
+      reason: `Ambiguity-first policy confirmed ${SPEC_EXPERT_SKILL_ID}. ${routing.reason}`,
+    };
+  }
+
+  return {
+    skill_id: SPEC_EXPERT_SKILL_ID,
+    mode: "heuristic",
+    reason: `Ambiguity-first policy overrode ${routing.skill_id} with ${SPEC_EXPERT_SKILL_ID}. ${routing.reason}`,
+  };
+}
+
 function normalizeCommandName(name: string): string {
   return name.replace(/^\//, "").toLowerCase();
 }
@@ -1930,6 +2256,35 @@ function getNextStage(stage: PipelineStage): PipelineStage | null {
   return null;
 }
 
+function buildSpecHandoffPrompt(
+  taskDescription: string,
+  pipeline: PipelineState,
+  childSessionID: string,
+  handoff: SpecHandoffState,
+): string {
+  const taskID = pipeline.worktree?.taskID ?? "unknown-task";
+  const worktreePath = pipeline.worktree?.worktreePath ?? "unknown-worktree";
+
+  return [
+    "Spec-first routing selected this session to produce a deterministic handoff artifact.",
+    "Before any coding session can start, create the spec marker file below.",
+    "",
+    "Required output:",
+    `- File: ${handoff.markerPath}`,
+    `- Include exact marker token: ${SPEC_HANDOFF_READY_MARKER}`,
+    `- Include headings: ${SPEC_HANDOFF_REQUIRED_HEADINGS.join(", ")}`,
+    "- Keep sections concise and implementation-ready.",
+    "",
+    "Session metadata:",
+    `- Parent Session: ${pipeline.rootSessionID}`,
+    `- Spec Session: ${childSessionID}`,
+    `- Task ID: ${taskID}`,
+    `- Next Skill After Handoff: ${handoff.targetSkillID}`,
+    `- Worktree: ${worktreePath}`,
+    `- Task Description: ${taskDescription}`,
+  ].join("\n");
+}
+
 function applyGlobalOffToPipelines(pipelines: Record<string, PipelineState>): void {
   for (const pipeline of Object.values(pipelines)) {
     if (pipeline.terminalNotified) {
@@ -2001,6 +2356,7 @@ function buildImplementationPrompt(taskDescription: string, pipeline: PipelineSt
     `- Routing Mode: ${skillMode}`,
     `- Routing Reason: ${skillReason}`,
     `- Worktree: ${worktreePath}`,
+    `- Spec Handoff Marker: ${pipeline.specHandoff?.markerPath ?? "n/a"}`,
     `- Task Description: ${taskDescription}`,
   ].join("\n");
 }
@@ -2047,6 +2403,7 @@ function extractScriptValue(stdout: string, label: string): string {
 }
 
 export const __orchestratorTestUtils = {
+  applySpecExpertFirstPolicy,
   applyGlobalOffToPipelines,
   applyGlobalOnToPipelines,
   buildCommandDedupKey,
@@ -2060,6 +2417,8 @@ export const __orchestratorTestUtils = {
   splitCommandQueueLines,
   pruneProcessedCommandDedupes,
   setNoReplyIfSupported,
+  shouldPreferSpecExpertFirst,
+  validateSpecHandoffMarkerContent,
   wasPreHandled,
   writeJsonAtomically,
 };

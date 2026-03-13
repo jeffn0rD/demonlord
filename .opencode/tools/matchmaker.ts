@@ -11,6 +11,7 @@ export interface SkillDefinition {
   description: string;
   filePath: string;
   body: string;
+  routingHints: string;
 }
 
 export interface RouteResult {
@@ -24,11 +25,13 @@ interface ResolveTaskRouteInput {
   directory: string;
   worktree: string;
   mode?: "llm" | "heuristic";
+  excludeSkillIDs?: string[];
 }
 
 interface RouteTaskArgs {
   task_description: string;
   mode?: "llm" | "heuristic";
+  exclude_skill_ids?: string[];
 }
 
 interface RouteTaskContext {
@@ -40,6 +43,32 @@ interface LlmRouteAttempt {
   result: RouteResult | null;
   failureReason?: string;
 }
+
+const ROUTING_HINT_WEIGHT = 5;
+const SKILL_ID_WEIGHT = 3;
+const DESCRIPTION_WEIGHT = 2;
+const BODY_WEIGHT = 1;
+
+const AMBIGUITY_TERMS = new Set([
+  "ambiguous",
+  "ambiguity",
+  "unclear",
+  "unsure",
+  "unknown",
+  "conflict",
+  "spec",
+  "specs",
+  "requirement",
+  "requirements",
+  "tasklist",
+  "plan",
+  "codename",
+  "recommendation",
+  "recommendations",
+  "where",
+  "find",
+  "discover",
+]);
 
 const DEFAULT_SERVER_URL = process.env.OPENCODE_SERVER_URL ?? "http://127.0.0.1:4096";
 
@@ -55,6 +84,10 @@ const route_task = tool({
       .enum(["llm", "heuristic"])
       .optional()
       .describe("Routing strategy. Defaults to llm with automatic heuristic fallback."),
+    exclude_skill_ids: tool.schema
+      .array(tool.schema.string().min(1))
+      .optional()
+      .describe("Optional skill IDs to exclude from routing decisions."),
   },
   async execute(args: RouteTaskArgs, context: RouteTaskContext) {
     try {
@@ -63,6 +96,7 @@ const route_task = tool({
         directory: context.directory,
         worktree: context.worktree,
         mode: args.mode,
+        excludeSkillIDs: args.exclude_skill_ids,
       });
 
       return JSON.stringify(resolved, null, 2);
@@ -80,9 +114,16 @@ const route_task = tool({
 });
 
 export async function resolveTaskRoute(input: ResolveTaskRouteInput): Promise<RouteResult> {
-  const skills = await loadSkillDefinitions(input.worktree);
+  const allSkills = await loadSkillDefinitions(input.worktree);
+  const excludedSkills = new Set(input.excludeSkillIDs ?? []);
+  const skills = allSkills.filter((skill) => !excludedSkills.has(skill.id));
+
   if (skills.length === 0) {
-    throw new Error("No valid SKILL.md files found under .opencode/skills.");
+    throw new Error(
+      excludedSkills.size > 0
+        ? "No eligible SKILL.md files found after exclusions under .opencode/skills."
+        : "No valid SKILL.md files found under .opencode/skills.",
+    );
   }
 
   const requestedMode = input.mode ?? "llm";
@@ -135,6 +176,7 @@ export async function loadSkillDefinitions(worktreeRoot: string): Promise<SkillD
         description: parsed.description,
         filePath: skillPath,
         body: raw,
+        routingHints: extractRoutingHints(raw),
       });
     } catch {
       continue;
@@ -142,6 +184,29 @@ export async function loadSkillDefinitions(worktreeRoot: string): Promise<SkillD
   }
 
   return skills;
+}
+
+function extractRoutingHints(markdown: string): string {
+  const lines = markdown.split("\n");
+  const startIndex = lines.findIndex((line) => /^##\s+Routing Hints\s*$/i.test(line.trim()));
+  if (startIndex < 0) {
+    return "";
+  }
+
+  const sectionLines: string[] = [];
+  for (let index = startIndex + 1; index < lines.length; index += 1) {
+    const line = lines[index] ?? "";
+    if (/^##\s+/.test(line.trim())) {
+      break;
+    }
+
+    sectionLines.push(line);
+  }
+
+  return sectionLines
+    .map((line) => line.replace(/^\s*[-*]\s*/, "").trim())
+    .filter((line) => line.length > 0)
+    .join(" ");
 }
 
 function parseSkillFrontmatter(markdown: string): { name: string; description: string } | null {
@@ -212,7 +277,14 @@ async function routeWithLlm(
     ephemeralSessionID = created.data.id;
 
     const skillPrompt = skills
-      .map((skill) => `- ${skill.id}: ${skill.description}`)
+      .map((skill) => {
+        const hints = skill.routingHints.trim();
+        if (hints.length === 0) {
+          return `- ${skill.id}: ${skill.description}`;
+        }
+
+        return `- ${skill.id}: ${skill.description} | routing hints: ${hints}`;
+      })
       .join("\n");
 
     const routingPrompt = [
@@ -349,24 +421,43 @@ function routeHeuristically(
   fallbackReason?: string,
 ): RouteResult {
   const taskTokens = tokenize(taskDescription);
+  const ambiguousTask = shouldPreferSpecExpert(taskDescription, taskTokens);
+  const scoreBySkill = new Map<string, number>();
 
   let bestSkill = skills[0];
   let bestScore = -1;
 
   for (const skill of skills) {
-    const skillTokens = tokenize(`${skill.id} ${skill.description} ${skill.body}`);
     let score = 0;
 
-    for (const token of taskTokens) {
-      if (skillTokens.has(token)) {
-        score += 1;
-      }
-    }
+    score += overlapScore(taskTokens, tokenize(skill.id), SKILL_ID_WEIGHT);
+    score += overlapScore(taskTokens, tokenize(skill.description), DESCRIPTION_WEIGHT);
+    score += overlapScore(taskTokens, tokenize(skill.routingHints), ROUTING_HINT_WEIGHT);
+    score += overlapScore(taskTokens, tokenize(skill.body), BODY_WEIGHT);
+
+    scoreBySkill.set(skill.id, score);
 
     if (score > bestScore) {
       bestScore = score;
       bestSkill = skill;
     }
+  }
+
+  const specExpert = skills.find((skill) => skill.id === "spec-expert");
+  if (ambiguousTask && specExpert) {
+    const specScore = scoreBySkill.get(specExpert.id) ?? 0;
+
+    return {
+      skill_id: specExpert.id,
+      reason: [
+        fallbackReason ? `Fallback activated: ${fallbackReason}` : null,
+        `Ambiguity-first policy selected ${specExpert.id} before implementation routing.`,
+        `Heuristic score for ${specExpert.id}: ${specScore}.`,
+      ]
+        .filter((item): item is string => Boolean(item))
+        .join(" "),
+      mode: "heuristic",
+    };
   }
 
   return {
@@ -393,6 +484,36 @@ function tokenize(input: string): Set<string> {
   return new Set(tokens);
 }
 
+function overlapScore(taskTokens: Set<string>, skillTokens: Set<string>, weight: number): number {
+  if (weight <= 0 || taskTokens.size === 0 || skillTokens.size === 0) {
+    return 0;
+  }
+
+  let overlap = 0;
+  for (const token of taskTokens) {
+    if (skillTokens.has(token)) {
+      overlap += 1;
+    }
+  }
+
+  return overlap * weight;
+}
+
+function shouldPreferSpecExpert(taskDescription: string, taskTokens: Set<string>): boolean {
+  const normalized = taskDescription.toLowerCase();
+  if (/(not sure|unsure|unclear|ambiguous|conflict|recommend)/.test(normalized)) {
+    return true;
+  }
+
+  for (const token of taskTokens) {
+    if (AMBIGUITY_TERMS.has(token)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 function formatUnknownError(error: unknown): string {
   if (error instanceof Error) {
     return error.message;
@@ -404,7 +525,9 @@ function formatUnknownError(error: unknown): string {
 export default route_task;
 
 export const __matchmakerTestUtils = {
+  extractRoutingHints,
   parseSkillFrontmatter,
   parseRouterOutput,
   routeHeuristically,
+  shouldPreferSpecExpert,
 };

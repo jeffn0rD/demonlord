@@ -98,8 +98,6 @@ Agents should execute one subphase at a time. To trigger implementation, the Lea
 - [x] **T-3.1.2** (Refs #1): Create worktree tracking and cleanup mechanism. Maintain metadata about which agent is using each worktree and implement cleanup for orphaned worktrees. Touch points: `/agents/tools/worktree_manager.ts`
 <!-- TASK:T-3.1.3 -->
 - [x] **T-3.1.3** (Refs #1): Implement `project-context.md` generation and loading in worktrees. Create default context file and ensure agents load it before execution. Touch points: `/agents/tools/spawn_worktree.sh`, `_bmad-output/project-context.md`
-<!-- TASK:T-3.1.3 -->
-- [x] **T-3.1.3** (Refs #1): Implement `project-context.md` generation and loading in worktrees. Create default context file and ensure agents load it before execution. Touch points: `/agents/tools/spawn_worktree.sh`, `_bmad-output/project-context.md`
 
 ### SUBPHASE-3.2: The Dual-Mode Matchmaker
 <!-- SUBPHASE:3.2 -->
@@ -108,6 +106,8 @@ Agents should execute one subphase at a time. To trigger implementation, the Lea
 **Exit criteria / QA checklist:**
 - [x] `SKILL.md` files are properly formatted with required `name` and `description` frontmatter.
 - [x] `matchmaker.ts` successfully parses skills and returns an ID.
+- [x] Skill routing uses targeted `Routing Hints` weighting for deterministic heuristic fallback.
+- [x] Specialized skills include project-aware roles (`spec-expert`, `orchestration-specialist`, `config-guardian`) beyond generic frontend/backend.
 - [x] `orchestrator.ts` plugin compiles and responds to session events.
 - [x] Party Mode can coordinate multiple agents in shared worktree sessions.
 **Proposed PR title:** feat: implement dual-mode semantic matchmaker with party mode support
@@ -122,6 +122,10 @@ Agents should execute one subphase at a time. To trigger implementation, the Lea
 - [x] **T-3.2.3** (Refs #1): Implement event-driven orchestration by creating `.opencode/plugins/orchestrator.ts`. Use `session.idle` and `session.error` hooks to coordinate the Triage -> Implementation -> Review flow. The plugin should use the OpenCode SDK (`client.session.create()`, `client.session.prompt()`) to spawn and direct agent sessions. Touch points: `.opencode/plugins/orchestrator.ts`
 <!-- TASK:T-3.2.4 -->
 - [x] **T-3.2.4** (Refs #1): Create `.opencode/tools/party_mode.ts` for multi-agent collaborative session orchestration. Implement round-based discussion management and agent coordination in shared worktrees. Touch points: `.opencode/tools/party_mode.ts`
+<!-- TASK:T-3.2.5 -->
+- [x] **T-3.2.5** (Refs #1): Expand skill catalog with project-specific roles (`spec-expert`, `orchestration-specialist`, `config-guardian`) and codename-aware discovery hints (`*_Plan.md`, `*_Tasklist.md`) to improve targeted context injection. Touch points: `.opencode/skills/*/SKILL.md`
+<!-- TASK:T-3.2.6 -->
+- [x] **T-3.2.6** (Refs #1): Update `matchmaker.ts` heuristic scoring to prioritize `Routing Hints`, support skill exclusion, and preserve deterministic fallback behavior. Touch points: `.opencode/tools/matchmaker.ts`, `.opencode/tests/tools/matchmaker.test.ts`
 
 ### SUBPHASE-3.3: Orchestrator Determinism & Isolated Execution Handoff
 <!-- SUBPHASE:3.3 -->
@@ -133,6 +137,7 @@ Agents should execute one subphase at a time. To trigger implementation, the Lea
 - [x] Orchestrator performs actual Matchmaker routing (not prompt-only instructions) and records selected skill context.
 - [x] Implementation sessions are created in newly provisioned isolated worktrees via `spawn_worktree.sh` (or TS equivalent).
 - [x] Error-path behavior produces deterministic recovery prompts without re-trigger loops.
+- [x] Ambiguous tasks enforce spec-first handoff artifact validation before coding implementation sessions start.
 **Proposed PR title:** fix: harden orchestrator state machine and deterministic routing handoff
 **Proposed commit message:** fix: enforce idempotent orchestration with matchmaker routing and isolated worktree execution (Refs #1)
 
@@ -147,6 +152,8 @@ Agents should execute one subphase at a time. To trigger implementation, the Lea
 - [x] **T-3.3.4** (Refs #1): Wire worktree provisioning into implementation spawning so child sessions execute in task-specific isolated directories and carry traceable metadata (task ID, skill, parent session). Touch points: `.opencode/plugins/orchestrator.ts`, `agents/tools/spawn_worktree.sh`
 <!-- TASK:T-3.3.5 -->
 - [x] **T-3.3.5** (Refs #1): Add deterministic error recovery prompts and guard conditions for `session.error` handling to prevent recursive orchestration failures. Touch points: `.opencode/plugins/orchestrator.ts`
+<!-- TASK:T-3.3.6 -->
+- [x] **T-3.3.6** (Refs #1): Add spec-first handoff marker enforcement so implementation coding sessions start only after `_bmad-output/spec-handoff-<taskID>.md` contains required scope/constraints marker blocks. Touch points: `.opencode/plugins/orchestrator.ts`, `.opencode/tests/plugins/orchestrator.test.ts`, `doc/routing_policy.md`
 
 ### SUBPHASE-3.4: Manual Orchestration Controls & Explicit Pipeline State
 <!-- SUBPHASE:3.4 -->
@@ -281,8 +288,6 @@ Agents should execute one subphase at a time. To trigger implementation, the Lea
 - [x] **T-4.1.1** (Refs #1): Create `.opencode/tools/submit_implementation.ts` using `@opencode-ai/plugin` and Zod for the schema (requiring a valid commit message). Touch points: `.opencode/tools/submit_implementation.ts`
 <!-- TASK:T-4.1.2 -->
 - [x] **T-4.1.2** (Refs #1): Implement execution logic inside the tool to run `npm run lint` and `npm run test` using Bun shell (`$`). Catch non-zero exit codes and return the stack trace. If successful, execute the atomic `git commit` and `push`. Touch points: `.opencode/tools/submit_implementation.ts`
-<!-- TASK:T-4.1.3 -->
-- [x] **T-4.1.3** (Refs #1): Integrate simplified test generation inspired by BMAD's Quinn approach. Add automatic test framework detection from package.json and implement API/E2E test generation with semantic locators. Touch points: `.opencode/tools/submit_implementation.ts`
 <!-- TASK:T-4.1.3 -->
 - [x] **T-4.1.3** (Refs #1): Integrate simplified test generation inspired by BMAD's Quinn approach. Add automatic test framework detection from package.json and implement API/E2E test generation with semantic locators. Touch points: `.opencode/tools/submit_implementation.ts`
 

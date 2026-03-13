@@ -90,6 +90,8 @@ The Three-Stage Lifecycle
 
 1. Ingestion & Planning (/triage): Triggered by custom command, Discord slash command, or programmatic SDK call, the Planner ingests requirements and decomposes them into atomic, non-overlapping tasks.
 2. Orchestration & Spawning (/implement): The Orchestrator invokes spawn_worktree.sh, creating isolated sibling directories for parallel execution, and uses the SDK (`client.session.create()`) to launch the matching Minion in the new worktree.
+   - Spec-first branch (ambiguity policy): when requirements are unclear or documentation-heavy, the orchestrator routes first to `spec-expert` and requires a validated handoff artifact before spawning a coding implementation session.
+   - Handoff artifact contract: `_bmad-output/spec-handoff-<taskID>.md` must include `<!-- DEMONLORD_SPEC_HANDOFF_READY -->`, `## Scope`, and `## Constraints`.
 3. Review & Handoff: Upon completion, a plugin listening to `session.idle` triggers the Reviewer agent and posts a Discord notification for human-in-the-loop approval.
 
 Operational Modes and Manual Controls
@@ -135,6 +137,7 @@ Snapshot contract highlights (v2):
 * `updatedAt`: top-level snapshot freshness timestamp.
 * `runtime`: configured/effective orchestration mode and global-off status.
 * `pipelineSummaries`: root-session keyed stage/transition/stopped/stopReason and pending-transition metadata.
+* `pipelineSummaries.specHandoff`: marker status/path and target implementation skill when spec-first policy is active.
 * `commandQueue`: queue path, last processed line, and dedupe metadata.
 
 Failure and recovery behavior:

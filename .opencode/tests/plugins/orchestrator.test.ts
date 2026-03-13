@@ -193,4 +193,62 @@ describe("orchestrator snapshot and queue helpers", () => {
     assert.equal(__orchestratorTestUtils.normalizeStage("review"), "review");
     assert.equal(__orchestratorTestUtils.normalizeStage("invalid"), null);
   });
+
+  test("detects ambiguity for spec-expert first-pass routing", () => {
+    const ambiguous = __orchestratorTestUtils.shouldPreferSpecExpertFirst(
+      "requirements are unclear and need recommendation from docs",
+    );
+    const concrete = __orchestratorTestUtils.shouldPreferSpecExpertFirst(
+      "implement pipeline queue dedupe for orchestrator",
+    );
+
+    assert.equal(ambiguous, true);
+    assert.equal(concrete, false);
+  });
+
+  test("applies spec-expert override route when ambiguity policy triggers", () => {
+    const overridden = __orchestratorTestUtils.applySpecExpertFirstPolicy({
+      skill_id: "backend-specialist",
+      mode: "llm",
+      reason: "LLM selected backend-specialist",
+    });
+
+    const confirmed = __orchestratorTestUtils.applySpecExpertFirstPolicy({
+      skill_id: "spec-expert",
+      mode: "heuristic",
+      reason: "Heuristic selected spec-expert",
+    });
+
+    assert.equal(overridden.skill_id, "spec-expert");
+    assert.equal(overridden.mode, "heuristic");
+    assert.match(overridden.reason, /overrode backend-specialist/);
+
+    assert.equal(confirmed.skill_id, "spec-expert");
+    assert.equal(confirmed.mode, "heuristic");
+    assert.match(confirmed.reason, /confirmed spec-expert/);
+  });
+
+  test("validates spec handoff marker content deterministically", () => {
+    const valid = __orchestratorTestUtils.validateSpecHandoffMarkerContent([
+      "# Spec Handoff",
+      "<!-- DEMONLORD_SPEC_HANDOFF_READY -->",
+      "## Scope",
+      "- deliver routing updates",
+      "## Constraints",
+      "- preserve deterministic transitions",
+    ].join("\n"));
+
+    const invalid = __orchestratorTestUtils.validateSpecHandoffMarkerContent([
+      "# Spec Handoff",
+      "## Scope",
+      "- missing marker and constraints",
+    ].join("\n"));
+
+    assert.equal(valid.ok, true);
+    assert.deepEqual(valid.missing, []);
+
+    assert.equal(invalid.ok, false);
+    assert.match(invalid.missing.join(" "), /DEMONLORD_SPEC_HANDOFF_READY/);
+    assert.match(invalid.missing.join(" "), /## Constraints/);
+  });
 });

@@ -18,6 +18,7 @@ The Event-Driven Pipeline The software factory operates through event-driven orc
 
 1. Triage: A Planner Agent analyzes GitHub issues, uses built-in tools like glob and grep to identify target code areas, and generates a .md plan file.
 2. Implementation: Specialized minions execute tasks within their assigned worktrees, spawned via the OpenCode SDK (`client.session.create()`).
+   - Spec-first enforcement: ambiguous or requirement-heavy requests route through `spec-expert` first, and coding sessions only start after a valid spec handoff marker is written.
 3. Deterministic Gates (The "Black Box"): This is a critical quality intercept. Agents are stripped of native git commands and must call a TypeScript custom tool, submit_implementation(). This tool programmatically runs lints and tests; if they fail, the function intercepts the stack trace and feeds it back to the agent for auto-correction.
 4. Review: Upon `session.idle` event, a plugin triggers the Reviewer Agent to analyze the output before posting a Discord notification for human-in-the-loop approval via Slash Commands (e.g., /approve, /reject).
 
@@ -134,6 +135,8 @@ The Dual-Mode Matchmaker Tool
 To avoid heavy Python/ML dependencies natively, semantic knowledge base and agent routing are handled by a custom .opencode/tools/matchmaker.ts tool.
 * Mode 1 (LLM Routing): Uses a fast, inexpensive LLM via the OpenCode SDK to read the SKILL.md keys and dynamically match them to task requirements.
 * Mode 2 (Local Embeddings): For fully offline semantic search, utilizing lightweight Node-based vector engines (e.g., voy-search) to embed and query available skills.
+* Heuristic weighting: `## Routing Hints` sections are weighted above general skill body text to improve deterministic routing.
+* Exclusions: routing can explicitly exclude skills (for example, selecting a non-spec implementation skill after spec handoff).
 
 Authentication Flows OpenCode supports Dynamic Client Registration (RFC 7591). If a remote server returns a 401, the system initiates an OAuth flow. Credentials and tokens are stored securely in ~/.local/share/opencode/mcp-auth.json.
 
