@@ -2,10 +2,20 @@
 
 ## First-Time Setup
 
-Run the bootstrap installer once per repository clone:
+### 1) Inject Demonlord Assets
+
+Copy Demonlord assets into your target repository root (`.opencode/`, `agents/`, `scripts/`, `doc/`, `demonlord.config.json`, `.env.example`).
+
+### 2) Install OpenCode Dependencies (Required)
 
 ```bash
-./scripts/bootstrap.sh
+cd .opencode && npm install
+```
+
+### 3) Install Local Shell Helpers
+
+```bash
+cd .. && ./scripts/bootstrap.sh
 ```
 
 ## Daily Workflow

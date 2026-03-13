@@ -16,30 +16,46 @@ Demonlord replaces manual coding workflows with specialized AI agents that work 
 
 ## Quick Start
 
-1. **Clone this template** into your project root:
-   ```bash
-   git clone https://github.com/your-org/demonlord .opencode
-   ```
+### Inject Demonlord Into Your Repository
 
-2. **Run bootstrap installer** (installs `.opencode` dependencies and shell command shims):
-   ```bash
-   ./scripts/bootstrap.sh
-   ```
+Use this project as a template source and copy these assets into your target repository root:
 
-3. **Configure environment**:
-   - Copy `.env.example` to `.env`
-   - Add your GitHub Personal Access Token and Discord credentials
-   - Add a GitHub repository secret named `PROJECT_V2_TOKEN` for Project V2 automation
-   - Review `demonlord.config.json` for worktree and Discord settings
+- `.opencode/`
+- `agents/`
+- `scripts/`
+- `doc/`
+- `demonlord.config.json`
+- `.env.example`
 
-4. **Start OpenCode**:
-   ```bash
-   opencode
-   ```
+### Bootstrap Required Dependencies
 
-5. **Begin development**:
-   - Use `/triage` to analyze GitHub issues and generate implementation plans
-   - Use `/implement` to execute the generated plans
+After assets are in your target repository, run:
+
+```bash
+cd .opencode && npm install
+```
+
+Then return to repository root and install shell helpers:
+
+```bash
+cd .. && ./scripts/bootstrap.sh
+```
+
+### Configure Environment
+
+- Copy `.env.example` to `.env`
+- Add your GitHub PAT (`GITHUB_PAT`) and Discord credentials
+- Add a GitHub repository secret named `PROJECT_V2_TOKEN` for Project V2 automation
+- Review `demonlord.config.json` for worktree and orchestration settings
+
+### Start OpenCode and Run Pipeline
+
+```bash
+opencode
+```
+
+- Use `/triage` to analyze issues and generate plans
+- Use `/implement` to execute the next subphase
 
 Bootstrap policy: any repeatable install/setup behavior (dependencies, command shims, generated local runtime helpers) should be added to `scripts/bootstrap.sh` so bringing Demonlord into a new repository stays a one-command setup.
 

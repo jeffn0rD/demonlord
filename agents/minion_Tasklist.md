@@ -302,17 +302,17 @@ Agents should execute one subphase at a time. To trigger implementation, the Lea
 **Goal:** Prepare the repository for public consumption as a template.
 **Entry criteria:** Phases 1-4 complete.
 **Exit criteria / QA checklist:**
-- [ ] `README.md` clearly explains the `npm install` bootstrap process.
+- [x] `README.md` clearly explains the `npm install` bootstrap process.
 **Proposed PR title:** docs: finalize v1 template documentation
 **Proposed commit message:** docs: add bootstrap instructions and env examples for v1 release (Refs #1)
 
 **Tasks:**
 <!-- TASK:T-5.1.1 -->
-- **T-5.1.1** (Refs #1): Create `.env.example` containing placeholders for Discord webhook URLs, Bot Tokens, and required MCP API keys. Touch points: `.env.example`
+- [x] **T-5.1.1** (Refs #1): Create `.env.example` containing placeholders for Discord webhook URLs, Bot Tokens, and required MCP API keys. Touch points: `.env.example`
 <!-- TASK:T-5.1.2 -->
-- **T-5.1.2** (Refs #1): Write the final `README.md` and `USAGE.md`, explaining how a user injects Demonlord into their repository and the required bootstrap step (`cd .opencode && npm install`). Touch points: `README.md`, `USAGE.md`
+- [x] **T-5.1.2** (Refs #1): Write the final `README.md` and `USAGE.md`, explaining how a user injects Demonlord into their repository and the required bootstrap step (`cd .opencode && npm install`). Touch points: `README.md`, `USAGE.md`
 <!-- TASK:T-5.1.3 -->
-- **T-5.1.3** (Refs #1): Create a generic `package.json` at the repository root with dummy `npm run lint` and `npm run test` scripts that simply `exit 0`, so the quality gate works out-of-the-box before the user adds real code. Touch points: `package.json`
+- [x] **T-5.1.3** (Refs #1): Create a generic `package.json` at the repository root with dummy `npm run lint` and `npm run test` scripts that simply `exit 0`, so the quality gate works out-of-the-box before the user adds real code. Touch points: `package.json`
 
 ### SUBPHASE-5.2: Validation Pipeline
 <!-- SUBPHASE:5.2 -->
