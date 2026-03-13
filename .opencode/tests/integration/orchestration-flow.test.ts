@@ -5,6 +5,7 @@ import { tmpdir } from "os";
 import { join, resolve } from "path";
 import type { Event, Session } from "@opencode-ai/sdk";
 import OrchestratorPlugin, { __orchestratorTestUtils } from "../../plugins/orchestrator.ts";
+import { runPipelineCtl } from "../../../agents/tools/pipelinectl.ts";
 
 type PipelineStage = "triage" | "implementation" | "review";
 type TransitionState = "idle" | "awaiting_approval" | "in_progress" | "blocked" | "completed" | "stopped";
@@ -750,7 +751,6 @@ describe("orchestrator integration flow", () => {
       assert.equal(typeof pipelineAImplSessionID, "string");
       await emitEvent(plugin, sessionIdleEvent(pipelineAImplSessionID as string));
 
-      await emitEvent(plugin, sessionIdleEvent("ses-root-cap-b"));
       const resumedBSnapshot = await readSnapshot<PipelineFixture>(root);
       const pipelineBImplSessionID = resumedBSnapshot.pipelines["ses-root-cap-b"]?.nextSessionID;
 
@@ -763,7 +763,6 @@ describe("orchestrator integration flow", () => {
       assert.equal(stillQueuedSnapshot.pipelines["ses-root-cap-c"]?.transition, "idle");
 
       await emitEvent(plugin, sessionIdleEvent(pipelineBImplSessionID as string));
-      await emitEvent(plugin, sessionIdleEvent("ses-root-cap-c"));
 
       const resumedCSnapshot = await readSnapshot<PipelineFixture>(root);
       const pipelineCImplSessionID = resumedCSnapshot.pipelines["ses-root-cap-c"]?.nextSessionID;
@@ -888,6 +887,137 @@ describe("orchestrator integration flow", () => {
       const terminalEvents = graph.filter((entry) => entry.eventType === "pipeline_completed");
       assert.equal(queuedForTask.length, 1);
       assert.equal(terminalEvents.length, 1);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("respects execution_graph.path for graph writes", async () => {
+    const root = await mkdtemp(join(tmpdir(), "orchestrator-execution-graph-path-"));
+
+    try {
+      await writeConfig(
+        root,
+        {
+          enabled: true,
+          mode: "auto",
+          require_approval_before_spawn: false,
+          ignore_aborted_messages: true,
+          verbose_events: false,
+        },
+        {
+          task_routing: { source: "tasklist_explicit", default_tier: "standard" },
+          agent_pools: {
+            implementation: {
+              standard: ["minion-standard"],
+            },
+            review: {
+              standard: ["reviewer"],
+            },
+          },
+          execution_graph: {
+            enabled: true,
+            path: "_bmad-output/custom-execution-graph.ndjson",
+            verbosity: "concise",
+          },
+        },
+      );
+      await writeOpencodeAgentConfig(root, ["planner", "minion", "minion-standard", "reviewer"]);
+      await writeSpawnWorktreeScript(root);
+      await writeTasklist(
+        root,
+        "minion_Tasklist.md",
+        [
+          "<!-- TASK:T-3.9.51 -->",
+          '<!-- EXECUTION:{"execution":{"role":"implementation","tier":"standard","skill":"orchestration-specialist","parallel_group":"tests-graph"}} -->',
+          "- [ ] **T-3.9.51**: execution graph custom path validation.",
+        ].join("\n"),
+      );
+      const tasklistPath = resolve(root, "agents", "minion_Tasklist.md");
+
+      const client = createMockClient(root);
+      const initialPlugin = await createPlugin(client, root);
+      await emitEvent(initialPlugin, sessionCreatedEvent("ses-root-graph-path", root, "triage: graph path"));
+      await seedTaskTraversalContext(root, "ses-root-graph-path", {
+        taskDescription: "graph path",
+        taskRef: "T-3.9.51",
+        tasklistPath,
+      });
+
+      const plugin = await createPlugin(client, root);
+      await emitEvent(plugin, sessionIdleEvent("ses-root-graph-path"));
+
+      const customGraph = await readExecutionGraph(root, "ses-root-graph-path", "_bmad-output/custom-execution-graph.ndjson");
+      const defaultGraph = await readExecutionGraph(root, "ses-root-graph-path");
+
+      assert.equal(customGraph.length > 0, true);
+      assert.equal(defaultGraph.length, 0);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("respects execution_graph.enabled=false and skips graph writes", async () => {
+    const root = await mkdtemp(join(tmpdir(), "orchestrator-execution-graph-disabled-"));
+
+    try {
+      await writeConfig(
+        root,
+        {
+          enabled: true,
+          mode: "auto",
+          require_approval_before_spawn: false,
+          ignore_aborted_messages: true,
+          verbose_events: false,
+        },
+        {
+          task_routing: { source: "tasklist_explicit", default_tier: "standard" },
+          agent_pools: {
+            implementation: {
+              standard: ["minion-standard"],
+            },
+            review: {
+              standard: ["reviewer"],
+            },
+          },
+          execution_graph: {
+            enabled: false,
+            path: "_bmad-output/disabled-execution-graph.ndjson",
+            verbosity: "concise",
+          },
+        },
+      );
+      await writeOpencodeAgentConfig(root, ["planner", "minion", "minion-standard", "reviewer"]);
+      await writeSpawnWorktreeScript(root);
+      await writeTasklist(
+        root,
+        "minion_Tasklist.md",
+        [
+          "<!-- TASK:T-3.9.52 -->",
+          '<!-- EXECUTION:{"execution":{"role":"implementation","tier":"standard","skill":"orchestration-specialist","parallel_group":"tests-graph"}} -->',
+          "- [ ] **T-3.9.52**: execution graph disabled validation.",
+        ].join("\n"),
+      );
+      const tasklistPath = resolve(root, "agents", "minion_Tasklist.md");
+
+      const client = createMockClient(root);
+      const initialPlugin = await createPlugin(client, root);
+      await emitEvent(initialPlugin, sessionCreatedEvent("ses-root-graph-disabled", root, "triage: graph disabled"));
+      await seedTaskTraversalContext(root, "ses-root-graph-disabled", {
+        taskDescription: "graph disabled",
+        taskRef: "T-3.9.52",
+        tasklistPath,
+      });
+
+      const plugin = await createPlugin(client, root);
+      await emitEvent(plugin, sessionIdleEvent("ses-root-graph-disabled"));
+
+      const disabledGraph = await readExecutionGraph(
+        root,
+        "ses-root-graph-disabled",
+        "_bmad-output/disabled-execution-graph.ndjson",
+      );
+      assert.equal(disabledGraph.length, 0);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -1077,6 +1207,88 @@ describe("orchestrator integration flow", () => {
     }
   });
 
+  test("status output keeps dispatch-view parity with pipelinectl", async () => {
+    const root = await mkdtemp(join(tmpdir(), "orchestrator-status-parity-"));
+
+    try {
+      await writeConfig(
+        root,
+        {
+          enabled: true,
+          mode: "auto",
+          require_approval_before_spawn: false,
+          ignore_aborted_messages: true,
+          verbose_events: false,
+        },
+        {
+          task_routing: { source: "tasklist_explicit", default_tier: "standard" },
+          agent_pools: {
+            implementation: {
+              standard: ["minion-standard"],
+            },
+          },
+        },
+      );
+      await writeOpencodeAgentConfig(root, ["planner", "minion", "minion-standard", "reviewer"]);
+      await writeSpawnWorktreeScript(root);
+      await writeTasklist(
+        root,
+        "minion_Tasklist.md",
+        [
+          "<!-- TASK:T-3.9.61 -->",
+          '<!-- EXECUTION:{"execution":{"role":"implementation","tier":"standard","skill":"orchestration-specialist","parallel_group":"status-parity"}} -->',
+          "- [ ] **T-3.9.61**: status parity validation.",
+        ].join("\n"),
+      );
+      const tasklistPath = resolve(root, "agents", "minion_Tasklist.md");
+
+      const client = createMockClient(root);
+      const initialPlugin = await createPlugin(client, root);
+      await emitEvent(initialPlugin, sessionCreatedEvent("ses-root-status", root, "triage: parity check"));
+      await seedTaskTraversalContext(root, "ses-root-status", {
+        taskDescription: "status parity",
+        taskRef: "T-3.9.61",
+        tasklistPath,
+      });
+
+      const plugin = await createPlugin(client, root);
+      await emitEvent(plugin, sessionIdleEvent("ses-root-status"));
+      await emitEvent(plugin, commandExecutedEvent("ses-root-status", "status"));
+
+      const pipelineStatus = client.prompts.find(
+        (entry) => entry.sessionID === "ses-root-status" && entry.text.startsWith("Pipeline:"),
+      )?.text;
+      assert.equal(typeof pipelineStatus, "string");
+
+      const capture = createCaptureIO();
+      const exitCode = await runPipelineCtl(
+        ["status", "ses-root-status"],
+        {
+          OPENCODE_WORKTREE: root,
+          OPENCODE_ORCHESTRATION_STATE: resolve(root, "_bmad-output", "orchestration-state.json"),
+          OPENCODE_ORCHESTRATION_COMMAND_QUEUE: resolve(root, "_bmad-output", "orchestration-commands.ndjson"),
+          OPENCODE_SESSION_ID: "ses-root-status",
+        },
+        capture.io,
+      );
+      assert.equal(exitCode, 0);
+      const ctlStatus = capture.stdout.join("");
+
+      const sections: Array<"Session Tree:" | "Execution Order:" | "Overlap Windows:"> = [
+        "Session Tree:",
+        "Execution Order:",
+        "Overlap Windows:",
+      ];
+      for (const section of sections) {
+        const pipelineSection = extractStatusSection(pipelineStatus as string, section);
+        const ctlSection = extractStatusSection(ctlStatus, section);
+        assert.deepEqual(ctlSection, pipelineSection);
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
 });
 
 interface MockClient {
@@ -1164,6 +1376,58 @@ function extractSessionOrdinal(sessionID: string): number {
   const candidate = pieces.length > 0 ? pieces[pieces.length - 1] : "";
   const parsed = Number.parseInt(candidate ?? "", 10);
   return Number.isFinite(parsed) ? parsed : Number.NaN;
+}
+
+function createCaptureIO(): {
+  stdout: string[];
+  stderr: string[];
+  io: {
+    stdout(message: string): void;
+    stderr(message: string): void;
+  };
+} {
+  const stdout: string[] = [];
+  const stderr: string[] = [];
+  return {
+    stdout,
+    stderr,
+    io: {
+      stdout(message: string) {
+        stdout.push(message);
+      },
+      stderr(message: string) {
+        stderr.push(message);
+      },
+    },
+  };
+}
+
+function extractStatusSection(
+  snapshot: string,
+  section: "Session Tree:" | "Execution Order:" | "Overlap Windows:",
+): string[] {
+  const lines = snapshot.split("\n");
+  const start = lines.indexOf(section);
+  if (start < 0) {
+    return [];
+  }
+
+  const knownHeaders = new Set(["Session Tree:", "Execution Order:", "Overlap Windows:"]);
+  const collected: string[] = [];
+  for (let index = start + 1; index < lines.length; index += 1) {
+    const line = lines[index] ?? "";
+    if (knownHeaders.has(line as "Session Tree:" | "Execution Order:" | "Overlap Windows:")) {
+      break;
+    }
+
+    collected.push(line);
+  }
+
+  while (collected.length > 0 && collected[collected.length - 1]?.trim() === "") {
+    collected.pop();
+  }
+
+  return collected;
 }
 
 function sessionCreatedEvent(id: string, directory: string, title: string, parentID?: string): Event {
@@ -1371,8 +1635,12 @@ async function readEventLog(root: string): Promise<OrchestrationEventFixture[]> 
   }
 }
 
-async function readExecutionGraph(root: string, rootSessionID: string): Promise<ExecutionGraphEventFixture[]> {
-  const filePath = resolve(root, "_bmad-output", "execution-graph.ndjson");
+async function readExecutionGraph(
+  root: string,
+  rootSessionID: string,
+  configuredPath = "_bmad-output/execution-graph.ndjson",
+): Promise<ExecutionGraphEventFixture[]> {
+  const filePath = configuredPath.startsWith("/") ? configuredPath : resolve(root, configuredPath);
 
   try {
     const raw = await readFile(filePath, "utf-8");

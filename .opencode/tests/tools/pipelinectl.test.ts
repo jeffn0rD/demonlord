@@ -106,6 +106,57 @@ describe("pipelinectl", () => {
     assert.match(output, /Stage: review/);
   });
 
+  test("status reads execution graph from configured path", async () => {
+    const fixture = await createFixture({
+      pipelines: {
+        "ses-root": {
+          rootSessionID: "ses-root",
+          currentStage: "triage",
+          transition: "idle",
+          stopped: false,
+          updatedAt: 301,
+        },
+      },
+      sessionToRoot: {
+        "ses-root": "ses-root",
+      },
+    });
+    const customGraphPath = resolve(fixture.root, "_bmad-output", "custom-graph.ndjson");
+    await writeFile(
+      resolve(fixture.root, "demonlord.config.json"),
+      `${JSON.stringify({
+        orchestration: {
+          execution_graph: {
+            enabled: true,
+            path: "_bmad-output/custom-graph.ndjson",
+            verbosity: "concise",
+          },
+        },
+      })}\n`,
+      "utf-8",
+    );
+    await writeFile(
+      customGraphPath,
+      `${JSON.stringify({
+        seq: 1,
+        rootSessionID: "ses-root",
+        eventType: "task_queued",
+        stage: "implementation",
+        taskRef: "T-1.1.1",
+        parallelGroup: "",
+        slot: "implementation::1",
+        status: "queued",
+      })}\n`,
+      "utf-8",
+    );
+
+    const capture = createCaptureIO();
+    const exitCode = await runPipelineCtl(["status"], fixture.env, capture.io);
+
+    assert.equal(exitCode, 0);
+    assert.match(capture.stdout.join(""), /#1 task_queued task=T-1.1.1/);
+  });
+
   test("rejects mutating commands while runtime mode is off", async () => {
     const fixture = await createFixture({
       pipelines: {
@@ -181,7 +232,7 @@ async function createFixture(input: {
   runtimeOff?: boolean;
   effectiveMode?: string;
   includeSummaries?: boolean;
-}): Promise<{ env: NodeJS.ProcessEnv; queuePath: string }> {
+}): Promise<{ root: string; env: NodeJS.ProcessEnv; queuePath: string }> {
   const root = await mkdtemp(join(tmpdir(), "pipelinectl-test-"));
   temporaryDirectories.push(root);
 
@@ -219,6 +270,7 @@ async function createFixture(input: {
   );
 
   return {
+    root,
     env: {
       OPENCODE_WORKTREE: root,
       OPENCODE_ORCHESTRATION_STATE: statePath,

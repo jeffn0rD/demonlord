@@ -101,6 +101,12 @@ interface RuntimeContext {
   sessionID?: string;
 }
 
+interface ExecutionGraphSettings {
+  enabled: boolean;
+  path: string;
+  verbosity: "concise" | "verbose";
+}
+
 interface PipelineCtlIO {
   stdout(message: string): void;
   stderr(message: string): void;
@@ -141,8 +147,10 @@ export async function runPipelineCtl(
   }
 
   if (action === "status") {
-    const executionGraphPath = resolve(context.worktree, "_bmad-output", "execution-graph.ndjson");
-    const executionGraph = await loadExecutionGraph(executionGraphPath);
+    const executionGraphSettings = await loadExecutionGraphSettings(context.worktree);
+    const executionGraph = executionGraphSettings.enabled
+      ? await loadExecutionGraph(resolveExecutionGraphPath(context.worktree, executionGraphSettings.path))
+      : [];
     io.stdout(`${renderStatus(snapshot, context.sessionID, args[0], executionGraph)}\n`);
     return 0;
   }
@@ -318,6 +326,57 @@ function resolveRuntimeContext(env: NodeJS.ProcessEnv): RuntimeContext {
   };
 }
 
+async function loadExecutionGraphSettings(worktree: string): Promise<ExecutionGraphSettings> {
+  const defaults: ExecutionGraphSettings = {
+    enabled: true,
+    path: "_bmad-output/execution-graph.ndjson",
+    verbosity: "concise",
+  };
+
+  try {
+    const configPath = resolve(worktree, "demonlord.config.json");
+    const raw = await readFile(configPath, "utf-8");
+    const parsed = JSON.parse(raw) as {
+      orchestration?: {
+        execution_graph?: {
+          enabled?: unknown;
+          path?: unknown;
+          verbosity?: unknown;
+        };
+      };
+    };
+
+    const executionGraph = parsed.orchestration?.execution_graph;
+    if (!executionGraph || typeof executionGraph !== "object") {
+      return defaults;
+    }
+
+    const enabled = typeof executionGraph.enabled === "boolean" ? executionGraph.enabled : defaults.enabled;
+    const path = typeof executionGraph.path === "string" && executionGraph.path.trim().length > 0
+      ? executionGraph.path.trim()
+      : defaults.path;
+    const verbosity = executionGraph.verbosity === "verbose" || executionGraph.verbosity === "concise"
+      ? executionGraph.verbosity
+      : defaults.verbosity;
+
+    return {
+      enabled,
+      path,
+      verbosity,
+    };
+  } catch {
+    return defaults;
+  }
+}
+
+function resolveExecutionGraphPath(worktree: string, configuredPath: string): string {
+  if (configuredPath.startsWith("/")) {
+    return configuredPath;
+  }
+
+  return resolve(worktree, configuredPath);
+}
+
 async function loadSnapshot(filePath: string): Promise<OrchestrationSnapshot | null> {
   try {
     const raw = await readFile(filePath, "utf-8");
@@ -449,9 +508,10 @@ function renderSessionTree(pipeline: PipelineStateSnapshot, sessionID: string, d
 
   const session = sessions[sessionID];
   const indent = "  ".repeat(depth);
+  const currentMarker = session.stage === pipeline.currentStage && session.status === "active" ? " *" : "";
   const taskRef = session.stage === "triage" ? pipeline.taskTraversal?.taskRef ?? "n/a" : pipeline.routing?.taskRef ?? "n/a";
   const agentID = session.stage === "triage" ? "planner" : pipeline.routing?.agentID ?? "n/a";
-  const line = `${indent}- ${session.sessionID} [${session.stage}] {${session.status}} task=${taskRef} agent=${agentID}`;
+  const line = `${indent}- ${session.sessionID} [${session.stage}] {${session.status}} task=${taskRef} agent=${agentID}${currentMarker}`;
   const childLines = (session.children ?? []).flatMap((childID) => renderSessionTree(pipeline, childID, depth + 1));
   return [line, ...childLines];
 }

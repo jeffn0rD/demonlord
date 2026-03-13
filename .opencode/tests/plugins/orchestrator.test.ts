@@ -299,6 +299,53 @@ describe("orchestrator snapshot and queue helpers", () => {
     assert.deepEqual(metadata?.dependsOn, ["T-3.7.1"]);
   });
 
+  test("orders empty parallel_group before named groups", () => {
+    const ungrouped = __orchestratorTestUtils.buildDispatchQueueItem({
+      stage: "implementation",
+      taskRef: "T-3.8.1",
+      role: "implementation",
+      tier: "standard",
+      skillID: "orchestration-specialist",
+      parallelGroup: "",
+      dependsOn: [],
+      taskIndex: 1,
+      requestedBySessionID: "ses-root",
+      parentSessionID: "ses-root",
+    });
+    const grouped = __orchestratorTestUtils.buildDispatchQueueItem({
+      stage: "implementation",
+      taskRef: "T-3.8.2",
+      role: "implementation",
+      tier: "standard",
+      skillID: "orchestration-specialist",
+      parallelGroup: "routing-core",
+      dependsOn: [],
+      taskIndex: 1,
+      requestedBySessionID: "ses-root",
+      parentSessionID: "ses-root",
+    });
+
+    const compare = __orchestratorTestUtils.compareDispatchQueueItems(ungrouped, grouped);
+    assert.equal(__orchestratorTestUtils.normalizeParallelGroup(undefined), "");
+    assert.equal(compare < 0, true);
+  });
+
+  test("parses execution_graph settings with deterministic defaults", () => {
+    const defaults = __orchestratorTestUtils.parseExecutionGraphSettings(undefined);
+    const configured = __orchestratorTestUtils.parseExecutionGraphSettings({
+      enabled: false,
+      path: "_bmad-output/custom-execution-graph.ndjson",
+      verbosity: "verbose",
+    });
+
+    assert.equal(defaults.enabled, true);
+    assert.equal(defaults.path, "_bmad-output/execution-graph.ndjson");
+    assert.equal(defaults.verbosity, "concise");
+    assert.equal(configured.enabled, false);
+    assert.equal(configured.path, "_bmad-output/custom-execution-graph.ndjson");
+    assert.equal(configured.verbosity, "verbose");
+  });
+
   test("returns no metadata when EXECUTION block is absent", () => {
     const tasklist = [
       "<!-- TASK:T-3.9.2 -->",

@@ -33,3 +33,7 @@ Tests that will need to be done when system is in an alpha development stage
 28. Run a task with missing `EXECUTION` metadata (for example a task that only has `<!-- TASK:... -->` without following EXECUTION), confirm pipeline activity shows a warning-level `routing_warning` event and uses legacy fallback behavior.
 29. Trigger a spec-first flow (for example a task with requirements in title like "requirements are unclear"), complete the spec handoff marker, and confirm the post-handoff implementation session keeps the same resolved execution target (`agentID`, `role`, `tier`, `taskRef`) chosen before the spec session.
 30. Verify that task traversal context (`taskRef`, `tasklistPath`) is persisted in pipeline state and reused across retries, approvals, and idle resume events rather than re-deriving from session title each time.
+31. Run a task whose selected tasklist item has no `EXECUTION` metadata and confirm a warning is shown with a clear fallback reason.
+32. Start multiple implementation tasks with orchestration parallel cap set to 1; confirm later tasks show as queued and then resume after capacity is freed.
+33. Run a task with unresolved `depends_on` references; confirm pipeline status becomes blocked and displays the missing dependency IDs.
+34. Open execution-graph/status view and confirm event `seq` values increase monotonically and duplicate refresh/idle actions do not create duplicate queue/terminal events.

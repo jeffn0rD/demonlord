@@ -31,12 +31,19 @@ interface OrchestrationSettings {
   taskRouting: TaskRoutingSettings;
   agentPools: AgentPools;
   parallelism: ParallelismSettings;
+  executionGraph?: ExecutionGraphSettings;
 }
 
 interface ParallelismSettings {
   maxParallelTotal: number;
   maxParallelByRole: Record<ExecutionRole, number>;
   maxParallelByTier: Record<ExecutionTier, number>;
+}
+
+interface ExecutionGraphSettings {
+  enabled: boolean;
+  path: string;
+  verbosity: "concise" | "verbose";
 }
 
 interface RoutingContext {
@@ -341,6 +348,11 @@ const defaultOrchestrationSettings: OrchestrationSettings = {
       pro: 1,
     },
   },
+  executionGraph: {
+    enabled: true,
+    path: "_bmad-output/execution-graph.ndjson",
+    verbosity: "concise",
+  },
 };
 
 const LEGACY_ROLE_AGENT: Record<ExecutionRole, string> = {
@@ -377,9 +389,11 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
     return {};
   }
 
+  const executionGraphSettings = getExecutionGraphSettings(settings);
+
   const statePath = resolve(worktree, "_bmad-output", "orchestration-state.json");
   const eventLogPath = resolve(worktree, "_bmad-output", "orchestration-events.ndjson");
-  const executionGraphPath = resolve(worktree, "_bmad-output", "execution-graph.ndjson");
+  const executionGraphPath = resolveExecutionGraphPath(worktree, executionGraphSettings.path);
   const commandQueuePath = resolve(worktree, "_bmad-output", "orchestration-commands.ndjson");
   const shellBootstrapPath = resolve(worktree, "_bmad-output", "pipelinectl-shell.env.sh");
   const spawnScriptPath = resolve(worktree, "agents", "tools", "spawn_worktree.sh");
@@ -575,7 +589,62 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
         source: "auto-idle",
       });
     } finally {
+      await maybeResumeQueuedDispatches(sessionID);
       idleInFlight.delete(sessionID);
+    }
+  }
+
+  async function maybeResumeQueuedDispatches(triggerSessionID: string): Promise<void> {
+    if (settings.mode !== "auto" || state.runtime.off) {
+      return;
+    }
+
+    let usage = computeParallelDispatchUsage(state.pipelines);
+    const candidates = collectQueuedDispatchCandidates(state.pipelines);
+
+    for (const candidate of candidates) {
+      const { rootSessionID, pipeline, queueHead } = candidate;
+
+      if (rootSessionID === triggerSessionID) {
+        continue;
+      }
+
+      if (isPipelineDisabled(pipeline)) {
+        continue;
+      }
+
+      if (pipeline.pendingTransition || pipeline.transition === "in_progress") {
+        continue;
+      }
+
+      if (pipeline.currentStage !== "triage") {
+        continue;
+      }
+
+      const dependencyStatus = await resolveTaskDependencyStatus({
+        dependsOn: queueHead.dependsOn,
+        pipeline,
+        tasklistPath: pipeline.taskTraversal?.tasklistPath,
+      });
+      if (dependencyStatus.missing.length > 0) {
+        continue;
+      }
+
+      const capacity = evaluateParallelCapacity(queueHead, usage, settings.parallelism);
+      if (!capacity.ok) {
+        continue;
+      }
+
+      const requestedBySessionID = pipeline.sessions[rootSessionID]?.sessionID ?? rootSessionID;
+      await requestTransition({
+        rootSessionID,
+        pipeline,
+        from: "triage",
+        to: "implementation",
+        requestedBySessionID,
+        source: "auto-idle",
+      });
+      usage = computeParallelDispatchUsage(state.pipelines);
     }
   }
 
@@ -2332,7 +2401,9 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
     const pending = pipeline.pendingTransition
       ? `${pipeline.pendingTransition.from} -> ${pipeline.pendingTransition.to}`
       : "none";
-    const executionGraph = await readExecutionGraphEntries(executionGraphPath, pipeline.rootSessionID);
+    const executionGraph = executionGraphSettings.enabled
+      ? await readExecutionGraphEntries(executionGraphPath, pipeline.rootSessionID)
+      : [];
     const executionOrderLines = renderExecutionOrderSummary(executionGraph);
     const overlapLines = renderOverlapWindowSummary(executionGraph);
     const statusLines = [
@@ -2420,6 +2491,10 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
   }
 
   async function writeExecutionGraphEvent(pipeline: PipelineState, input: ExecutionGraphEventInput): Promise<void> {
+    if (!executionGraphSettings.enabled) {
+      return;
+    }
+
     const normalized = normalizeExecutionGraphEventInput(input);
 
     await scheduleWrite(async () => {
@@ -2559,6 +2634,7 @@ async function loadOrchestrationSettings(worktree: string): Promise<Orchestratio
         task_routing?: unknown;
         agent_pools?: unknown;
         parallelism?: unknown;
+        execution_graph?: unknown;
       };
     };
 
@@ -2589,6 +2665,7 @@ async function loadOrchestrationSettings(worktree: string): Promise<Orchestratio
       taskRouting: parseTaskRoutingSettings(config.task_routing),
       agentPools: parseAgentPools(config.agent_pools),
       parallelism: parseParallelismSettings(config.parallelism),
+      executionGraph: parseExecutionGraphSettings(config.execution_graph),
     };
   } catch {
     return cloneOrchestrationSettings(defaultOrchestrationSettings);
@@ -2697,6 +2774,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function cloneOrchestrationSettings(input: OrchestrationSettings): OrchestrationSettings {
+  const executionGraph = getExecutionGraphSettings(input);
   return {
     ...input,
     taskRouting: {
@@ -2715,6 +2793,11 @@ function cloneOrchestrationSettings(input: OrchestrationSettings): Orchestration
         standard: input.parallelism.maxParallelByTier.standard,
         pro: input.parallelism.maxParallelByTier.pro,
       },
+    },
+    executionGraph: {
+      enabled: executionGraph.enabled,
+      path: executionGraph.path,
+      verbosity: executionGraph.verbosity,
     },
   };
 }
@@ -2822,6 +2905,31 @@ function parseParallelismSettings(input: unknown): ParallelismSettings {
       ),
       pro: parsePositiveLimit(byTier.pro, defaultOrchestrationSettings.parallelism.maxParallelByTier.pro),
     },
+  };
+}
+
+function parseExecutionGraphSettings(input: unknown): ExecutionGraphSettings {
+  const defaults = getExecutionGraphSettings(defaultOrchestrationSettings);
+  if (!isRecord(input)) {
+    return {
+      enabled: defaults.enabled,
+      path: defaults.path,
+      verbosity: defaults.verbosity,
+    };
+  }
+
+  const enabled = typeof input.enabled === "boolean" ? input.enabled : defaults.enabled;
+  const path = typeof input.path === "string" && input.path.trim().length > 0
+    ? input.path.trim()
+    : defaults.path;
+  const verbosity = input.verbosity === "verbose" || input.verbosity === "concise"
+    ? input.verbosity
+    : defaults.verbosity;
+
+  return {
+    enabled,
+    path,
+    verbosity,
   };
 }
 
@@ -3092,7 +3200,7 @@ function normalizePipelineRuntimeState(pipeline: PipelineState): void {
 
 function normalizeParallelGroup(value: string | undefined): string {
   const normalized = (value ?? "").trim();
-  return normalized.length > 0 ? normalized : "default";
+  return normalized;
 }
 
 function buildDispatchSlot(stage: PipelineStage, parallelGroup: string, taskIndex: number): string {
@@ -3182,6 +3290,63 @@ function compareDispatchQueueItems(left: DispatchQueueItem, right: DispatchQueue
   }
 
   return left.taskRef.localeCompare(right.taskRef);
+}
+
+function collectQueuedDispatchCandidates(pipelines: Record<string, PipelineState>): Array<{
+  rootSessionID: string;
+  pipeline: PipelineState;
+  queueHead: DispatchQueueItem;
+}> {
+  const candidates: Array<{
+    rootSessionID: string;
+    pipeline: PipelineState;
+    queueHead: DispatchQueueItem;
+  }> = [];
+
+  for (const [rootSessionID, pipeline] of Object.entries(pipelines)) {
+    const queueHead = peekDispatchQueue(pipeline);
+    if (!queueHead) {
+      continue;
+    }
+
+    candidates.push({
+      rootSessionID,
+      pipeline,
+      queueHead,
+    });
+  }
+
+  candidates.sort((left, right) => {
+    const byDispatch = compareDispatchQueueItems(left.queueHead, right.queueHead);
+    if (byDispatch !== 0) {
+      return byDispatch;
+    }
+
+    return left.rootSessionID.localeCompare(right.rootSessionID);
+  });
+
+  return candidates;
+}
+
+function getExecutionGraphSettings(settings: OrchestrationSettings): ExecutionGraphSettings {
+  const defaults = defaultOrchestrationSettings.executionGraph ?? {
+    enabled: true,
+    path: "_bmad-output/execution-graph.ndjson",
+    verbosity: "concise" as const,
+  };
+  return {
+    enabled: settings.executionGraph?.enabled ?? defaults.enabled,
+    path: settings.executionGraph?.path ?? defaults.path,
+    verbosity: settings.executionGraph?.verbosity ?? defaults.verbosity,
+  };
+}
+
+function resolveExecutionGraphPath(worktree: string, configuredPath: string): string {
+  if (configuredPath.startsWith("/")) {
+    return configuredPath;
+  }
+
+  return resolve(worktree, configuredPath);
 }
 
 function peekDispatchQueue(pipeline: PipelineState): DispatchQueueItem | null {
@@ -4136,7 +4301,9 @@ export const __orchestratorTestUtils = {
   applySpecExpertFirstPolicy,
   applyGlobalOffToPipelines,
   applyGlobalOnToPipelines,
+  buildDispatchQueueItem,
   buildCommandDedupKey,
+  compareDispatchQueueItems,
   extractTaskReference,
   getNextStage,
   loadPersistedState,
@@ -4144,7 +4311,9 @@ export const __orchestratorTestUtils = {
   parseJsonc,
   parseTaskExecutionMetadata,
   parseTaskRoutingSettings,
+  parseExecutionGraphSettings,
   normalizeErrorSignature,
+  normalizeParallelGroup,
   normalizeStage,
   parseQueuedCommand,
   rememberPreHandledCommand,
