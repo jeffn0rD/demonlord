@@ -11,5 +11,6 @@ Supported actions:
 - `/pipeline approve [session_id]`
 - `/pipeline stop [session_id]`
 - `/pipeline off`
+- `/pipeline on`
 
 This command is handled by `.opencode/plugins/orchestrator.ts`.

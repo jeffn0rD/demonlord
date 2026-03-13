@@ -10,6 +10,11 @@ interface CommunicationSettings {
   mode: OrchestrationMode;
 }
 
+interface ApproveCommandInput {
+  sessionID: string;
+  arguments: string;
+}
+
 const defaults: CommunicationSettings = {
   enabled: true,
   mode: "manual",
@@ -17,24 +22,54 @@ const defaults: CommunicationSettings = {
 
 const CommunicationPlugin: Plugin = async ({ client, worktree }) => {
   const settings = await loadSettings(worktree);
+  const preHandledApprovals = new Map<string, number>();
 
   if (!settings.enabled) {
     return {};
   }
 
   return {
+    "command.execute.before": async (input, output) => {
+      const commandName = normalizeCommandName(input.command);
+      if (commandName !== "approve") {
+        return;
+      }
+
+      const commandInput: ApproveCommandInput = {
+        sessionID: input.sessionID,
+        arguments: input.arguments,
+      };
+
+      rememberPreHandledApproval(preHandledApprovals, commandInput);
+      await forwardApproveCommand(commandInput);
+      output.parts = [];
+    },
     event: async ({ event }: { event: Event }) => {
       if (event.type !== "command.executed") {
         return;
       }
 
-      if (event.properties.name !== "approve") {
+      if (normalizeCommandName(event.properties.name) !== "approve") {
         return;
       }
 
+      const commandInput: ApproveCommandInput = {
+        sessionID: event.properties.sessionID,
+        arguments: event.properties.arguments,
+      };
+
+      if (wasPreHandledApproval(preHandledApprovals, commandInput)) {
+        return;
+      }
+
+      await forwardApproveCommand(commandInput);
+    },
+  };
+
+  async function forwardApproveCommand(commandInput: ApproveCommandInput): Promise<void> {
       if (settings.mode === "off") {
         await client.session.prompt({
-          path: { id: event.properties.sessionID },
+          path: { id: commandInput.sessionID },
           body: {
             agent: "orchestrator",
             noReply: true,
@@ -45,11 +80,11 @@ const CommunicationPlugin: Plugin = async ({ client, worktree }) => {
         return;
       }
 
-      const args = event.properties.arguments.trim();
+      const args = commandInput.arguments.trim();
       const commandArgs = args.length > 0 ? `approve ${args}` : "approve";
 
       await client.session.command({
-        path: { id: event.properties.sessionID },
+        path: { id: commandInput.sessionID },
         body: {
           command: "pipeline",
           arguments: commandArgs,
@@ -57,9 +92,45 @@ const CommunicationPlugin: Plugin = async ({ client, worktree }) => {
         },
         query: { directory: worktree },
       });
-    },
-  };
+  }
 };
+
+function normalizeCommandName(command: string): string {
+  return command.replace(/^\//, "").toLowerCase();
+}
+
+function buildApprovalDedupKey(commandInput: ApproveCommandInput): string {
+  return `${commandInput.sessionID}:${commandInput.arguments.trim()}`;
+}
+
+function rememberPreHandledApproval(cache: Map<string, number>, commandInput: ApproveCommandInput): void {
+  const now = Date.now();
+  cache.set(buildApprovalDedupKey(commandInput), now + 30_000);
+
+  for (const [key, expiresAt] of cache) {
+    if (expiresAt <= now) {
+      cache.delete(key);
+    }
+  }
+}
+
+function wasPreHandledApproval(cache: Map<string, number>, commandInput: ApproveCommandInput): boolean {
+  const key = buildApprovalDedupKey(commandInput);
+  const expiresAt = cache.get(key);
+  const now = Date.now();
+
+  if (!expiresAt) {
+    return false;
+  }
+
+  if (expiresAt <= now) {
+    cache.delete(key);
+    return false;
+  }
+
+  cache.delete(key);
+  return true;
+}
 
 async function loadSettings(worktree: string): Promise<CommunicationSettings> {
   try {

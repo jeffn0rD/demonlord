@@ -10,6 +10,7 @@ type PipelineStage = "triage" | "implementation" | "review";
 type TransitionState = "idle" | "awaiting_approval" | "in_progress" | "blocked" | "completed" | "stopped";
 type SessionStatus = "active" | "completed" | "blocked" | "stopped";
 type OrchestrationMode = "off" | "manual" | "auto";
+type StopReason = "manual" | "global_off" | "completed";
 
 interface OrchestrationSettings {
   enabled: boolean;
@@ -80,6 +81,7 @@ interface PipelineState {
   worktree?: WorktreeContext;
   terminalNotified: boolean;
   stopped: boolean;
+  stopReason?: StopReason;
   error: ErrorContext;
   events: OrchestrationEventEntry[];
   createdAt: number;
@@ -99,6 +101,12 @@ interface PipelineReference {
   rootSessionID: string;
   pipeline: PipelineState;
   session: PipelineSessionState;
+}
+
+interface PipelineCommandInput {
+  name: string;
+  sessionID: string;
+  arguments: string;
 }
 
 const execFileAsync = promisify(execFile);
@@ -121,10 +129,28 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
   const eventLogPath = resolve(worktree, "_bmad-output", "orchestration-events.ndjson");
   const spawnScriptPath = resolve(worktree, "agents", "tools", "spawn_worktree.sh");
   const idleInFlight = new Set<string>();
+  const preHandledCommands = new Map<string, number>();
   const state = await loadPersistedState(statePath);
   let writeQueue: Promise<void> = Promise.resolve();
 
   return {
+    "command.execute.before": async (input, output) => {
+      const commandName = normalizeCommandName(input.command);
+      if (commandName !== "pipeline") {
+        return;
+      }
+
+      const commandInput: PipelineCommandInput = {
+        name: commandName,
+        sessionID: input.sessionID,
+        arguments: input.arguments,
+      };
+
+      rememberPreHandledCommand(preHandledCommands, commandInput);
+      await handlePipelineCommand(commandInput);
+
+      output.parts = [];
+    },
     event: async ({ event }) => {
       if (event.type === "session.created") {
         await registerSession(event.properties.info);
@@ -132,7 +158,17 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
       }
 
       if (event.type === "command.executed") {
-        await handlePipelineCommand(event);
+        const commandInput: PipelineCommandInput = {
+          name: event.properties.name,
+          sessionID: event.properties.sessionID,
+          arguments: event.properties.arguments,
+        };
+
+        if (wasPreHandled(preHandledCommands, commandInput)) {
+          return;
+        }
+
+        await handlePipelineCommand(commandInput);
         return;
       }
 
@@ -291,6 +327,7 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
     pipeline.transition = "completed";
     pipeline.currentStage = "review";
     pipeline.stopped = true;
+    pipeline.stopReason = "completed";
     session.status = "completed";
     pipeline.updatedAt = Date.now();
     await persistState();
@@ -314,19 +351,33 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
     await promptSession(rootSessionID, completionNote, true, pipeline.sessions[rootSessionID]?.directory);
   }
 
-  async function handlePipelineCommand(event: Extract<Event, { type: "command.executed" }>): Promise<void> {
-    if (event.properties.name !== "pipeline") {
+  async function handlePipelineCommand(commandInput: PipelineCommandInput): Promise<void> {
+    if (normalizeCommandName(commandInput.name) !== "pipeline") {
       return;
     }
 
-    const sessionID = event.properties.sessionID;
-    const args = tokenizeCommandArguments(event.properties.arguments);
+    const sessionID = commandInput.sessionID;
+    const args = tokenizeCommandArguments(commandInput.arguments);
     const action = (args[0] ?? "status").toLowerCase();
 
     if (action === "off") {
       state.runtime.off = true;
       for (const pipeline of Object.values(state.pipelines)) {
+        if (pipeline.terminalNotified) {
+          pipeline.stopped = true;
+          pipeline.stopReason = "completed";
+          pipeline.transition = "completed";
+          pipeline.updatedAt = Date.now();
+          continue;
+        }
+
+        if (pipeline.stopReason === "manual") {
+          pipeline.updatedAt = Date.now();
+          continue;
+        }
+
         pipeline.stopped = true;
+        pipeline.stopReason = "global_off";
         pipeline.transition = "stopped";
         pipeline.updatedAt = Date.now();
       }
@@ -336,7 +387,46 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
       return;
     }
 
-    const targetSession = args.length > 1 ? args[args.length - 1] : undefined;
+    if (action === "on") {
+      state.runtime.off = false;
+
+      let resumed = 0;
+      for (const pipeline of Object.values(state.pipelines)) {
+        if (pipeline.stopReason !== "global_off") {
+          continue;
+        }
+
+        if (pipeline.terminalNotified) {
+          pipeline.stopReason = "completed";
+          pipeline.stopped = true;
+          pipeline.transition = "completed";
+          pipeline.updatedAt = Date.now();
+          continue;
+        }
+
+        pipeline.stopped = false;
+        pipeline.stopReason = undefined;
+        pipeline.transition = pipeline.pendingTransition
+          ? pipeline.pendingTransition.approvalRequired && !pipeline.pendingTransition.approved
+            ? "awaiting_approval"
+            : "idle"
+          : "idle";
+        pipeline.updatedAt = Date.now();
+        resumed += 1;
+      }
+
+      await persistState();
+      await promptSession(
+        sessionID,
+        resumed > 0
+          ? `Global orchestration mode is now ON. Resumed ${resumed} pipeline${resumed === 1 ? "" : "s"}.`
+          : "Global orchestration mode is now ON.",
+        true,
+      );
+      return;
+    }
+
+    const targetSession = getTargetSessionArgument(action, args);
     const resolved = await resolvePipelineForCommand(sessionID, targetSession);
     if (!resolved) {
       await promptSession(sessionID, "No pipeline state found for the requested session.", true);
@@ -363,6 +453,7 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
 
       case "stop": {
         pipeline.stopped = true;
+        pipeline.stopReason = "manual";
         pipeline.transition = "stopped";
         pipeline.pendingTransition = undefined;
         pipeline.updatedAt = Date.now();
@@ -443,7 +534,7 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
       default: {
         await promptSession(
           sessionID,
-          "Usage: /pipeline <status|advance|stop|off|approve> [args]",
+          "Usage: /pipeline <status|advance|approve|stop|off|on> [args]",
           true,
         );
       }
@@ -1013,6 +1104,7 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
       `Mode: ${state.runtime.off ? "off" : settings.mode}`,
       `Stage: ${pipeline.currentStage}`,
       `Transition: ${pipeline.transition}`,
+      `Stopped: ${pipeline.stopped ? `yes (${pipeline.stopReason ?? "unknown"})` : "no"}`,
       `Pending: ${pending}`,
       `Worktree: ${pipeline.worktree?.worktreePath ?? "n/a"}`,
       `Routing: ${pipeline.routing ? `${pipeline.routing.skillID} (${pipeline.routing.mode})` : "n/a"}`,
@@ -1232,6 +1324,56 @@ function extractTaskDescription(title: string): string {
 
   const withoutPrefix = normalized.replace(/^(triage|implementation|review):/i, "").trim();
   return withoutPrefix || normalized;
+}
+
+function normalizeCommandName(name: string): string {
+  return name.replace(/^\//, "").toLowerCase();
+}
+
+function buildCommandDedupKey(command: PipelineCommandInput): string {
+  const normalizedArgs = command.arguments.trim();
+  return `${command.sessionID}:${normalizeCommandName(command.name)}:${normalizedArgs}`;
+}
+
+function rememberPreHandledCommand(cache: Map<string, number>, command: PipelineCommandInput): void {
+  const now = Date.now();
+  cache.set(buildCommandDedupKey(command), now + 30_000);
+
+  for (const [key, expiresAt] of cache) {
+    if (expiresAt <= now) {
+      cache.delete(key);
+    }
+  }
+}
+
+function wasPreHandled(cache: Map<string, number>, command: PipelineCommandInput): boolean {
+  const now = Date.now();
+  const key = buildCommandDedupKey(command);
+  const expiresAt = cache.get(key);
+
+  if (!expiresAt) {
+    return false;
+  }
+
+  if (expiresAt <= now) {
+    cache.delete(key);
+    return false;
+  }
+
+  cache.delete(key);
+  return true;
+}
+
+function getTargetSessionArgument(action: string, args: string[]): string | undefined {
+  if (action === "advance") {
+    return args.length >= 3 ? args[2] : undefined;
+  }
+
+  if (action === "status" || action === "stop" || action === "approve") {
+    return args.length >= 2 ? args[1] : undefined;
+  }
+
+  return undefined;
 }
 
 function tokenizeCommandArguments(input: string): string[] {

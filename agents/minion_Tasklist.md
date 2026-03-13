@@ -178,6 +178,34 @@ Agents should execute one subphase at a time. To trigger implementation, the Lea
 <!-- TASK:T-3.4.7 -->
 - [x] **T-3.4.7** (Refs #1): Fix communication plugin load compatibility (export/runtime shape) so approval/visibility behavior is reliable alongside local pipeline controls. Touch points: `.opencode/plugins/communication.ts`
 
+### SUBPHASE-3.4A: Local Shell Control Plane & Orchestration State Sync
+<!-- SUBPHASE:3.4A -->
+**Goal:** Add a deterministic local shell control path (`!pipelinectl ...`) that reads/writes orchestration state without relying on slash-command LLM execution.
+**Entry criteria:** SUBPHASE-3.4 complete.
+**Exit criteria / QA checklist:**
+- [ ] Orchestrator persists a deterministic, atomic state snapshot suitable for external CLI reads.
+- [ ] A local `pipelinectl` command supports `status`, `off`, `on`, `advance`, `approve`, and `stop` with actionable error messages.
+- [ ] Shell mode receives required session/worktree context (e.g., `OPENCODE_SESSION_ID`, `OPENCODE_WORKTREE`) through plugin-managed environment injection.
+- [ ] CLI-to-plugin control handoff is deterministic (command queue or equivalent), deduplicated, and does not corrupt pipeline state on invalid inputs.
+- [ ] `doc/engineering_spec.md` documents the shell control-plane architecture, state schema, and failure/recovery behavior.
+- [ ] User docs (`README.md`, `USAGE.md`) include local shell control usage and verification examples.
+**Proposed PR title:** feat: add shell control-plane fallback for deterministic orchestration control
+**Proposed commit message:** feat: add local pipelinectl shell workflow with deterministic state sync and docs updates (Refs #1)
+
+**Tasks:**
+<!-- TASK:T-3.4A.1 -->
+- **T-3.4A.1** (Refs #1): Define and implement a versioned orchestration snapshot contract written atomically (temp-write + rename) for external readers; include `updatedAt`, runtime mode, pipeline summaries, pending transition metadata, and stop reason fields. Touch points: `.opencode/plugins/orchestrator.ts`, `_bmad-output/orchestration-state.json`
+<!-- TASK:T-3.4A.2 -->
+- **T-3.4A.2** (Refs #1): Add shell context injection via plugin hook (`shell.env`) so shell-mode commands can discover current session/worktree deterministically without manual copy/paste. Touch points: `.opencode/plugins/orchestrator.ts` (or `.opencode/plugins/communication.ts`)
+<!-- TASK:T-3.4A.3 -->
+- **T-3.4A.3** (Refs #1): Implement a local CLI utility (`pipelinectl`) callable from shell mode to provide `status|off|on|advance|approve|stop`, reading snapshot data and surfacing concise operator output. Touch points: `agents/tools/pipelinectl.sh` (or `agents/tools/pipelinectl.ts`), `.opencode/package.json`
+<!-- TASK:T-3.4A.4 -->
+- **T-3.4A.4** (Refs #1): Implement deterministic CLI-to-orchestrator control handoff (append-only command queue or equivalent), including input validation, dedupe keys, and explicit rejection messages for stale/invalid transitions. Touch points: `.opencode/plugins/orchestrator.ts`, `_bmad-output/orchestration-commands.ndjson`, `agents/tools/pipelinectl.sh` (or `agents/tools/pipelinectl.ts`)
+<!-- TASK:T-3.4A.5 -->
+- **T-3.4A.5** (Refs #1): Add/expand tests covering shell control-plane behaviors: atomic state read consistency, invalid command rejection, dedupe, and off/on resume semantics. Touch points: `.opencode/tests/plugins/orchestrator.test.ts`, `.opencode/tests/integration/orchestration-flow.test.ts`, `.opencode/tests/tools/pipelinectl.test.ts`
+<!-- TASK:T-3.4A.6 -->
+- **T-3.4A.6** (Refs #1): Update architecture and operator docs for the new fallback path, including command reference and troubleshooting. Touch points: `doc/engineering_spec.md`, `doc/engineering_reference.md`, `README.md`, `USAGE.md`
+
 ### SUBPHASE-3.5: Party Mode Security Hardening & State Convergence
 <!-- SUBPHASE:3.5 -->
 **Goal:** Eliminate path traversal/file safety risks in Party Mode and converge command handling onto a single source of truth.

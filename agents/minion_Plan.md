@@ -1,7 +1,7 @@
 # Autonomous Software Factory (Demonlord) - Implementation Plan
 
 ## Executive Summary
-This document outlines the architecture and phased implementation plan for "Demonlord," an automated, multi-agent software factory powered by OpenCode. The system enables a Lead Developer to triage, route, and execute tasks autonomously via a completely isolated Git Worktree architecture. It is designed as a highly portable, stack-agnostic template repository. Key features include a Node/TS-based dual-mode Matchmaker for semantic agent routing, deterministic quality gates (enforcing tests/linting before commits), a comprehensive Discord Command Center for two-way human-in-the-loop communication, and enhanced collaboration capabilities including Party Mode for multi-agent discussions and simplified testing strategy inspired by BMAD-METHOD.
+This document outlines the architecture and phased implementation plan for "Demonlord," an automated, multi-agent software factory powered by OpenCode. The system enables a Lead Developer to triage, route, and execute tasks autonomously via a completely isolated Git Worktree architecture. It is designed as a highly portable, stack-agnostic template repository. Key features include a Node/TS-based dual-mode Matchmaker for semantic agent routing, deterministic quality gates (enforcing tests/linting before commits), a comprehensive Discord Command Center for two-way human-in-the-loop communication, and enhanced collaboration capabilities including Party Mode for multi-agent discussions and simplified testing strategy inspired by BMAD-METHOD. Phase-3 hardening also adds a local shell control-plane fallback (`pipelinectl`) for deterministic orchestration control when slash-command UX is constrained by upstream command hook behavior.
 
 ## Recommended Option & Alternatives
 **Recommended Architecture:**
@@ -47,7 +47,7 @@ This document outlines the architecture and phased implementation plan for "Demo
 
 ## PHASE 3: Matchmaker, Worktree Isolation & Event Orchestration Hardening
 <!-- PHASE:3 -->
-**Goal:** Implement deterministic routing/worktree orchestration and harden the pipeline with explicit state persistence, manual-first controls, approval gates, and resilient error handling.
+**Goal:** Implement deterministic routing/worktree orchestration and harden the pipeline with explicit state persistence, manual-first controls, approval gates, resilient error handling, and a local shell fallback control plane.
 - **Included Issues:** Refs #1
 - **Dependencies:** Phase 1 completion.
 - **Risks:** 
@@ -55,11 +55,14 @@ This document outlines the architecture and phased implementation plan for "Demo
   - Plugin event handling requires careful error boundaries to prevent cascade failures. **Mitigation**: Implement try-catch blocks with proper logging and graceful degradation to primary agent mode.
   - Stage inference from session metadata/title text can cause misrouted transitions. **Mitigation**: Persist explicit pipeline state keyed by root session and require deterministic transition checks.
   - Auto-progress behavior can be noisy during testing (aborts, throwaway prompts). **Mitigation**: Default to config-driven manual mode and suppress non-fatal aborted-message recovery prompts.
+  - Current OpenCode command hooks may still route slash commands through an LLM request path. **Mitigation**: Add a deterministic shell control-plane fallback (`!pipelinectl ...`) backed by plugin-managed state and command queue files.
   - Worktree creation may fail due to disk space or Git permission issues. **Mitigation**: Pre-validate disk space and Git permissions before attempting worktree creation, with clear error messages and cleanup procedures.
 - **Enhancements:**
   - Implement `project-context.md` generation and loading for consistent agent behavior
   - Support Party Mode agent coordination within shared worktrees
   - Add `/pipeline` operational controls (`status`, `advance`, `stop`, `off`) for first-class session tree visibility and explicit stage transitions
+  - Add local shell-based `pipelinectl` controls (`status`, `advance`, `approve`, `stop`, `off`, `on`) that operate via deterministic state sync
+  - Expose session/worktree shell context through plugin-managed environment variables for fast operator workflows during active agent execution
   - Add config-driven spawn approvals with local command fallback so orchestration remains usable without Discord
 
 ## PHASE 4: Deterministic Quality Gates
