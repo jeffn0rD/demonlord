@@ -2,7 +2,7 @@ import type { Plugin } from "@opencode-ai/plugin";
 import type { Event, Session } from "@opencode-ai/sdk";
 import { execFile } from "child_process";
 import { appendFile, mkdir, readFile, rename, writeFile } from "fs/promises";
-import { dirname, resolve } from "path";
+import { delimiter, dirname, resolve } from "path";
 import { promisify } from "util";
 import { resolveTaskRoute, type RouteResult } from "../tools/matchmaker.ts";
 
@@ -206,6 +206,8 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
       setNoReplyIfSupported(output);
     },
     "shell.env": async (input, output) => {
+      const toolsPath = resolve(worktree, "agents", "tools");
+      output.env.PATH = `${worktree}${delimiter}${toolsPath}${delimiter}${process.env.PATH ?? ""}`;
       output.env.OPENCODE_WORKTREE = worktree;
       output.env.OPENCODE_ORCHESTRATION_STATE = statePath;
       output.env.OPENCODE_ORCHESTRATION_COMMAND_QUEUE = commandQueuePath;
@@ -549,9 +551,14 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
           return;
         }
 
+        const disabledReason = getPipelineDisabledReason(pipeline);
+        if (disabledReason) {
+          await promptSession(sessionID, `Cannot approve transition: ${disabledReason}`, true);
+          return;
+        }
+
         pipeline.pendingTransition.approved = true;
         pipeline.pendingTransition.approvedAt = Date.now();
-        pipeline.transition = "in_progress";
         pipeline.updatedAt = Date.now();
         await persistState();
 
@@ -864,6 +871,12 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
     }
 
     if (pending.approvalRequired && !pending.approved) {
+      return;
+    }
+
+    const disabledReason = getPipelineDisabledReason(pipeline);
+    if (disabledReason) {
+      await promptSession(notifySessionID, `Pending transition not executed: ${disabledReason}`, true);
       return;
     }
 
@@ -1320,7 +1333,23 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
   }
 
   function isPipelineDisabled(pipeline: PipelineState): boolean {
-    return settings.mode === "off" || state.runtime.off || pipeline.stopped;
+    return getPipelineDisabledReason(pipeline) !== null;
+  }
+
+  function getPipelineDisabledReason(pipeline: PipelineState): string | null {
+    if (settings.mode === "off") {
+      return "orchestration is configured OFF in demonlord.config.json";
+    }
+
+    if (state.runtime.off) {
+      return "global orchestration mode is OFF (run `/pipeline on` to resume)";
+    }
+
+    if (pipeline.stopped) {
+      return `pipeline ${pipeline.rootSessionID} is stopped (${pipeline.stopReason ?? "unknown"})`;
+    }
+
+    return null;
   }
 
   function renderStatusSnapshot(pipeline: PipelineState): string {
@@ -1445,7 +1474,7 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
   async function readCommandQueueLines(filePath: string): Promise<string[]> {
     try {
       const raw = await readFile(filePath, "utf-8");
-      return raw.split("\n");
+      return splitCommandQueueLines(raw);
     } catch {
       return [];
     }
@@ -1661,6 +1690,14 @@ function parseQueuedCommand(rawLine: string): PipelineControlQueueCommand | null
   } catch {
     return null;
   }
+}
+
+function splitCommandQueueLines(raw: string): string[] {
+  const lines = raw.split("\n");
+  while (lines.length > 0 && lines[lines.length - 1]?.trim() === "") {
+    lines.pop();
+  }
+  return lines;
 }
 
 function pruneProcessedCommandDedupes(cache: Record<string, number>): void {
@@ -1971,6 +2008,7 @@ export const __orchestratorTestUtils = {
   applyGlobalOnToPipelines,
   loadPersistedState,
   parseQueuedCommand,
+  splitCommandQueueLines,
   pruneProcessedCommandDedupes,
   setNoReplyIfSupported,
   writeJsonAtomically,

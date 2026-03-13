@@ -105,6 +105,33 @@ describe("pipelinectl", () => {
     assert.match(output, /Mode: manual/);
     assert.match(output, /Stage: review/);
   });
+
+  test("rejects mutating commands while runtime mode is off", async () => {
+    const fixture = await createFixture({
+      pipelines: {
+        "ses-root": {
+          rootSessionID: "ses-root",
+          currentStage: "triage",
+          transition: "idle",
+          stopped: false,
+          updatedAt: 400,
+        },
+      },
+      sessionToRoot: {
+        "ses-root": "ses-root",
+      },
+      runtimeOff: true,
+      effectiveMode: "off",
+    });
+    const capture = createCaptureIO();
+
+    const exitCode = await runPipelineCtl(["advance", "implementation", "ses-root"], fixture.env, capture.io);
+
+    assert.equal(exitCode, 1);
+    assert.match(capture.stderr.join(""), /runtime is OFF/i);
+    const queued = await readQueueFile(fixture.queuePath);
+    assert.equal(queued.length, 0);
+  });
 });
 
 function createCaptureIO(): CaptureIO {
@@ -127,6 +154,8 @@ function createCaptureIO(): CaptureIO {
 async function createFixture(input: {
   pipelines: Record<string, Record<string, unknown>>;
   sessionToRoot: Record<string, string>;
+  runtimeOff?: boolean;
+  effectiveMode?: string;
 }): Promise<{ env: NodeJS.ProcessEnv; queuePath: string }> {
   const root = await mkdtemp(join(tmpdir(), "pipelinectl-test-"));
   temporaryDirectories.push(root);
@@ -143,10 +172,10 @@ async function createFixture(input: {
         version: 2,
         updatedAt: new Date(0).toISOString(),
         runtime: {
-          off: false,
+          off: input.runtimeOff ?? false,
           enabled: true,
           configuredMode: "manual",
-          effectiveMode: "manual",
+          effectiveMode: input.effectiveMode ?? "manual",
         },
         sessionToRoot: input.sessionToRoot,
         pipelines: input.pipelines,

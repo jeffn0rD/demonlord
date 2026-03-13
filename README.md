@@ -130,19 +130,21 @@ When slash-command UX is constrained, use the shell fallback:
 
 ```bash
 # from repository root
-./agents/tools/pipelinectl.sh status
-./agents/tools/pipelinectl.sh advance implementation
-./agents/tools/pipelinectl.sh approve
+pipelinectl status
+pipelinectl advance implementation
+pipelinectl approve
 ```
 
-The orchestrator plugin injects `OPENCODE_SESSION_ID`, `OPENCODE_WORKTREE`, and orchestration state/queue paths via `shell.env`, so these commands can run without manual context lookup.
+The orchestrator plugin injects `OPENCODE_SESSION_ID`, `OPENCODE_WORKTREE`, and orchestration state/queue paths via `shell.env`, and prepends the worktree tooling paths so `pipelinectl` resolves without a full path in active shell sessions.
+
+Outside an active OpenCode shell session, run `./agents/tools/pipelinectl.sh ...` directly.
 
 Verification example:
 
 ```bash
-./agents/tools/pipelinectl.sh status
-./agents/tools/pipelinectl.sh off
-./agents/tools/pipelinectl.sh on
+pipelinectl status
+pipelinectl off
+pipelinectl on
 ```
 
 Expected behavior: deterministic status text, then queued control messages for `off/on`, followed by updated status after queue processing.

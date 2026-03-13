@@ -44,7 +44,7 @@ When slash-command handling is limited by core hook behavior, operators can use 
 * `pipelinectl approve [session]`
 * `pipelinectl stop [session]`
 
-The orchestrator plugin injects deterministic shell context via `shell.env` (`OPENCODE_SESSION_ID`, `OPENCODE_WORKTREE`, `OPENCODE_ORCHESTRATION_STATE`, `OPENCODE_ORCHESTRATION_COMMAND_QUEUE`) so shell commands can run without manual session/worktree copy-paste.
+The orchestrator plugin injects deterministic shell context via `shell.env` (`OPENCODE_SESSION_ID`, `OPENCODE_WORKTREE`, `OPENCODE_ORCHESTRATION_STATE`, `OPENCODE_ORCHESTRATION_COMMAND_QUEUE`) and prepends worktree tool paths so `pipelinectl` runs without manual session/worktree copy-paste.
 
 
 --------------------------------------------------------------------------------

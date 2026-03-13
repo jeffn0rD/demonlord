@@ -106,6 +106,21 @@ describe("orchestrator snapshot and queue helpers", () => {
     assert.equal(typeof dedupeCache.keep, "number");
   });
 
+  test("normalizes queue lines without trailing newline cursor drift", () => {
+    let cursor = 0;
+    const firstPass = __orchestratorTestUtils.splitCommandQueueLines("{\"id\":1}\n");
+    const seenFirst = firstPass.slice(cursor);
+    cursor = firstPass.length;
+
+    const secondPass = __orchestratorTestUtils.splitCommandQueueLines("{\"id\":1}\n{\"id\":2}\n");
+    const seenSecond = secondPass.slice(cursor);
+    cursor = secondPass.length;
+
+    assert.deepEqual(seenFirst, ["{\"id\":1}"]);
+    assert.deepEqual(seenSecond, ["{\"id\":2}"]);
+    assert.equal(cursor, 2);
+  });
+
   test("sets noReply on compatible command pre-hook outputs", () => {
     const output: { parts: unknown[]; noReply?: boolean } = {
       parts: [],

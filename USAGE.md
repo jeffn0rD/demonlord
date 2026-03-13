@@ -42,11 +42,13 @@ In manual mode, use local pipeline controls in the CLI:
 - **`/pipeline approve [session]`**: Approve blocked spawn without Discord dependency
 
 If slash-command handling is constrained, use the deterministic shell fallback:
-- **`./agents/tools/pipelinectl.sh status [session]`**
-- **`./agents/tools/pipelinectl.sh off|on`**
-- **`./agents/tools/pipelinectl.sh advance <triage|implementation|review> [session]`**
-- **`./agents/tools/pipelinectl.sh approve [session]`**
-- **`./agents/tools/pipelinectl.sh stop [session]`**
+- **`pipelinectl status [session]`**
+- **`pipelinectl off|on`**
+- **`pipelinectl advance <triage|implementation|review> [session]`**
+- **`pipelinectl approve [session]`**
+- **`pipelinectl stop [session]`**
+
+If your shell session does not include plugin-injected PATH context, run `./agents/tools/pipelinectl.sh ...` directly.
 
 ## Agent Roles and Responsibilities
 
@@ -228,7 +230,7 @@ Discord integration is configured in `demonlord.config.json`:
 - **Check**: Confirm Demonlord pre-hooks set `output.noReply = true` for `/pipeline` and `/approve` on patched core builds
 
 **`pipelinectl` rejects command as stale/invalid**
-- **Solution**: Run `./agents/tools/pipelinectl.sh status` and retry with the latest state
+- **Solution**: Run `pipelinectl status` and retry with the latest state
 - **Check**: Verify target stage and pending approval state before `advance`/`approve`
 
 **Discord messages not appearing**

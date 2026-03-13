@@ -139,6 +139,11 @@ export async function runPipelineCtl(
     return 0;
   }
 
+  if (isRuntimeOff(snapshot)) {
+    io.stderr("Orchestration runtime is OFF. Run `pipelinectl on` and retry.\n");
+    return 1;
+  }
+
   if (action === "advance") {
     const requestedStage = args[0]?.toLowerCase();
     if (!requestedStage || !VALID_STAGES.has(requestedStage as PipelineStage)) {
@@ -168,7 +173,7 @@ export async function runPipelineCtl(
 
     if (resolved.pipeline.stopped) {
       io.stderr(
-        `Pipeline ${resolved.rootSessionID} is stopped (${resolved.pipeline.stopReason ?? "unknown"}). Use '/pipeline on' first.\n`,
+        `Pipeline ${resolved.rootSessionID} is stopped (${resolved.pipeline.stopReason ?? "unknown"}). Use 'pipelinectl on' first.\n`,
       );
       return 1;
     }
@@ -438,6 +443,14 @@ function nextStage(stage: PipelineStage): PipelineStage | null {
   }
 
   return null;
+}
+
+function isRuntimeOff(snapshot: OrchestrationSnapshot): boolean {
+  if (snapshot.runtime?.off === true) {
+    return true;
+  }
+
+  return snapshot.runtime?.effectiveMode === "off";
 }
 
 function renderUsage(): string {
