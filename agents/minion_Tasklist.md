@@ -214,23 +214,23 @@ Agents should execute one subphase at a time. To trigger implementation, the Lea
 **Goal:** Eliminate path traversal/file safety risks in Party Mode and converge command handling onto a single source of truth.
 **Entry criteria:** SUBPHASE-3.4 complete.
 **Exit criteria / QA checklist:**
-- [ ] `session_id` and export path inputs are validated/sanitized and cannot escape `context.worktree`.
-- [ ] Party Mode state is unified (no split-brain between plugin in-memory state and tool persisted state).
-- [ ] `/party`, `/continue`, `/halt`, `/focus`, `/add-agent`, `/export` act on the same deterministic state machine.
-- [ ] Export behavior is deterministic and writes consistent transcript format.
-- [ ] Invalid inputs return explicit, actionable errors without partial state corruption.
+- [x] `session_id` and export path inputs are validated/sanitized and cannot escape `context.worktree`.
+- [x] Party Mode state is unified (no split-brain between plugin in-memory state and tool persisted state).
+- [x] `/party`, `/continue`, `/halt`, `/focus`, `/add-agent`, `/export` act on the same deterministic state machine.
+- [x] Export behavior is deterministic and writes consistent transcript format.
+- [x] Invalid inputs return explicit, actionable errors without partial state corruption.
 **Proposed PR title:** fix: secure party mode paths and unify command state handling
 **Proposed commit message:** fix: harden party mode file safety and consolidate shared state orchestration (Refs #1)
 
 **Tasks:**
 <!-- TASK:T-3.5.1 -->
-- **T-3.5.1** (Refs #1): Add strict validation for Party Mode identifiers/inputs (including safe `session_id` constraints) before file access. Touch points: `.opencode/tools/party_mode.ts`
+- [x] **T-3.5.1** (Refs #1): Add strict validation for Party Mode identifiers/inputs (including safe `session_id` constraints) before file access. Touch points: `.opencode/tools/party_mode.ts`
 <!-- TASK:T-3.5.2 -->
-- **T-3.5.2** (Refs #1): Enforce path containment for exports and state files so resolved paths remain under `context.worktree`; reject traversal attempts deterministically. Touch points: `.opencode/tools/party_mode.ts`
+- [x] **T-3.5.2** (Refs #1): Enforce path containment for exports and state files so resolved paths remain under `context.worktree`; reject traversal attempts deterministically. Touch points: `.opencode/tools/party_mode.ts`
 <!-- TASK:T-3.5.3 -->
-- **T-3.5.3** (Refs #1): Refactor `.opencode/plugins/communication.ts` Party Mode slash-command handlers to use unified Party Mode state/tooling instead of separate in-memory control flow. Touch points: `.opencode/plugins/communication.ts`, `.opencode/tools/party_mode.ts`
+- [x] **T-3.5.3** (Refs #1): Refactor `.opencode/plugins/communication.ts` Party Mode slash-command handlers to use unified Party Mode state/tooling instead of separate in-memory control flow. Touch points: `.opencode/plugins/communication.ts`, `.opencode/tools/party_mode.ts`
 <!-- TASK:T-3.5.4 -->
-- **T-3.5.4** (Refs #1): Standardize transcript export naming/content and ensure command responses reflect persisted state transitions. Touch points: `.opencode/plugins/communication.ts`, `.opencode/tools/party_mode.ts`
+- [x] **T-3.5.4** (Refs #1): Standardize transcript export naming/content and ensure command responses reflect persisted state transitions. Touch points: `.opencode/plugins/communication.ts`, `.opencode/tools/party_mode.ts`
 
 ### SUBPHASE-3.6: Type Safety, Test Coverage & Pre-Push Verification
 <!-- SUBPHASE:3.6 -->
