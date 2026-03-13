@@ -270,21 +270,21 @@ Agents should execute one subphase at a time. To trigger implementation, the Lea
 **Goal:** Build a custom tool that enforces linting and testing, enhanced with simplified testing strategy.
 **Entry criteria:** PHASE-1 complete.
 **Exit criteria / QA checklist:**
-- [ ] Tool uses Zod for input validation.
-- [ ] Failed tests return stderr to the agent; passed tests result in a Git commit.
-- [ ] Test generation and auto-fix capabilities are integrated.
+- [x] Tool uses Zod for input validation.
+- [x] Failed tests return stderr to the agent; passed tests result in a Git commit.
+- [x] Test generation and auto-fix capabilities are integrated.
 **Proposed PR title:** feat: implement deterministic quality gate with simplified testing
 **Proposed commit message:** feat: add submit_implementation tool enforcing lint and test passes with simplified testing strategy (Refs #1)
 
 **Tasks:**
 <!-- TASK:T-4.1.1 -->
-- **T-4.1.1** (Refs #1): Create `.opencode/tools/submit_implementation.ts` using `@opencode-ai/plugin` and Zod for the schema (requiring a valid commit message). Touch points: `.opencode/tools/submit_implementation.ts`
+- [x] **T-4.1.1** (Refs #1): Create `.opencode/tools/submit_implementation.ts` using `@opencode-ai/plugin` and Zod for the schema (requiring a valid commit message). Touch points: `.opencode/tools/submit_implementation.ts`
 <!-- TASK:T-4.1.2 -->
-- **T-4.1.2** (Refs #1): Implement execution logic inside the tool to run `npm run lint` and `npm run test` using Bun shell (`$`). Catch non-zero exit codes and return the stack trace. If successful, execute the atomic `git commit` and `push`. Touch points: `.opencode/tools/submit_implementation.ts`
+- [x] **T-4.1.2** (Refs #1): Implement execution logic inside the tool to run `npm run lint` and `npm run test` using Bun shell (`$`). Catch non-zero exit codes and return the stack trace. If successful, execute the atomic `git commit` and `push`. Touch points: `.opencode/tools/submit_implementation.ts`
 <!-- TASK:T-4.1.3 -->
-- **T-4.1.3** (Refs #1): Integrate simplified test generation inspired by BMAD's Quinn approach. Add automatic test framework detection from package.json and implement API/E2E test generation with semantic locators. Touch points: `.opencode/tools/submit_implementation.ts`
+- [x] **T-4.1.3** (Refs #1): Integrate simplified test generation inspired by BMAD's Quinn approach. Add automatic test framework detection from package.json and implement API/E2E test generation with semantic locators. Touch points: `.opencode/tools/submit_implementation.ts`
 <!-- TASK:T-4.1.3 -->
-- **T-4.1.3** (Refs #1): Integrate simplified test generation inspired by BMAD's Quinn approach. Add automatic test framework detection from package.json and implement API/E2E test generation with semantic locators. Touch points: `.opencode/tools/submit_implementation.ts`
+- [x] **T-4.1.3** (Refs #1): Integrate simplified test generation inspired by BMAD's Quinn approach. Add automatic test framework detection from package.json and implement API/E2E test generation with semantic locators. Touch points: `.opencode/tools/submit_implementation.ts`
 
 ---
 
