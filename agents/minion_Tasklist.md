@@ -237,27 +237,27 @@ Agents should execute one subphase at a time. To trigger implementation, the Lea
 **Goal:** Make Phase-3.4+ hardening push-ready with strict type safety, test coverage, and deterministic verification.
 **Entry criteria:** SUBPHASE-3.5 complete.
 **Exit criteria / QA checklist:**
-- [ ] TypeScript validation for `.opencode` passes with strict settings.
-- [ ] Unit tests cover Matchmaker parsing/routing, Party Mode state transitions, and path safety controls.
-- [ ] Integration tests validate orchestrator lifecycle transitions and duplicate-spawn prevention.
-- [ ] Error-path tests cover invalid router output, session errors, and Party Mode invalid input handling.
-- [ ] Pre-push verification commands run successfully and results are documented in commit/PR notes.
+- [x] TypeScript validation for `.opencode` passes with strict settings.
+- [x] Unit tests cover Matchmaker parsing/routing, Party Mode state transitions, and path safety controls.
+- [x] Integration tests validate orchestrator lifecycle transitions and duplicate-spawn prevention.
+- [x] Error-path tests cover invalid router output, session errors, and Party Mode invalid input handling.
+- [x] Pre-push verification commands run successfully and results are documented in commit/PR notes.
 **Proposed PR title:** test: add phase 3 hardening coverage and type-safe pre-push gates
 **Proposed commit message:** test: add tool/plugin coverage and enforce type-safe pre-push verification for phase 3 hardening (Refs #1)
 
 **Tasks:**
 <!-- TASK:T-3.6.1 -->
-- **T-3.6.1** (Refs #1): Resolve `.opencode` TypeScript compatibility issues (module resolution/import typings/strictness) and ensure all new plugin/tool files typecheck cleanly. Touch points: `.opencode/tsconfig.json`, `.opencode/plugins/orchestrator.ts`, `.opencode/tools/matchmaker.ts`, `.opencode/tools/party_mode.ts`, `.opencode/plugins/communication.ts`
+- [x] **T-3.6.1** (Refs #1): Resolve `.opencode` TypeScript compatibility issues (module resolution/import typings/strictness) and ensure all new plugin/tool files typecheck cleanly. Touch points: `.opencode/tsconfig.json`, `.opencode/plugins/orchestrator.ts`, `.opencode/tools/matchmaker.ts`, `.opencode/tools/party_mode.ts`, `.opencode/plugins/communication.ts`
 <!-- TASK:T-3.6.2 -->
-- **T-3.6.2** (Refs #1): Create unit tests for Matchmaker skill parsing, naming validation, JSON parse fallback behavior, and deterministic heuristic fallback. Touch points: `.opencode/tests/tools/matchmaker.test.ts`
+- [x] **T-3.6.2** (Refs #1): Create unit tests for Matchmaker skill parsing, naming validation, JSON parse fallback behavior, and deterministic heuristic fallback. Touch points: `.opencode/tests/tools/matchmaker.test.ts`
 <!-- TASK:T-3.6.3 -->
-- **T-3.6.3** (Refs #1): Create unit tests for Party Mode actions (`start`, `continue`, `halt`, `focus`, `add-agent`, `note`, `export`) including path traversal rejection. Touch points: `.opencode/tests/tools/party_mode.test.ts`
+- [x] **T-3.6.3** (Refs #1): Create unit tests for Party Mode actions (`start`, `continue`, `halt`, `focus`, `add-agent`, `note`, `export`) including path traversal rejection. Touch points: `.opencode/tests/tools/party_mode.test.ts`
 <!-- TASK:T-3.6.4 -->
-- **T-3.6.4** (Refs #1): Add orchestrator plugin tests for idle/error lifecycle transitions, idempotency guards, terminal stage behavior, manual mode transitions, and approval gating. Touch points: `.opencode/tests/plugins/orchestrator.test.ts`
+- [x] **T-3.6.4** (Refs #1): Add orchestrator plugin tests for idle/error lifecycle transitions, idempotency guards, terminal stage behavior, manual mode transitions, and approval gating. Touch points: `.opencode/tests/plugins/orchestrator.test.ts`
 <!-- TASK:T-3.6.5 -->
-- **T-3.6.5** (Refs #1): Add integration-style verification for end-to-end stage transitions, no-duplicate spawn behavior under repeated idle events, and local command-driven progression. Touch points: `.opencode/tests/integration/orchestration-flow.test.ts`
+- [x] **T-3.6.5** (Refs #1): Add integration-style verification for end-to-end stage transitions, no-duplicate spawn behavior under repeated idle events, and local command-driven progression. Touch points: `.opencode/tests/integration/orchestration-flow.test.ts`
 <!-- TASK:T-3.6.6 -->
-- **T-3.6.6** (Refs #1): Execute pre-push validation suite (`typecheck`, tool/plugin tests, integration tests) and record pass/fail evidence. (Manual Execution Task). Touch points: `.opencode/package.json`, `.opencode/tests/`
+- [x] **T-3.6.6** (Refs #1): Execute pre-push validation suite (`typecheck`, tool/plugin tests, integration tests) and record pass/fail evidence. (Manual Execution Task). Touch points: `.opencode/package.json`, `.opencode/tests/`
 
 ---
 
