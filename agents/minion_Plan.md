@@ -134,6 +134,16 @@ Primary risks and mitigations:
 - Risk: routing context drift between task traversal and handoff continuation can silently change target agent. Mitigation: persist immutable execution target and assert continuity in integration tests.
 - Risk: unreadable JSONC config can permit invalid pool IDs via permissive checks. Mitigation: fail closed with deterministic block events and coverage for malformed-config paths.
 
+## V1 Regression Acceptance Matrix
+
+| Dimension | Pass Criteria | Failure Signal | Test/Doc Anchor |
+| --- | --- | --- | --- |
+| Explicit tier routing determinism | Role/tier metadata resolves to the same first configured agent ID on every run with identical `agent_pools`. | Agent resolution order drifts across runs or picks non-first configured candidates. | `.opencode/tests/plugins/orchestrator.test.ts` |
+| Metadata-missing fallback | Missing `EXECUTION` metadata keeps legacy behavior and emits warning-level reason text. | Missing metadata causes silent reroute, hard block, or missing warning telemetry. | `.opencode/tests/plugins/orchestrator.test.ts`, `.opencode/tests/integration/orchestration-flow.test.ts` |
+| Constrained parallel dispatch | `depends_on` blocks deterministically; cap-limited tasks queue and resume when capacity frees. | Tasks bypass dependency/cap guards, queue entries are dropped, or resume order is non-deterministic. | `.opencode/tests/integration/orchestration-flow.test.ts` |
+| Execution-graph contract | Required fields exist for each NDJSON event; `seq` remains monotonic; lifecycle ordering and dedupe guarantees hold. | Missing fields, non-monotonic `seq`, out-of-order lifecycle events, or duplicate transition records. | `.opencode/tests/integration/orchestration-flow.test.ts`, `doc/engineering_spec.md` |
+| Legacy workflow compatibility | Baseline single-agent pipeline (`planner`, `orchestrator`, `minion`, `reviewer`) still runs without metadata migration. | Legacy flow requires new metadata/config to avoid blocked/failed transitions. | Existing integration suite + fallback coverage additions in Subphase-3.9 |
+
 ## Implementation Readiness Checklist (Code Phase File Map)
 
 Core runtime files likely to change:

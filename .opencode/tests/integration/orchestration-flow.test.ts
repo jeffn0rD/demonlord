@@ -33,6 +33,25 @@ interface OrchestrationEventFixture {
   rootSessionID: string;
   sessionID: string;
   stage: PipelineStage;
+  details?: Record<string, unknown>;
+}
+
+interface ExecutionGraphEventFixture {
+  seq: number;
+  ts: string;
+  rootSessionID: string;
+  eventType: string;
+  sessionID: string;
+  parentSessionID: string;
+  stage: PipelineStage;
+  taskRef: string;
+  agentID: string;
+  tier: string;
+  skillID: string;
+  parallelGroup: string;
+  slot: string;
+  status: string;
+  reason?: string;
 }
 
 interface PipelineFixture {
@@ -65,6 +84,7 @@ interface PipelineFixture {
   terminalNotified: boolean;
   stopped: boolean;
   stopReason?: "manual" | "global_off" | "completed";
+  nextSessionID?: string;
   pendingTransition?: PendingTransitionFixture;
   error: {
     inProgress: boolean;
@@ -473,10 +493,12 @@ describe("orchestrator integration flow", () => {
       const snapshot = await readSnapshot<PipelineFixture>(root);
       const pipeline = snapshot.pipelines["ses-root-warning"];
       const eventLog = await readEventLog(root);
+      const warningEvent = eventLog.find((entry) => entry.type === "routing_warning");
 
       assert.equal(pipeline.routing?.metadataSource, "legacy");
       assert.equal(pipeline.routing?.taskRef, "T-3.7.8");
-      assert.equal(eventLog.some((entry) => entry.type === "routing_warning"), true);
+      assert.equal(Boolean(warningEvent), true);
+      assert.match(String(warningEvent?.details?.reason ?? ""), /Missing EXECUTION metadata/i);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -535,11 +557,14 @@ describe("orchestrator integration flow", () => {
       const snapshot = await readSnapshot<PipelineFixture>(root);
       const pipeline = snapshot.pipelines["ses-root-blocked"];
       const eventLog = await readEventLog(root);
+      const blockedEvent = eventLog.find((entry) => entry.type === "task_blocked");
 
       assert.equal(pipeline.transition, "blocked");
       assert.equal(pipeline.currentStage, "triage");
       assert.equal(client.creates.length, 0);
-      assert.equal(eventLog.some((entry) => entry.type === "task_blocked"), true);
+      assert.equal(Boolean(blockedEvent), true);
+      assert.match(String(blockedEvent?.details?.reason ?? ""), /no configured agent/i);
+      assert.match(String(blockedEvent?.details?.reason ?? ""), /legacy 'minion'/i);
       assert.equal(
         client.prompts.some(
           (entry) =>
@@ -547,6 +572,322 @@ describe("orchestrator integration flow", () => {
         ),
         true,
       );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("blocks implementation dispatch when depends_on prerequisites are unresolved", async () => {
+    const root = await mkdtemp(join(tmpdir(), "orchestrator-dependency-block-"));
+
+    try {
+      await writeConfig(
+        root,
+        {
+          enabled: true,
+          mode: "auto",
+          require_approval_before_spawn: false,
+          ignore_aborted_messages: true,
+          verbose_events: false,
+        },
+        {
+          task_routing: { source: "tasklist_explicit", default_tier: "standard" },
+          agent_pools: {
+            implementation: {
+              standard: ["minion-standard"],
+            },
+          },
+        },
+      );
+      await writeOpencodeAgentConfig(root, ["planner", "minion", "minion-standard", "reviewer"]);
+      await writeTasklist(
+        root,
+        "minion_Tasklist.md",
+        [
+          "<!-- TASK:T-3.9.0 -->",
+          "- [ ] **T-3.9.0**: prerequisite intentionally incomplete.",
+          "<!-- TASK:T-3.9.3 -->",
+          '<!-- EXECUTION:{"execution":{"role":"implementation","tier":"standard","skill":"orchestration-specialist","parallel_group":"tests-dispatch","depends_on":["T-3.9.0"]}} -->',
+          "- [ ] **T-3.9.3**: verify dependency gating.",
+        ].join("\n"),
+      );
+      const tasklistPath = resolve(root, "agents", "minion_Tasklist.md");
+
+      const client = createMockClient(root);
+      const initialPlugin = await createPlugin(client, root);
+
+      await emitEvent(initialPlugin, sessionCreatedEvent("ses-root-deps", root, "triage: dependency gate"));
+      await seedTaskTraversalContext(root, "ses-root-deps", {
+        taskDescription: "dependency gate",
+        taskRef: "T-3.9.3",
+        tasklistPath,
+      });
+
+      const plugin = await createPlugin(client, root);
+      await emitEvent(plugin, sessionIdleEvent("ses-root-deps"));
+
+      const snapshot = await readSnapshot<PipelineFixture>(root);
+      const pipeline = snapshot.pipelines["ses-root-deps"];
+      const eventLog = await readEventLog(root);
+      const blockedEvent = eventLog.find((entry) => entry.type === "task_blocked");
+      const graph = await readExecutionGraph(root, "ses-root-deps");
+      const graphBlocked = graph.find((entry) => entry.eventType === "task_blocked");
+
+      assert.equal(pipeline.transition, "blocked");
+      assert.equal(pipeline.currentStage, "triage");
+      assert.equal(client.creates.length, 0);
+      assert.match(String(blockedEvent?.details?.reason ?? ""), /depends_on unresolved/i);
+      assert.match(String(blockedEvent?.details?.reason ?? ""), /T-3\.9\.0/i);
+      assert.match(String(graphBlocked?.reason ?? ""), /depends_on unresolved/i);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("queues on parallel caps and resumes queued pipelines deterministically", async () => {
+    const root = await mkdtemp(join(tmpdir(), "orchestrator-parallel-queue-"));
+
+    try {
+      await writeConfig(
+        root,
+        {
+          enabled: true,
+          mode: "auto",
+          require_approval_before_spawn: false,
+          ignore_aborted_messages: true,
+          verbose_events: false,
+        },
+        {
+          task_routing: { source: "tasklist_explicit", default_tier: "standard" },
+          agent_pools: {
+            implementation: {
+              standard: ["minion-standard"],
+            },
+            review: {
+              standard: ["reviewer"],
+            },
+          },
+          parallelism: {
+            max_parallel_total: 1,
+            max_parallel_by_role: {
+              planning: 1,
+              implementation: 1,
+              review: 1,
+            },
+            max_parallel_by_tier: {
+              lite: 1,
+              standard: 1,
+              pro: 1,
+            },
+          },
+        },
+      );
+      await writeOpencodeAgentConfig(root, ["planner", "minion", "minion-standard", "reviewer"]);
+      await writeSpawnWorktreeScript(root);
+      await writeTasklist(
+        root,
+        "minion_Tasklist.md",
+        [
+          "<!-- TASK:T-3.9.31 -->",
+          '<!-- EXECUTION:{"execution":{"role":"implementation","tier":"standard","skill":"orchestration-specialist","parallel_group":"tests-dispatch"}} -->',
+          "- [ ] **T-3.9.31**: first queued pipeline.",
+          "<!-- TASK:T-3.9.32 -->",
+          '<!-- EXECUTION:{"execution":{"role":"implementation","tier":"standard","skill":"orchestration-specialist","parallel_group":"tests-dispatch"}} -->',
+          "- [ ] **T-3.9.32**: second queued pipeline.",
+          "<!-- TASK:T-3.9.33 -->",
+          '<!-- EXECUTION:{"execution":{"role":"implementation","tier":"standard","skill":"orchestration-specialist","parallel_group":"tests-dispatch"}} -->',
+          "- [ ] **T-3.9.33**: third queued pipeline.",
+        ].join("\n"),
+      );
+      const tasklistPath = resolve(root, "agents", "minion_Tasklist.md");
+
+      const client = createMockClient(root);
+      const initialPlugin = await createPlugin(client, root);
+
+      await emitEvent(initialPlugin, sessionCreatedEvent("ses-root-cap-a", root, "triage: cap A"));
+      await emitEvent(initialPlugin, sessionCreatedEvent("ses-root-cap-b", root, "triage: cap B"));
+      await emitEvent(initialPlugin, sessionCreatedEvent("ses-root-cap-c", root, "triage: cap C"));
+
+      await seedTaskTraversalContext(root, "ses-root-cap-a", {
+        taskDescription: "cap A",
+        taskRef: "T-3.9.31",
+        tasklistPath,
+      });
+      await seedTaskTraversalContext(root, "ses-root-cap-b", {
+        taskDescription: "cap B",
+        taskRef: "T-3.9.32",
+        tasklistPath,
+      });
+      await seedTaskTraversalContext(root, "ses-root-cap-c", {
+        taskDescription: "cap C",
+        taskRef: "T-3.9.33",
+        tasklistPath,
+      });
+
+      const plugin = await createPlugin(client, root);
+      await emitEvent(plugin, sessionIdleEvent("ses-root-cap-a"));
+      await emitEvent(plugin, sessionIdleEvent("ses-root-cap-b"));
+      await emitEvent(plugin, sessionIdleEvent("ses-root-cap-c"));
+
+      const queuedSnapshot = await readSnapshot<PipelineFixture>(root);
+      const queuePipelineB = queuedSnapshot.pipelines["ses-root-cap-b"];
+      const queuePipelineC = queuedSnapshot.pipelines["ses-root-cap-c"];
+      const graphBQueued = await readExecutionGraph(root, "ses-root-cap-b");
+      const graphCQueued = await readExecutionGraph(root, "ses-root-cap-c");
+
+      assert.equal(queuePipelineB.transition, "idle");
+      assert.equal(queuePipelineB.currentStage, "triage");
+      assert.equal(queuePipelineC.transition, "idle");
+      assert.equal(queuePipelineC.currentStage, "triage");
+      assert.equal(graphBQueued.filter((entry) => entry.eventType === "task_queued").length, 1);
+      assert.equal(graphCQueued.filter((entry) => entry.eventType === "task_queued").length, 1);
+      assert.equal(
+        client.prompts.some((entry) => entry.text.includes("remains queued: global parallel cap reached")),
+        true,
+      );
+
+      const pipelineAImplSessionID = queuedSnapshot.pipelines["ses-root-cap-a"]?.nextSessionID;
+      assert.equal(typeof pipelineAImplSessionID, "string");
+      await emitEvent(plugin, sessionIdleEvent(pipelineAImplSessionID as string));
+
+      await emitEvent(plugin, sessionIdleEvent("ses-root-cap-b"));
+      const resumedBSnapshot = await readSnapshot<PipelineFixture>(root);
+      const pipelineBImplSessionID = resumedBSnapshot.pipelines["ses-root-cap-b"]?.nextSessionID;
+
+      assert.equal(resumedBSnapshot.pipelines["ses-root-cap-b"]?.currentStage, "implementation");
+      assert.equal(typeof pipelineBImplSessionID, "string");
+
+      await emitEvent(plugin, sessionIdleEvent("ses-root-cap-c"));
+      const stillQueuedSnapshot = await readSnapshot<PipelineFixture>(root);
+      assert.equal(stillQueuedSnapshot.pipelines["ses-root-cap-c"]?.currentStage, "triage");
+      assert.equal(stillQueuedSnapshot.pipelines["ses-root-cap-c"]?.transition, "idle");
+
+      await emitEvent(plugin, sessionIdleEvent(pipelineBImplSessionID as string));
+      await emitEvent(plugin, sessionIdleEvent("ses-root-cap-c"));
+
+      const resumedCSnapshot = await readSnapshot<PipelineFixture>(root);
+      const pipelineCImplSessionID = resumedCSnapshot.pipelines["ses-root-cap-c"]?.nextSessionID;
+
+      assert.equal(resumedCSnapshot.pipelines["ses-root-cap-c"]?.currentStage, "implementation");
+      assert.equal(typeof pipelineCImplSessionID, "string");
+
+      const pipelineBImplOrder = extractSessionOrdinal(pipelineBImplSessionID as string);
+      const pipelineCImplOrder = extractSessionOrdinal(pipelineCImplSessionID as string);
+      assert.equal(Number.isFinite(pipelineBImplOrder), true);
+      assert.equal(Number.isFinite(pipelineCImplOrder), true);
+      assert.equal(pipelineBImplOrder < pipelineCImplOrder, true);
+
+      const graphCAfterResume = await readExecutionGraph(root, "ses-root-cap-c");
+      assert.equal(graphCAfterResume.filter((entry) => entry.eventType === "task_queued").length, 1);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("validates execution-graph schema, ordering, and duplicate suppression", async () => {
+    const root = await mkdtemp(join(tmpdir(), "orchestrator-execution-graph-"));
+
+    try {
+      await writeConfig(
+        root,
+        {
+          enabled: true,
+          mode: "auto",
+          require_approval_before_spawn: false,
+          ignore_aborted_messages: true,
+          verbose_events: false,
+        },
+        {
+          task_routing: { source: "tasklist_explicit", default_tier: "standard" },
+          agent_pools: {
+            implementation: {
+              standard: ["minion-standard"],
+            },
+            review: {
+              standard: ["reviewer"],
+            },
+          },
+        },
+      );
+      await writeOpencodeAgentConfig(root, ["planner", "minion", "minion-standard", "reviewer"]);
+      await writeSpawnWorktreeScript(root);
+      await writeTasklist(
+        root,
+        "minion_Tasklist.md",
+        [
+          "<!-- TASK:T-3.9.41 -->",
+          '<!-- EXECUTION:{"execution":{"role":"implementation","tier":"standard","skill":"orchestration-specialist","parallel_group":"tests-graph"}} -->',
+          "- [ ] **T-3.9.41**: execution graph contract validation.",
+        ].join("\n"),
+      );
+      const tasklistPath = resolve(root, "agents", "minion_Tasklist.md");
+
+      const client = createMockClient(root);
+      const initialPlugin = await createPlugin(client, root);
+
+      await emitEvent(initialPlugin, sessionCreatedEvent("ses-root-graph", root, "triage: graph contract"));
+      await seedTaskTraversalContext(root, "ses-root-graph", {
+        taskDescription: "graph contract",
+        taskRef: "T-3.9.41",
+        tasklistPath,
+      });
+
+      const plugin = await createPlugin(client, root);
+      await emitEvent(plugin, sessionIdleEvent("ses-root-graph"));
+      await emitEvent(plugin, sessionIdleEvent("ses-root-graph"));
+
+      const afterImplementationSpawn = await readSnapshot<PipelineFixture>(root);
+      const implementationSessionID = afterImplementationSpawn.pipelines["ses-root-graph"]?.nextSessionID;
+      assert.equal(typeof implementationSessionID, "string");
+
+      await emitEvent(plugin, sessionIdleEvent(implementationSessionID as string));
+
+      const afterReviewSpawn = await readSnapshot<PipelineFixture>(root);
+      const reviewSessionID = afterReviewSpawn.pipelines["ses-root-graph"]?.nextSessionID;
+      assert.equal(typeof reviewSessionID, "string");
+
+      await emitEvent(plugin, sessionIdleEvent(reviewSessionID as string));
+      await emitEvent(plugin, sessionIdleEvent(reviewSessionID as string));
+
+      const graph = await readExecutionGraph(root, "ses-root-graph");
+      assert.equal(graph.length > 0, true);
+
+      for (const entry of graph) {
+        assert.equal(typeof entry.seq, "number");
+        assert.equal(typeof entry.ts, "string");
+        assert.equal(typeof entry.rootSessionID, "string");
+        assert.equal(typeof entry.eventType, "string");
+        assert.equal(typeof entry.sessionID, "string");
+        assert.equal(typeof entry.parentSessionID, "string");
+        assert.equal(typeof entry.stage, "string");
+        assert.equal(typeof entry.taskRef, "string");
+        assert.equal(typeof entry.agentID, "string");
+        assert.equal(typeof entry.tier, "string");
+        assert.equal(typeof entry.skillID, "string");
+        assert.equal(typeof entry.parallelGroup, "string");
+        assert.equal(typeof entry.slot, "string");
+        assert.equal(typeof entry.status, "string");
+      }
+
+      for (let index = 0; index < graph.length; index += 1) {
+        assert.equal(graph[index]?.seq, index + 1);
+      }
+
+      const lifecycleIndex = (eventType: string): number => graph.findIndex((entry) => entry.eventType === eventType);
+      assert.equal(lifecycleIndex("pipeline_started") >= 0, true);
+      assert.equal(lifecycleIndex("task_queued") >= 0, true);
+      assert.equal(lifecycleIndex("spawn_requested") > lifecycleIndex("task_queued"), true);
+      assert.equal(lifecycleIndex("spawn_started") > lifecycleIndex("spawn_requested"), true);
+      assert.equal(lifecycleIndex("spawn_completed") > lifecycleIndex("spawn_started"), true);
+      assert.equal(lifecycleIndex("task_completed") > lifecycleIndex("spawn_completed"), true);
+      assert.equal(lifecycleIndex("pipeline_completed") > lifecycleIndex("task_completed"), true);
+
+      const queuedForTask = graph.filter(
+        (entry) => entry.eventType === "task_queued" && entry.taskRef.toUpperCase() === "T-3.9.41",
+      );
+      const terminalEvents = graph.filter((entry) => entry.eventType === "pipeline_completed");
+      assert.equal(queuedForTask.length, 1);
+      assert.equal(terminalEvents.length, 1);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -818,6 +1159,13 @@ function buildSession(id: string, directory: string, title: string, parentID?: s
   };
 }
 
+function extractSessionOrdinal(sessionID: string): number {
+  const pieces = sessionID.split("-");
+  const candidate = pieces.length > 0 ? pieces[pieces.length - 1] : "";
+  const parsed = Number.parseInt(candidate ?? "", 10);
+  return Number.isFinite(parsed) ? parsed : Number.NaN;
+}
+
 function sessionCreatedEvent(id: string, directory: string, title: string, parentID?: string): Event {
   return {
     type: "session.created",
@@ -980,21 +1328,100 @@ async function seedTaskTraversalContext(
   await writeFile(statePath, `${JSON.stringify(parsed, null, 2)}\n`, "utf-8");
 }
 
-async function readEventLog(root: string): Promise<Array<{ type: string }>> {
+async function readEventLog(root: string): Promise<OrchestrationEventFixture[]> {
   const filePath = resolve(root, "_bmad-output", "orchestration-events.ndjson");
 
   try {
     const raw = await readFile(filePath, "utf-8");
-    return __orchestratorTestUtils
-      .splitCommandQueueLines(raw)
-      .map((line) => {
-        try {
-          return JSON.parse(line) as { type: string };
-        } catch {
-          return null;
+    const entries: OrchestrationEventFixture[] = [];
+    for (const line of __orchestratorTestUtils.splitCommandQueueLines(raw)) {
+      try {
+        const parsed = JSON.parse(line) as Partial<OrchestrationEventFixture>;
+        if (
+          typeof parsed.type !== "string" ||
+          typeof parsed.at !== "string" ||
+          typeof parsed.rootSessionID !== "string" ||
+          typeof parsed.sessionID !== "string" ||
+          (parsed.stage !== "triage" && parsed.stage !== "implementation" && parsed.stage !== "review")
+        ) {
+          continue;
         }
-      })
-      .filter((entry): entry is { type: string } => Boolean(entry));
+
+        const entry: OrchestrationEventFixture = {
+          at: parsed.at,
+          type: parsed.type,
+          rootSessionID: parsed.rootSessionID,
+          sessionID: parsed.sessionID,
+          stage: parsed.stage,
+        };
+
+        if (parsed.details && typeof parsed.details === "object") {
+          entry.details = parsed.details as Record<string, unknown>;
+        }
+
+        entries.push(entry);
+      } catch {
+        // Ignore malformed lines in test fixtures.
+      }
+    }
+
+    return entries;
+  } catch {
+    return [];
+  }
+}
+
+async function readExecutionGraph(root: string, rootSessionID: string): Promise<ExecutionGraphEventFixture[]> {
+  const filePath = resolve(root, "_bmad-output", "execution-graph.ndjson");
+
+  try {
+    const raw = await readFile(filePath, "utf-8");
+    const entries: ExecutionGraphEventFixture[] = [];
+    for (const line of __orchestratorTestUtils.splitCommandQueueLines(raw)) {
+      try {
+        const parsed = JSON.parse(line) as Partial<ExecutionGraphEventFixture>;
+        if (
+          typeof parsed.seq !== "number" ||
+          typeof parsed.ts !== "string" ||
+          typeof parsed.rootSessionID !== "string" ||
+          typeof parsed.eventType !== "string" ||
+          typeof parsed.sessionID !== "string" ||
+          typeof parsed.parentSessionID !== "string" ||
+          (parsed.stage !== "triage" && parsed.stage !== "implementation" && parsed.stage !== "review") ||
+          typeof parsed.taskRef !== "string" ||
+          typeof parsed.agentID !== "string" ||
+          typeof parsed.tier !== "string" ||
+          typeof parsed.skillID !== "string" ||
+          typeof parsed.parallelGroup !== "string" ||
+          typeof parsed.slot !== "string" ||
+          typeof parsed.status !== "string"
+        ) {
+          continue;
+        }
+
+        entries.push({
+          seq: parsed.seq,
+          ts: parsed.ts,
+          rootSessionID: parsed.rootSessionID,
+          eventType: parsed.eventType,
+          sessionID: parsed.sessionID,
+          parentSessionID: parsed.parentSessionID,
+          stage: parsed.stage,
+          taskRef: parsed.taskRef,
+          agentID: parsed.agentID,
+          tier: parsed.tier,
+          skillID: parsed.skillID,
+          parallelGroup: parsed.parallelGroup,
+          slot: parsed.slot,
+          status: parsed.status,
+          reason: typeof parsed.reason === "string" ? parsed.reason : undefined,
+        });
+      } catch {
+        // Ignore malformed lines in test fixtures.
+      }
+    }
+
+    return entries.filter((entry) => entry.rootSessionID === rootSessionID).sort((left, right) => left.seq - right.seq);
   } catch {
     return [];
   }

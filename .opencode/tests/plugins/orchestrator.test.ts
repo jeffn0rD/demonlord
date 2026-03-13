@@ -299,6 +299,17 @@ describe("orchestrator snapshot and queue helpers", () => {
     assert.deepEqual(metadata?.dependsOn, ["T-3.7.1"]);
   });
 
+  test("returns no metadata when EXECUTION block is absent", () => {
+    const tasklist = [
+      "<!-- TASK:T-3.9.2 -->",
+      "- [ ] **T-3.9.2**: fallback behavior test.",
+    ].join("\n");
+
+    const parsed = __orchestratorTestUtils.parseTaskExecutionMetadata(tasklist, "/tmp/minion_Tasklist.md");
+
+    assert.equal(parsed.has("T-3.9.2"), false);
+  });
+
   test("parses spec-compliant JSONC including inline comments and trailing commas", () => {
     const parsed = __orchestratorTestUtils.parseJsonc([
       "{",
@@ -389,6 +400,28 @@ describe("orchestrator snapshot and queue helpers", () => {
 
     assert.equal(blocked.ok, false);
     assert.match(blocked.reason, /Blocked:/);
+    assert.match(blocked.reason, /default tier 'standard'/i);
+    assert.match(blocked.reason, /legacy 'minion'/i);
+  });
+
+  test("selects the first configured candidate from ordered tier pools", () => {
+    const pools = __orchestratorTestUtils.parseAgentPools({
+      implementation: {
+        pro: ["minion-pro-a", "minion-pro-b", "minion-pro-c"],
+      },
+    });
+
+    const resolved = __orchestratorTestUtils.resolveAgentFromPools({
+      role: "implementation",
+      requestedTier: "pro",
+      defaultTier: "standard",
+      agentPools: pools,
+      configuredAgentIDs: new Set(["minion-pro-b", "minion-pro-c", "minion"]),
+    });
+
+    assert.equal(resolved.ok, true);
+    assert.equal(resolved.agentID, "minion-pro-b");
+    assert.equal(resolved.fallbackUsed, "requested_tier");
   });
 
   test("fails closed when configured agent catalog cannot be loaded", () => {

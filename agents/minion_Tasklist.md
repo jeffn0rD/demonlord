@@ -351,30 +351,30 @@ Agents should execute one subphase at a time. To trigger implementation, the Lea
 **Goal:** Add objective pass/fail coverage for tasklist-explicit routing, constrained parallelism, and execution-graph correctness.
 **Entry criteria:** SUBPHASE-3.8 complete.
 **Exit criteria / QA checklist:**
-- [ ] Tests prove deterministic agent selection from task metadata and pool ordering.
-- [ ] Tests prove deterministic fallback behavior for missing metadata and missing tiers.
-- [ ] Tests prove dependency blocking and cap-based queueing semantics.
-- [ ] Tests validate required execution-graph fields, ordering (`seq`), and dedupe behavior.
-- [ ] Regression tests confirm existing single-agent workflows still pass unchanged.
+- [x] Tests prove deterministic agent selection from task metadata and pool ordering.
+- [x] Tests prove deterministic fallback behavior for missing metadata and missing tiers.
+- [x] Tests prove dependency blocking and cap-based queueing semantics.
+- [x] Tests validate required execution-graph fields, ordering (`seq`), and dedupe behavior.
+- [x] Regression tests confirm existing single-agent workflows still pass unchanged.
 **Proposed PR title:** test: add deterministic routing and execution-graph regression coverage
 **Proposed commit message:** test: validate explicit tier routing, constrained parallel dispatch, and legacy workflow compatibility (Refs #1)
 
 **Tasks:**
 <!-- TASK:T-3.9.1 -->
 <!-- EXECUTION:{"execution":{"role":"implementation","tier":"pro","skill":"orchestration-specialist","parallel_group":"tests-routing","depends_on":["T-3.7.5"]}} -->
-- [ ] **T-3.9.1** (Refs #1): Add orchestrator tests for role/tier resolution order from `agent_pools` and first-existing-agent selection behavior. Touch points: `.opencode/tests/plugins/orchestrator.test.ts`
+- [x] **T-3.9.1** (Refs #1): Add orchestrator tests for role/tier resolution order from `agent_pools` and first-existing-agent selection behavior. Touch points: `.opencode/tests/plugins/orchestrator.test.ts`
 <!-- TASK:T-3.9.2 -->
 <!-- EXECUTION:{"execution":{"role":"implementation","tier":"standard","skill":"orchestration-specialist","parallel_group":"tests-routing","depends_on":["T-3.9.1"]}} -->
-- [ ] **T-3.9.2** (Refs #1): Add fallback tests for missing `EXECUTION` metadata and unresolved tier pools, including warning/block reason assertions. Touch points: `.opencode/tests/plugins/orchestrator.test.ts`, `.opencode/tests/integration/orchestration-flow.test.ts`
+- [x] **T-3.9.2** (Refs #1): Add fallback tests for missing `EXECUTION` metadata and unresolved tier pools, including warning/block reason assertions. Touch points: `.opencode/tests/plugins/orchestrator.test.ts`, `.opencode/tests/integration/orchestration-flow.test.ts`
 <!-- TASK:T-3.9.3 -->
 <!-- EXECUTION:{"execution":{"role":"implementation","tier":"pro","skill":"orchestration-specialist","parallel_group":"tests-dispatch","depends_on":["T-3.8.3"]}} -->
-- [ ] **T-3.9.3** (Refs #1): Add integration tests for constrained parallel scheduler behavior (dependency blocking, queueing on cap limits, FIFO resume). Touch points: `.opencode/tests/integration/orchestration-flow.test.ts`
+- [x] **T-3.9.3** (Refs #1): Add integration tests for constrained parallel scheduler behavior (dependency blocking, queueing on cap limits, FIFO resume). Touch points: `.opencode/tests/integration/orchestration-flow.test.ts`
 <!-- TASK:T-3.9.4 -->
 <!-- EXECUTION:{"execution":{"role":"implementation","tier":"standard","skill":"orchestration-specialist","parallel_group":"tests-graph","depends_on":["T-3.8.4"]}} -->
-- [ ] **T-3.9.4** (Refs #1): Add execution-graph contract tests for required fields, monotonic `seq`, event ordering, and duplicate suppression behavior. Touch points: `.opencode/tests/plugins/orchestrator.test.ts`
+- [x] **T-3.9.4** (Refs #1): Add execution-graph contract tests for required fields, monotonic `seq`, event ordering, and duplicate suppression behavior. Touch points: `.opencode/tests/plugins/orchestrator.test.ts`
 <!-- TASK:T-3.9.5 -->
 <!-- EXECUTION:{"execution":{"role":"review","tier":"pro","skill":"spec-expert","parallel_group":"tests-docs","depends_on":["T-3.9.4"]}} -->
-- [ ] **T-3.9.5** (Refs #1): Add acceptance matrix to docs with objective pass/fail criteria for routing, fallback, parallel dispatch, execution-graph correctness, and no-regression legacy workflow behavior. Touch points: `doc/engineering_spec.md`, `agents/minion_Plan.md`
+- [x] **T-3.9.5** (Refs #1): Add acceptance matrix to docs with objective pass/fail criteria for routing, fallback, parallel dispatch, execution-graph correctness, and no-regression legacy workflow behavior. Touch points: `doc/engineering_spec.md`, `agents/minion_Plan.md`
 
 ---
 

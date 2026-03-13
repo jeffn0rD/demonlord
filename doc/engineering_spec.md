@@ -357,13 +357,13 @@ Default and backward-compatibility behavior:
 
 V1 Acceptance Criteria (pass/fail)
 
-1. Agent selection is deterministic from task metadata and `agent_pools`, with stable first-match behavior.
-2. Missing metadata follows deterministic legacy fallback and emits warning-level execution-graph events.
-3. Parallel dispatch never violates dependency rules or configured caps; blocked/queued states are explicit.
-4. Execution graph events satisfy required schema, ordering guarantees, and dedupe rules.
-5. Existing single-agent workflows (`planner`, `orchestrator`, `minion`, `reviewer`) run without regression.
-6. Spec-handoff continuation preserves the resolved execution target and does not regress to implicit default agent selection.
-7. Invalid or unreadable `.opencode/opencode.jsonc` causes deterministic blocked routing behavior (no permissive success).
+| Dimension | Pass Criteria | Fail Signal | Verification Anchor |
+| --- | --- | --- | --- |
+| Explicit routing determinism | For the same `EXECUTION` metadata + `agent_pools`, resolver always selects the same first configured agent. | Different agent selected across repeated runs with identical inputs. | `.opencode/tests/plugins/orchestrator.test.ts` (`resolveAgentFromPools` ordering tests). |
+| Legacy fallback behavior | Missing `EXECUTION` metadata falls back to legacy role/tier defaults and emits `routing_warning` with actionable reason text. | Pipeline routes silently without warning, or blocks when metadata is absent. | `.opencode/tests/plugins/orchestrator.test.ts`, `.opencode/tests/integration/orchestration-flow.test.ts`. |
+| Constrained parallel dispatch | `depends_on` unresolved => `task_blocked`; cap saturation => `task_queued`; queued tasks resume deterministically when capacity frees. | Tasks spawn while blocked by deps/caps, or queued tasks are dropped. | `.opencode/tests/integration/orchestration-flow.test.ts` (dependency and cap-queue scenarios). |
+| Execution-graph correctness | NDJSON entries include required fields, `seq` is monotonic and gap-free, lifecycle ordering is preserved, duplicate transitions are suppressed. | Missing required fields, non-monotonic sequence, out-of-order lifecycle, duplicate terminal/queue events. | `.opencode/tests/integration/orchestration-flow.test.ts` (execution-graph contract test). |
+| Legacy workflow non-regression | Existing singleton agent flow (`planner` -> `minion` -> `reviewer`) remains functional without task metadata migration. | Legacy-only pipelines fail routing, block unexpectedly, or require new metadata to proceed. | Existing orchestration integration suite + fallback coverage in `.opencode/tests/integration/orchestration-flow.test.ts`. |
 
 V1 Risks and Non-Goals
 
