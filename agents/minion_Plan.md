@@ -47,7 +47,7 @@ This document outlines the architecture and phased implementation plan for "Demo
 
 ## PHASE 3: Matchmaker, Worktree Isolation & Event Orchestration Hardening
 <!-- PHASE:3 -->
-**Goal:** Implement deterministic routing/worktree orchestration and harden the pipeline with explicit state persistence, manual-first controls, approval gates, resilient error handling, and a local shell fallback control plane.
+**Goal:** Implement deterministic routing/worktree orchestration and harden the pipeline with explicit state persistence, manual-first controls, approval gates, resilient error handling, and a local shell fallback control plane. V1 routing expansion in this phase MUST remain tasklist-explicit (no complexity inference) and backward compatible with current single-agent defaults.
 - **Included Issues:** Refs #1
 - **Dependencies:** Phase 1 completion.
 - **Risks:** 
@@ -58,6 +58,9 @@ This document outlines the architecture and phased implementation plan for "Demo
   - Current OpenCode command hooks may still route slash commands through an LLM request path. **Mitigation**: Add a deterministic shell control-plane fallback (`!pipelinectl ...`) backed by plugin-managed state and command queue files.
   - Even with pre-hook handling, control commands can still feel non-deterministic unless hook-level no-reply is available in core. **Mitigation**: On patched OpenCode builds, set `output.noReply=true` in `/pipeline` and `/approve` pre-hooks and verify zero reasoning-turn UX for control commands.
   - Worktree creation may fail due to disk space or Git permission issues. **Mitigation**: Pre-validate disk space and Git permissions before attempting worktree creation, with clear error messages and cleanup procedures.
+  - Spec-first continuation can lose resolved routing context after handoff validation. **Mitigation**: Persist immutable execution target (`taskRef`, `agentID`, `role`, `tier`, `skill`) in pipeline state and reuse it for post-handoff spawn.
+  - Title-based task-reference parsing can bypass explicit task metadata. **Mitigation**: Bind metadata lookup to persisted task traversal context (`taskRef`, `tasklistPath`) and treat titles as diagnostic only.
+  - Agent pool validation can fail open when `.opencode/opencode.jsonc` is unreadable or malformed. **Mitigation**: fail closed to explicit `task_blocked` with deterministic reason logging.
 - **Enhancements:**
   - Implement `project-context.md` generation and loading for consistent agent behavior
   - Support Party Mode agent coordination within shared worktrees
@@ -66,6 +69,9 @@ This document outlines the architecture and phased implementation plan for "Demo
   - Add local shell-based `pipelinectl` controls (`status`, `advance`, `approve`, `stop`, `off`, `on`) that operate via deterministic state sync
   - Expose session/worktree shell context through plugin-managed environment variables for fast operator workflows during active agent execution
   - Add config-driven spawn approvals with local command fallback so orchestration remains usable without Discord
+  - Add V1 role-tier pools (`planner-lite|pro`, `minion-lite|standard|pro`, `reviewer-lite|pro`) resolved from explicit task metadata
+  - Add constrained implementation parallel dispatch with deterministic queue/block semantics and config caps
+  - Add concise execution-graph NDJSON logging for spawn order and overlap visibility
 
 ## PHASE 4: Deterministic Quality Gates
 <!-- PHASE:4 -->
@@ -98,6 +104,59 @@ This document outlines the architecture and phased implementation plan for "Demo
 - Automated deployment to staging directly from agent output (deferred pending QA maturity and CI/CD integration).
 - Advanced Party Mode features like voice integration or video conferencing (deferred to focus on core text-based collaboration first).
 - Standalone one-command installer flow (copy/download one script, run once, then start OpenCode) is deferred until late-phase stabilization and validation hardening.
+- Automatic complexity scoring / heuristic tier inference is deferred (non-goal for V1 tasklist-explicit routing).
+- Dynamic autoscaling based on runtime cost/tokens is deferred (non-goal for V1 deterministic dispatch).
+
+## V1 Multi-Tier Routing Spec Addendum (Deterministic)
+
+Mandatory product decisions for implementation phase:
+
+- Complexity routing source MUST be explicit tasklist metadata.
+- Orchestrator MUST NOT infer complexity/tier in V1.
+- Manual-first orchestration (`mode=manual`) MUST remain fully compatible.
+- Existing single-agent defaults (`planner`, `orchestrator`, `minion`, `reviewer`) MUST remain valid fallback targets.
+- Metadata lookup MUST use persisted task traversal context (`taskRef`, `tasklistPath`) and MUST NOT rely on session-title parsing as an authoritative source.
+- Spec-first handoff continuation MUST preserve and reuse the pre-resolved execution target (role/tier/agent/task reference).
+- If configured agent IDs cannot be loaded from `.opencode/opencode.jsonc`, resolver behavior MUST fail closed with explicit blocked reason.
+
+Required V1 capability set:
+
+- Agent tiering model with deterministic role+tier to concrete agent resolution from config pools.
+- Tasklist routing metadata contract (`execution.role|tier|skill|parallel_group|depends_on`).
+- Constrained parallel dispatch honoring dependencies and configured global/per-role/per-tier caps.
+- Concise machine-readable execution graph (`_bmad-output/execution-graph.ndjson`) with strict ordering/dedupe guarantees.
+
+Primary risks and mitigations:
+
+- Risk: malformed/missing task metadata causes inconsistent routing. Mitigation: strict metadata parse + deterministic legacy fallback + warning events.
+- Risk: cap misconfiguration causes throughput stalls. Mitigation: explicit queued/blocked reasons and `/pipeline status` execution-order visibility.
+- Risk: tier pool drift between `demonlord.config.json` and `.opencode/opencode.jsonc`. Mitigation: deterministic first-match resolution and explicit `task_blocked` when unresolved.
+- Risk: routing context drift between task traversal and handoff continuation can silently change target agent. Mitigation: persist immutable execution target and assert continuity in integration tests.
+- Risk: unreadable JSONC config can permit invalid pool IDs via permissive checks. Mitigation: fail closed with deterministic block events and coverage for malformed-config paths.
+
+## Implementation Readiness Checklist (Code Phase File Map)
+
+Core runtime files likely to change:
+
+- `.opencode/plugins/orchestrator.ts`
+- `.opencode/plugins/communication.ts`
+- `.opencode/tools/matchmaker.ts`
+- `agents/tools/pipelinectl.sh`
+- `demonlord.config.json`
+- `.opencode/opencode.jsonc`
+
+Primary test files likely to change:
+
+- `.opencode/tests/plugins/orchestrator.test.ts`
+- `.opencode/tests/integration/orchestration-flow.test.ts`
+- `.opencode/tests/tools/matchmaker.test.ts`
+
+Documentation files likely to change during implementation hardening:
+
+- `doc/engineering_spec.md`
+- `doc/routing_policy.md`
+- `README.md`
+- `USAGE.md`
 
 ## Open Questions
 - Should the `voy-search` vector database file be committed to the repository, or strictly generated on-the-fly during a bootstrap step?

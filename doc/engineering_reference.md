@@ -18,10 +18,13 @@ The Event-Driven Pipeline The software factory operates through event-driven orc
 
 1. Triage: A Planner Agent analyzes GitHub issues, uses built-in tools like glob and grep to identify target code areas, and generates a .md plan file.
 2. Implementation: Specialized minions execute tasks within their assigned worktrees, spawned via the OpenCode SDK (`client.session.create()`). In V1, role/tier routing is sourced from explicit tasklist metadata (`execution.role`, `execution.tier`) rather than orchestrator complexity inference.
-   - Parser contract: task metadata is read from adjacent markdown comments (`<!-- TASK:... -->` then `<!-- EXECUTION:{...} -->`) in `*_Tasklist.md` files.
+   - Parser contract: task metadata is read from adjacent markdown comments (`<!-- TASK:... -->` then `<!-- EXECUTION:{...} -->`) in `*_Tasklist.md` files using persisted task traversal context (`taskRef`, `tasklistPath`) as source of truth.
+   - Title parsing policy: session/request titles are diagnostic only and are not authoritative routing lookup keys.
    - Missing metadata behavior: emit warning-level routing event and fall back to legacy defaults (`implementation`, `task_routing.default_tier`, `minion`).
    - Unresolvable pools: transition is deterministically blocked with explicit reason logging.
+   - Config read failure behavior: if `.opencode/opencode.jsonc` cannot be parsed/read, agent resolution fails closed and emits `task_blocked` reason context.
    - Spec-first enforcement: ambiguous or requirement-heavy requests route through `spec-expert` first, and coding sessions only start after a valid spec handoff marker is written.
+   - Spec-handoff continuity: once handoff validates, orchestrator resumes using the pre-resolved execution target (`taskRef`, `role`, `tier`, `agentID`, `skill`) for implementation spawn.
 3. Deterministic Gates (The "Black Box"): This is a critical quality intercept. Agents are stripped of native git commands and must call a TypeScript custom tool, submit_implementation(). This tool programmatically runs lints and tests; if they fail, the function intercepts the stack trace and feeds it back to the agent for auto-correction.
 4. Review: Upon `session.idle` event, a plugin triggers the Reviewer Agent to analyze the output before posting a Discord notification for human-in-the-loop approval via Slash Commands (e.g., /approve, /reject).
 
@@ -32,6 +35,7 @@ V1 role/tier families and compatibility:
 * review: `reviewer-lite` | `reviewer-pro`
 * backward compatibility: if pools or tier IDs are unavailable, deterministic fallback resolves to `planner`, `minion`, `reviewer`.
 * fallback chain: requested tier -> `task_routing.default_tier` -> legacy singleton -> blocked state when no configured agent exists.
+* fail-closed invariant: unreadable/invalid configured-agent source (`.opencode/opencode.jsonc`) must block deterministically rather than treating all pool IDs as valid.
 
 Orchestration Modes and Controls
 

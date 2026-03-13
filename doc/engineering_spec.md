@@ -92,6 +92,7 @@ The Three-Stage Lifecycle
 2. Orchestration & Spawning (/implement): The Orchestrator invokes spawn_worktree.sh, creating isolated sibling directories for parallel execution, and uses the SDK (`client.session.create()`) to launch the matching Minion in the new worktree.
    - Spec-first branch (ambiguity policy): when requirements are unclear or documentation-heavy, the orchestrator routes first to `spec-expert` and requires a validated handoff artifact before spawning a coding implementation session.
    - Handoff artifact contract: `_bmad-output/spec-handoff-<taskID>.md` must include `<!-- DEMONLORD_SPEC_HANDOFF_READY -->`, `## Scope`, and `## Constraints`.
+   - Handoff continuity contract: after marker validation, implementation spawn MUST reuse the pre-resolved execution target (`taskRef`, `role`, `tier`, `agentID`, `skill`) rather than resetting to implicit defaults.
 3. Review & Handoff: Upon completion, a plugin listening to `session.idle` triggers the Reviewer agent and posts a Discord notification for human-in-the-loop approval.
 
 Operational Modes and Manual Controls
@@ -195,14 +196,16 @@ V1 role families and tiers:
 
 Deterministic selection rules:
 
-1. The orchestrator MUST read `execution.role` and `execution.tier` from task metadata.
-2. It MUST resolve candidates from `orchestration.agent_pools[role][tier]` in listed order.
-3. It MUST select the first candidate that exists under `.opencode/opencode.jsonc.agent`.
-4. If no candidate exists, it MUST apply deterministic fallback in this order:
+1. The orchestrator MUST identify the selected task from persisted task traversal context (`taskRef`, `tasklistPath`); session-title parsing is diagnostic-only.
+2. It MUST read `execution.role` and `execution.tier` from that task's adjacent metadata block.
+3. It MUST resolve candidates from `orchestration.agent_pools[role][tier]` in listed order.
+4. It MUST select the first candidate that exists under `.opencode/opencode.jsonc.agent`.
+5. If `.opencode/opencode.jsonc` cannot be read or parsed, agent resolution MUST fail closed (`task_blocked`) with explicit reason logging.
+6. If no candidate exists, it MUST apply deterministic fallback in this order:
    a) `orchestration.task_routing.default_tier` for the same role;
    b) legacy singleton ID (`planner` | `minion` | `reviewer`) for that role;
    c) hard block with `task_blocked` if still unresolved.
-5. Every fallback decision MUST be logged in the execution graph with `reason`.
+7. Every fallback decision MUST be logged in the execution graph with `reason`.
 
 Explicit Tasklist Routing Contract (V1)
 
@@ -231,6 +234,7 @@ Missing metadata behavior:
 
 * If `EXECUTION` metadata is absent, the orchestrator MUST preserve legacy behavior (`role=implementation`, `tier=orchestration.task_routing.default_tier`, agent fallback to `minion`) and emit a warning-level log event.
 * Missing metadata MUST NOT fail existing single-agent pipelines.
+* Missing metadata warnings MUST be evaluated against the persisted selected task context, not inferred from session/request title text.
 
 Constrained Parallel Execution Policy
 
@@ -355,6 +359,8 @@ V1 Acceptance Criteria (pass/fail)
 3. Parallel dispatch never violates dependency rules or configured caps; blocked/queued states are explicit.
 4. Execution graph events satisfy required schema, ordering guarantees, and dedupe rules.
 5. Existing single-agent workflows (`planner`, `orchestrator`, `minion`, `reviewer`) run without regression.
+6. Spec-handoff continuation preserves the resolved execution target and does not regress to implicit default agent selection.
+7. Invalid or unreadable `.opencode/opencode.jsonc` causes deterministic blocked routing behavior (no permissive success).
 
 V1 Risks and Non-Goals
 

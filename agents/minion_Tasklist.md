@@ -271,13 +271,15 @@ Agents should execute one subphase at a time. To trigger implementation, the Lea
 **Goal:** Enforce tasklist-explicit role/tier routing and deterministic fallback while preserving legacy single-agent behavior.
 **Entry criteria:** SUBPHASE-3.6 complete.
 **Exit criteria / QA checklist:**
-- [x] Orchestrator reads per-task `EXECUTION` metadata and uses it as the primary routing source.
+- [ ] Orchestrator reads per-task `EXECUTION` metadata and uses it as the primary routing source.
 - [x] No V1 complexity inference exists in orchestration routing logic.
-- [x] Role/tier to concrete agent selection is deterministic from config-defined pools.
+- [ ] Role/tier to concrete agent selection is deterministic from config-defined pools.
 - [x] Missing metadata triggers warning-level event and deterministic legacy fallback.
-- [x] Missing/unresolvable tier pool produces explicit blocked state and reason logging.
-**Proposed PR title:** feat: add explicit tasklist routing and deterministic tiered agent selection
-**Proposed commit message:** feat: enforce tasklist-explicit role-tier routing with deterministic fallback and legacy compatibility (Refs #1)
+- [ ] Missing/unresolvable tier pool produces explicit blocked state and reason logging.
+- [ ] Spec-handoff continuation preserves the resolved execution target (`agentID`, `role`, `tier`, `taskRef`) for follow-up implementation spawn.
+- [ ] Integration tests cover metadata routing, missing-metadata warning fallback, unresolved pool blocking, and spec-handoff target preservation.
+**Proposed PR title:** fix: harden explicit routing and execution target continuity
+**Proposed commit message:** fix: preserve execution targets and fail closed on explicit tier routing errors (Refs #1)
 
 **Tasks:**
 <!-- TASK:T-3.7.1 -->
@@ -298,11 +300,23 @@ Agents should execute one subphase at a time. To trigger implementation, the Lea
 <!-- TASK:T-3.7.6 -->
 <!-- EXECUTION:{"execution":{"role":"review","tier":"pro","skill":"spec-expert","parallel_group":"routing-docs","depends_on":["T-3.7.5"]}} -->
 - [x] **T-3.7.6** (Refs #1): Update orchestration docs to lock V1 behavior: tasklist-explicit routing source, no complexity inference, deterministic fallback, and legacy compatibility requirements. Touch points: `doc/engineering_spec.md`, `doc/routing_policy.md`, `doc/engineering_reference.md`
+<!-- TASK:T-3.7.7 -->
+<!-- EXECUTION:{"execution":{"role":"implementation","tier":"pro","skill":"orchestration-specialist","parallel_group":"routing-remediation","depends_on":["T-3.7.3"]}} -->
+- [ ] **T-3.7.7** (Refs #1, maps `R-SUBPHASE-3.7.1`): Preserve resolved execution target across spec handoff so post-handoff implementation spawn reuses the same `agentID`, `role`, `tier`, and `taskRef`. Touch points: `.opencode/plugins/orchestrator.ts`, `.opencode/tests/integration/orchestration-flow.test.ts`
+<!-- TASK:T-3.7.8 -->
+<!-- EXECUTION:{"execution":{"role":"implementation","tier":"pro","skill":"orchestration-specialist","parallel_group":"routing-remediation","depends_on":["T-3.7.1"]}} -->
+- [ ] **T-3.7.8** (Refs #1, maps `R-SUBPHASE-3.7.2`): Bind `EXECUTION` metadata lookup to persisted task traversal context (`taskRef`, `tasklistPath`) instead of session title parsing heuristics. Touch points: `.opencode/plugins/orchestrator.ts`, `doc/routing_policy.md`, `.opencode/tests/integration/orchestration-flow.test.ts`
+<!-- TASK:T-3.7.9 -->
+<!-- EXECUTION:{"execution":{"role":"implementation","tier":"standard","skill":"orchestration-specialist","parallel_group":"routing-remediation","depends_on":["T-3.7.2"]}} -->
+- [ ] **T-3.7.9** (Refs #1, maps `R-SUBPHASE-3.7.3`): Make configured-agent validation fail closed when `.opencode/opencode.jsonc` cannot be parsed/read, emitting explicit blocked reasons instead of permissive resolution. Touch points: `.opencode/plugins/orchestrator.ts`, `.opencode/tests/plugins/orchestrator.test.ts`, `doc/engineering_spec.md`
+<!-- TASK:T-3.7.10 -->
+<!-- EXECUTION:{"execution":{"role":"implementation","tier":"pro","skill":"orchestration-specialist","parallel_group":"routing-remediation-tests","depends_on":["T-3.7.7","T-3.7.8","T-3.7.9"]}} -->
+- [ ] **T-3.7.10** (Refs #1, maps `R-SUBPHASE-3.7.4`): Add runtime regression coverage for explicit metadata routing, warning fallback, unresolved-pool blocking, and spec-handoff target continuity. Touch points: `.opencode/tests/plugins/orchestrator.test.ts`, `.opencode/tests/integration/orchestration-flow.test.ts`
 
 ### SUBPHASE-3.8: Constrained Parallel Dispatch & Execution Graph Contract (V1)
 <!-- SUBPHASE:3.8 -->
 **Goal:** Add deterministic queue/dispatch controls with dependency-aware parallelism and concise execution-graph logging.
-**Entry criteria:** SUBPHASE-3.7 complete.
+**Entry criteria:** SUBPHASE-3.7 complete, including remediation tasks `T-3.7.7` through `T-3.7.10`.
 **Exit criteria / QA checklist:**
 - [ ] Scheduler enforces global, per-role, and per-tier parallelism caps deterministically.
 - [ ] Dependency gating uses `execution.depends_on` and emits explicit blocked reasons.
@@ -314,7 +328,7 @@ Agents should execute one subphase at a time. To trigger implementation, the Lea
 
 **Tasks:**
 <!-- TASK:T-3.8.1 -->
-<!-- EXECUTION:{"execution":{"role":"implementation","tier":"pro","skill":"orchestration-specialist","parallel_group":"dispatch-core","depends_on":["T-3.7.3"]}} -->
+<!-- EXECUTION:{"execution":{"role":"implementation","tier":"pro","skill":"orchestration-specialist","parallel_group":"dispatch-core","depends_on":["T-3.7.10"]}} -->
 - [ ] **T-3.8.1** (Refs #1): Implement deterministic scheduler ordering and dispatch lifecycle (`task_queued`, `spawn_requested`, `spawn_started`, `spawn_completed`, `task_completed`) with FIFO semantics per stage/group. Touch points: `.opencode/plugins/orchestrator.ts`
 <!-- TASK:T-3.8.2 -->
 <!-- EXECUTION:{"execution":{"role":"implementation","tier":"standard","skill":"orchestration-specialist","parallel_group":"dispatch-core","depends_on":["T-3.8.1"]}} -->

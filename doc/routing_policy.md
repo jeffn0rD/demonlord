@@ -22,7 +22,9 @@ This document defines deterministic routing behavior for Demonlord so agent sess
 - The orchestrator MUST NOT infer complexity/tier in V1.
 - Each runnable task SHOULD define deterministic `EXECUTION` metadata adjacent to the task marker.
 - Parser contract: orchestrator scans `<!-- TASK:... -->` markers and consumes the nearest following `<!-- EXECUTION:{...} -->` block for that task reference.
-- Task reference extraction is deterministic (`T-<phase>.<subphase>.<task>`); if no reference is present in the request/session context, orchestrator emits a warning and falls back.
+- Task identity source MUST be persisted traversal context (`taskRef`, `tasklistPath`) captured during tasklist selection.
+- Session/request title parsing is diagnostic only and MUST NOT be an authoritative metadata lookup source.
+- If traversal context is missing, orchestrator emits a warning and uses deterministic legacy fallback.
 
 Canonical metadata shape:
 
@@ -50,6 +52,7 @@ Missing metadata fallback (deterministic):
 
 - Candidate IDs MUST be read from `orchestration.agent_pools[role][tier]` in listed order.
 - Runtime MUST select the first ID present in `.opencode/opencode.jsonc.agent`.
+- If `.opencode/opencode.jsonc` cannot be parsed/read, runtime MUST fail closed to `task_blocked` with explicit reason logging.
 - If unresolved, fallback order MUST be:
   1) same role + `orchestration.task_routing.default_tier`
   2) legacy singleton (`planner` | `minion` | `reviewer`)
@@ -83,7 +86,7 @@ Missing metadata fallback (deterministic):
   - `## Scope`
   - `## Constraints`
 - If marker validation fails, pipeline remains blocked at implementation stage and the spec session is prompted to repair the artifact.
-- After marker validation succeeds, orchestrator spawns the follow-up implementation session using the precomputed non-spec target skill.
+- After marker validation succeeds, orchestrator spawns the follow-up implementation session using the precomputed non-spec target and preserved execution target (`taskRef`, `role`, `tier`, `agentID`, `skill`).
 
 ## Plan/Tasklist Discovery
 
