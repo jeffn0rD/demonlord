@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { mkdir, mkdtemp, rm, writeFile } from "fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "fs/promises";
 import { tmpdir } from "os";
 import { join, resolve } from "path";
 import CommunicationPlugin from "../../plugins/communication.ts";
@@ -63,7 +63,7 @@ describe("communication plugin deterministic network-free behavior", () => {
           {
             command: "approve",
             sessionID: "ses-root",
-            arguments: "",
+            arguments: "ses-root",
           } as Parameters<typeof hook>[0],
           output as Parameters<typeof hook>[1],
         );
@@ -105,7 +105,7 @@ describe("communication plugin deterministic network-free behavior", () => {
         {
           command: "approve",
           sessionID: "ses-dup",
-          arguments: "",
+          arguments: "ses-dup",
         } as Parameters<typeof commandBefore>[0],
         { parts: [] } as Parameters<typeof commandBefore>[1],
       );
@@ -116,6 +116,7 @@ describe("communication plugin deterministic network-free behavior", () => {
           properties: {
             name: "approve",
             sessionID: "ses-dup",
+            session_id: "ses-dup",
             arguments: "",
           },
         } as never,
@@ -531,8 +532,8 @@ describe("communication session targeting unit tests", () => {
       await commandBefore(
         {
           command: "approve",
-          sessionID: "ses-b",
-          arguments: "",
+          sessionID: "ses-caller",
+          arguments: "ses-b",
         } as Parameters<typeof commandBefore>[0],
         output as Parameters<typeof commandBefore>[1],
       );
@@ -574,8 +575,8 @@ describe("communication session targeting unit tests", () => {
       await commandBefore(
         {
           command: "approve",
-          sessionID: "ses-invalid",
-          arguments: "",
+          sessionID: "ses-caller",
+          arguments: "ses-invalid",
         } as Parameters<typeof commandBefore>[0],
         output as Parameters<typeof commandBefore>[1],
       );
@@ -618,7 +619,7 @@ describe("communication session targeting unit tests", () => {
       await commandBefore(
         {
           command: "approve",
-          sessionID: "",
+          sessionID: "ses-caller",
           arguments: "",
         } as Parameters<typeof commandBefore>[0],
         output as Parameters<typeof commandBefore>[1],
@@ -692,6 +693,149 @@ describe("communication session targeting unit tests", () => {
       );
 
       assert.equal(client.commands.length, 1);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("routes command.executed managed command using explicit envelope session_id", async () => {
+    const root = await mkdtemp(join(tmpdir(), "communication-session-explicit-event-"));
+
+    try {
+      await writeConfig(root, {
+        orchestration: {
+          enabled: true,
+          mode: "manual",
+        },
+      });
+
+      await writeMultiSessionOrchestrationState(root, ["ses-a", "ses-b"]);
+
+      const client = createMockClient();
+      const plugin = await createPlugin(client, root);
+      const eventHook = plugin.event;
+      assert.ok(eventHook, "communication plugin must expose event hook");
+
+      await eventHook?.({
+        event: {
+          type: "command.executed",
+          properties: {
+            name: "approve",
+            sessionID: "ses-caller",
+            session_id: "ses-b",
+            arguments: "",
+          },
+        } as never,
+      });
+
+      assert.equal(client.commands.length, 1);
+      assert.equal(client.commands[0]?.sessionID, "ses-b");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("returns deterministic migration guidance for legacy command on event ingress", async () => {
+    const root = await mkdtemp(join(tmpdir(), "communication-legacy-guidance-event-"));
+
+    try {
+      await writeConfig(root, {
+        orchestration: {
+          enabled: true,
+          mode: "manual",
+        },
+      });
+
+      const client = createMockClient();
+      const plugin = await createPlugin(client, root);
+      const eventHook = plugin.event;
+      assert.ok(eventHook, "communication plugin must expose event hook");
+
+      await eventHook?.({
+        event: {
+          type: "command.executed",
+          properties: {
+            name: "handoff",
+            sessionID: "ses-legacy",
+            arguments: "reviewer",
+          },
+        } as never,
+      });
+
+      assert.equal(client.commands.length, 0);
+      assert.equal(client.prompts.length, 1);
+      assert.match(client.prompts[0]?.text ?? "", /no longer supported/i);
+      assert.match(client.prompts[0]?.text ?? "", /\/focus/i);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("routes Party Mode command family with deterministic argument mapping", async () => {
+    const root = await mkdtemp(join(tmpdir(), "communication-party-command-routing-"));
+
+    try {
+      await writeConfig(root, {
+        orchestration: {
+          enabled: true,
+          mode: "manual",
+        },
+      });
+
+      await writeMultiSessionOrchestrationState(root, ["ses-party"]);
+
+      const client = createMockClient();
+      const plugin = await createPlugin(client, root);
+      const commandBefore = plugin["command.execute.before"];
+      assert.ok(commandBefore, "communication plugin must expose command.execute.before hook");
+
+      const output: { parts: unknown[]; noReply?: boolean } = {
+        parts: [{ type: "text", text: "placeholder" }],
+      };
+
+      const invoke = async (command: string, args: string): Promise<void> => {
+        await commandBefore(
+          {
+            command,
+            sessionID: "ses-caller",
+            arguments: args,
+          } as Parameters<typeof commandBefore>[0],
+          output as Parameters<typeof commandBefore>[1],
+        );
+      };
+
+      await invoke("party", "--session-id ses-party planner reviewer");
+      await invoke("continue", "--session-id ses-party resume-round");
+      await invoke("halt", "--session-id ses-party pause-for-review");
+      await invoke("focus", "--session-id ses-party reviewer audit-error-path");
+      await invoke("add-agent", "--session-id ses-party demonlord-specialist");
+      await invoke("export", "--session-id ses-party _bmad-output/party-mode/ses-party-custom.md");
+
+      assert.equal(client.commands.length, 0);
+      assert.equal(client.prompts.length, 6);
+
+      const statePath = resolve(root, ".opencode", ".party-mode", "ses-party.json");
+      const state = JSON.parse(await readFile(statePath, "utf-8")) as {
+        round: number;
+        halted: boolean;
+        focusedAgent: string | null;
+        agents: string[];
+        transcript: string[];
+      };
+
+      assert.equal(state.round, 2);
+      assert.equal(state.halted, true);
+      assert.equal(state.focusedAgent, "reviewer");
+      assert.ok(state.agents.includes("planner"));
+      assert.ok(state.agents.includes("reviewer"));
+      assert.ok(state.agents.includes("orchestrator"));
+      assert.ok(state.agents.includes("demonlord-specialist"));
+      assert.match(state.transcript.join("\n"), /resume-round/i);
+      assert.match(state.transcript.join("\n"), /pause-for-review/i);
+
+      const exportPath = resolve(root, "_bmad-output", "party-mode", "ses-party-custom.md");
+      const exportContent = await readFile(exportPath, "utf-8");
+      assert.match(exportContent, /Session ID: ses-party/);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -1056,7 +1200,7 @@ describe("communication session targeting unit tests", () => {
         {
           command: "approve",
           sessionID: "ses-inbound-retry",
-          arguments: "",
+          arguments: "ses-inbound-retry",
         } as Parameters<typeof commandBefore>[0],
         output as Parameters<typeof commandBefore>[1],
       );

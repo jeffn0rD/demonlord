@@ -490,8 +490,8 @@ describe("communication session targeting integration", () => {
       await commandBefore(
         {
           command: "approve",
-          sessionID: "ses-b",
-          arguments: "",
+          sessionID: "ses-caller",
+          arguments: "ses-b",
         } as Parameters<typeof commandBefore>[0],
         output as Parameters<typeof commandBefore>[1],
       );
@@ -531,8 +531,8 @@ describe("communication session targeting integration", () => {
       await commandBefore(
         {
           command: "approve",
-          sessionID: "ses-invalid",
-          arguments: "",
+          sessionID: "ses-caller",
+          arguments: "ses-invalid",
         } as Parameters<typeof commandBefore>[0],
         output as Parameters<typeof commandBefore>[1],
       );
@@ -581,8 +581,7 @@ describe("communication session targeting integration", () => {
 
       assert.equal(output.noReply, true);
       assert.deepEqual(output.parts, []);
-      assert.equal(client.prompts.length, 1);
-      assert.match(client.prompts[0]?.text ?? "", /Multiple active sessions found/i);
+      assert.equal(client.commands.length, 0);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -613,8 +612,8 @@ describe("communication session targeting integration", () => {
       await commandBefore(
         {
           command: "approve",
-          sessionID: "ses-any",
-          arguments: "",
+          sessionID: "ses-caller",
+          arguments: "ses-any",
         } as Parameters<typeof commandBefore>[0],
         output as Parameters<typeof commandBefore>[1],
       );
@@ -796,6 +795,56 @@ describe("communication session targeting integration", () => {
       assert.equal(client.commands.length, 0);
       assert.equal(client.prompts.length, 1);
       assert.match(client.prompts[0]?.text ?? "", /command denied/i);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("applies session targeting parity on command.executed ingress", async () => {
+    const root = await mkdtemp(join(tmpdir(), "communication-session-target-event-parity-int-"));
+
+    try {
+      await writeConfig(root);
+      await writeMultiSessionOrchestrationState(root, ["ses-a", "ses-b"]);
+
+      const client = createMockClient();
+      const plugin = await CommunicationPlugin({
+        client: client as unknown as Parameters<typeof CommunicationPlugin>[0]["client"],
+        worktree: root,
+      } as Parameters<typeof CommunicationPlugin>[0]);
+
+      const eventHook = plugin.event;
+      assert.ok(eventHook, "communication plugin must expose event hook");
+
+      await eventHook?.({
+        event: {
+          type: "command.executed",
+          properties: {
+            name: "approve",
+            sessionID: "ses-caller",
+            arguments: "",
+          },
+        } as never,
+      });
+
+      assert.equal(client.commands.length, 0);
+      assert.equal(client.prompts.length, 1);
+      assert.match(client.prompts[0]?.text ?? "", /Multiple active sessions found/i);
+
+      await eventHook?.({
+        event: {
+          type: "command.executed",
+          properties: {
+            name: "approve",
+            sessionID: "ses-caller",
+            session_id: "ses-b",
+            arguments: "",
+          },
+        } as never,
+      });
+
+      assert.equal(client.commands.length, 1);
+      assert.equal(client.commands[0]?.sessionID, "ses-b");
     } finally {
       await rm(root, { recursive: true, force: true });
     }

@@ -97,6 +97,12 @@ interface ApproveCommandInput {
   interactionToken?: string;
 }
 
+interface ParsedInboundCommandArguments {
+  arguments: string;
+  interactionToken?: string;
+  explicitSessionID?: string;
+}
+
 type PartyCommandName = "party" | "continue" | "halt" | "focus" | "add-agent" | "export";
 
 type LegacyCommandName = "reject" | "park" | "handoff";
@@ -138,6 +144,7 @@ const INBOUND_DEDUPE_TTL_MS = 10 * 60 * 1000;
 const RETRY_MAX_ATTEMPTS = 3;
 const RETRY_BACKOFF_MS = [0, 250, 1000] as const;
 const MASKED_SECRET = "[REDACTED]";
+const SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
 
 const partyCommandActions: Record<PartyCommandName, PartyModeAction> = {
   party: "start",
@@ -162,102 +169,18 @@ const CommunicationPlugin: Plugin = async ({ client, worktree }) => {
 
   return {
     "command.execute.before": async (input, output) => {
-      const commandName = normalizeCommandName(input.command);
-
-      if (commandName in LEGACY_COMMANDS) {
-        output.parts = [];
-        await sendFeedback(input.sessionID, `Command '${commandName}' is no longer supported. ${LEGACY_COMMANDS[commandName as LegacyCommandName]}`);
-        setNoReplyIfSupported(output);
-        return;
-      }
-
-      if (!isManagedCommand(commandName)) {
-        return;
-      }
-
-      const parsed = parseInboundCommandArguments(input.arguments, readInteractionTokenFromSource(input));
-      const authContext = buildInboundAuthorizationContext(input, parsed.interactionToken);
-      const authz = authorizeInboundCommand(settings.discord.authorization, authContext);
-      if (!authz.ok) {
-        output.parts = [];
-        await sendFeedback(input.sessionID, authz.reason);
-        setNoReplyIfSupported(output);
-        return;
-      }
-
-      const sessionResolution = await resolveSessionTarget(worktree, input.sessionID);
-      if (!sessionResolution.ok) {
-        output.parts = [];
-        await sendFeedback(input.sessionID, `Session resolution failed: ${sessionResolution.reason}`);
-        setNoReplyIfSupported(output);
-        return;
-      }
-
-      const targetSessionID = sessionResolution.sessionID!;
-      const commandInput: ApproveCommandInput = {
-        name: commandName,
-        sessionID: targetSessionID,
-        arguments: parsed.arguments,
-        interactionToken: parsed.interactionToken,
-      };
-
-      if (!rememberInboundCommand(inboundDedupes, commandInput)) {
-        output.parts = [];
-        setNoReplyIfSupported(output);
-        return;
-      }
-
-      rememberPreHandledCommand(preHandledCommands, commandInput);
-
       output.parts = [];
-      const result = await executeInboundCommand(commandInput);
-      if (!result.ok) {
-        await sendFeedback(targetSessionID, result.error);
-      } else if (result.feedback) {
-        await sendFeedback(targetSessionID, result.feedback);
+      const handled = await handleInboundCommand(input, "prehook");
+      if (!handled) {
+        return;
       }
-
       setNoReplyIfSupported(output);
     },
     event: async ({ event }: { event: Event }) => {
       if (event.type === "command.executed") {
         const properties = readRecord(event, "properties");
-        const commandName = normalizeCommandName(readString(properties, "name"));
-        if (isManagedCommand(commandName)) {
-          const parsed = parseInboundCommandArguments(
-            readString(properties, "arguments"),
-            readInteractionTokenFromSource(properties),
-          );
-          const authContext = buildInboundAuthorizationContext(properties, parsed.interactionToken);
-          const authz = authorizeInboundCommand(settings.discord.authorization, authContext);
-          if (!authz.ok) {
-            const inputSessionID = readString(properties, "sessionID");
-            if (inputSessionID) {
-              await sendFeedback(inputSessionID, authz.reason);
-            }
-            return;
-          }
-
-          const commandInput: ApproveCommandInput = {
-            name: commandName,
-            sessionID: readString(properties, "sessionID"),
-            arguments: parsed.arguments,
-            interactionToken: parsed.interactionToken,
-          };
-
-          if (!wasPreHandledCommand(preHandledCommands, commandInput)) {
-            if (!rememberInboundCommand(inboundDedupes, commandInput)) {
-              return;
-            }
-
-            const result = await executeInboundCommand(commandInput);
-            if (!result.ok) {
-              await sendFeedback(commandInput.sessionID, result.error);
-            } else if (result.feedback) {
-              await sendFeedback(commandInput.sessionID, result.feedback);
-            }
-          }
-
+        const handled = await handleInboundCommand(properties, "event");
+        if (handled) {
           return;
         }
       }
@@ -377,6 +300,79 @@ const CommunicationPlugin: Plugin = async ({ client, worktree }) => {
       },
       query: { directory: worktree },
     });
+  }
+
+  async function handleInboundCommand(source: unknown, ingress: "prehook" | "event"): Promise<boolean> {
+    const commandName = normalizeCommandName(readCommandName(source));
+
+    if (commandName in LEGACY_COMMANDS) {
+      const feedbackSessionID = readFeedbackSessionID(source);
+      if (feedbackSessionID) {
+        await sendFeedback(
+          feedbackSessionID,
+          `Command '${commandName}' is no longer supported. ${LEGACY_COMMANDS[commandName as LegacyCommandName]}`,
+        );
+      }
+      return true;
+    }
+
+    if (!isManagedCommand(commandName)) {
+      return false;
+    }
+
+    const parsed = parseInboundCommandArguments(
+      commandName,
+      readCommandArguments(source),
+      readInteractionTokenFromSource(source),
+      source,
+    );
+    const authContext = buildInboundAuthorizationContext(source, parsed.interactionToken);
+    const authz = authorizeInboundCommand(settings.discord.authorization, authContext);
+    if (!authz.ok) {
+      const feedbackSessionID = readFeedbackSessionID(source);
+      if (feedbackSessionID) {
+        await sendFeedback(feedbackSessionID, authz.reason);
+      }
+      return true;
+    }
+
+    const sessionResolution = await resolveSessionTarget(worktree, parsed.explicitSessionID);
+    if (!sessionResolution.ok) {
+      const feedbackSessionID = readFeedbackSessionID(source);
+      if (feedbackSessionID) {
+        await sendFeedback(feedbackSessionID, `Session resolution failed: ${sessionResolution.reason}`);
+      }
+      return true;
+    }
+
+    const targetSessionID = sessionResolution.sessionID!;
+    const commandInput: ApproveCommandInput = {
+      name: commandName,
+      sessionID: targetSessionID,
+      arguments: parsed.arguments,
+      interactionToken: parsed.interactionToken,
+    };
+
+    if (ingress === "event" && wasPreHandledCommand(preHandledCommands, commandInput)) {
+      return true;
+    }
+
+    if (!rememberInboundCommand(inboundDedupes, commandInput)) {
+      return true;
+    }
+
+    if (ingress === "prehook") {
+      rememberPreHandledCommand(preHandledCommands, commandInput);
+    }
+
+    const result = await executeInboundCommand(commandInput);
+    if (!result.ok) {
+      await sendFeedback(targetSessionID, result.error);
+    } else if (result.feedback) {
+      await sendFeedback(targetSessionID, result.feedback);
+    }
+
+    return true;
   }
 
   async function sendOutboundNotification(notification: OutboundNotification): Promise<DiscordTransportResult> {
@@ -507,9 +503,12 @@ function rememberInboundCommand(cache: Map<string, number>, commandInput: Approv
 }
 
 function parseInboundCommandArguments(
+  commandName: string,
   rawArguments: string,
   metadataToken?: string,
-): { arguments: string; interactionToken?: string } {
+  source?: unknown,
+): ParsedInboundCommandArguments {
+  const explicitSessionFromSource = readExplicitSessionIDFromSource(source);
   const tokens = rawArguments
     .trim()
     .split(/\s+/)
@@ -517,6 +516,7 @@ function parseInboundCommandArguments(
 
   const kept: string[] = [];
   let interactionToken: string | undefined = normalizeOptionalToken(metadataToken);
+  let explicitSessionID: string | undefined = explicitSessionFromSource;
 
   for (let index = 0; index < tokens.length; index += 1) {
     const token = tokens[index]!;
@@ -536,13 +536,57 @@ function parseInboundCommandArguments(
       continue;
     }
 
+    const inlineSessionID = readInlineSessionFlag(token);
+    if (inlineSessionID) {
+      explicitSessionID = explicitSessionID ?? inlineSessionID;
+      continue;
+    }
+
+    if (isSessionFlag(token)) {
+      const next = tokens[index + 1];
+      if (next) {
+        explicitSessionID = explicitSessionID ?? normalizeOptionalToken(next);
+        index += 1;
+      }
+      continue;
+    }
+
     kept.push(token);
+  }
+
+  if (!explicitSessionID && commandName === "approve") {
+    const firstToken = kept[0];
+    if (firstToken && SESSION_ID_PATTERN.test(firstToken)) {
+      explicitSessionID = firstToken;
+      kept.shift();
+    }
   }
 
   return {
     arguments: kept.join(" "),
     interactionToken,
+    explicitSessionID,
   };
+}
+
+function isSessionFlag(token: string): boolean {
+  return token === "--session-id" || token === "--session_id" || token === "--session";
+}
+
+function readInlineSessionFlag(token: string): string | undefined {
+  if (token.startsWith("--session-id=")) {
+    return normalizeOptionalToken(token.slice("--session-id=".length));
+  }
+
+  if (token.startsWith("--session_id=")) {
+    return normalizeOptionalToken(token.slice("--session_id=".length));
+  }
+
+  if (token.startsWith("--session=")) {
+    return normalizeOptionalToken(token.slice("--session=".length));
+  }
+
+  return undefined;
 }
 
 function isInteractionFlag(token: string): boolean {
@@ -577,6 +621,78 @@ function readInteractionTokenFromSource(source: unknown): string | undefined {
       readString(metadata, "interaction_id") ||
       readString(metadata, "token"),
   );
+}
+
+function readExplicitSessionIDFromSource(source: unknown): string | undefined {
+  if (!source || typeof source !== "object") {
+    return undefined;
+  }
+
+  const record = source as Record<string, unknown>;
+  const metadata = readRecord(record, "metadata");
+  const args = readRecord(record, "args") ?? readRecord(metadata, "args");
+
+  return normalizeOptionalToken(
+    readString(record, "session_id") ||
+      readString(record, "target_session_id") ||
+      readString(args, "session_id") ||
+      readString(args, "session") ||
+      readString(metadata, "session_id") ||
+      readString(metadata, "target_session_id"),
+  );
+}
+
+function readFeedbackSessionID(source: unknown): string {
+  if (!source || typeof source !== "object") {
+    return "";
+  }
+
+  const record = source as Record<string, unknown>;
+  const metadata = readRecord(record, "metadata");
+  return normalizeOptionalToken(
+    readString(record, "sessionID") ||
+      readString(record, "session_id") ||
+      readString(metadata, "sessionID") ||
+      readString(metadata, "session_id"),
+  ) ?? "";
+}
+
+function readCommandName(source: unknown): string {
+  if (!source || typeof source !== "object") {
+    return "";
+  }
+
+  const record = source as Record<string, unknown>;
+  return readString(record, "command") || readString(record, "name");
+}
+
+function readCommandArguments(source: unknown): string {
+  if (!source || typeof source !== "object") {
+    return "";
+  }
+
+  const record = source as Record<string, unknown>;
+  if (typeof record.arguments === "string") {
+    return record.arguments;
+  }
+
+  const metadata = readRecord(record, "metadata");
+  const argsRecord = readRecord(record, "args") ?? readRecord(metadata, "args");
+  const argsText = readString(argsRecord, "text") || readString(argsRecord, "raw");
+  if (argsText) {
+    return argsText;
+  }
+
+  const orderedArgs = [
+    readString(argsRecord, "agent"),
+    readString(argsRecord, "note"),
+    readString(argsRecord, "agents"),
+    readString(argsRecord, "export_path"),
+  ]
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0);
+
+  return orderedArgs.join(" ");
 }
 
 function normalizeOptionalToken(value: string | undefined): string | undefined {
