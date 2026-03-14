@@ -1,0 +1,126 @@
+name: Gateway - Subphase Commit Provenance
+
+on:
+  pull_request:
+    types:
+      - opened
+      - reopened
+      - edited
+      - synchronize
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  validate-subphase-provenance:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate PR body subphase provenance markers
+        env:
+          GITHUB_EVENT_PATH: ${{ github.event_path }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import re
+
+
+          def fail(message: str) -> None:
+              print(f"Subphase provenance gateway failed: {message}")
+              raise SystemExit(1)
+
+
+          event_path = os.environ.get("GITHUB_EVENT_PATH", "")
+          if not event_path or not os.path.exists(event_path):
+              fail("GITHUB_EVENT_PATH is unavailable.")
+
+          with open(event_path, "r", encoding="utf-8") as handle:
+              event = json.load(handle)
+
+          pr = event.get("pull_request")
+          if not isinstance(pr, dict):
+              print("No pull_request payload found; skipping provenance check.")
+              raise SystemExit(0)
+
+          body = pr.get("body") or ""
+          if not isinstance(body, str):
+              fail("pull_request.body is not a string.")
+
+          marker_pattern = re.compile(
+              r"<!--\s*SUBPHASE_PROVENANCE\s*(\{.*?\})\s*-->",
+              flags=re.DOTALL,
+          )
+          matches = marker_pattern.findall(body)
+          if not matches:
+              fail(
+                  "missing required SUBPHASE_PROVENANCE marker in PR body. "
+                  "Use .github/PULL_REQUEST_TEMPLATE.md template."
+              )
+
+          subphase_pattern = re.compile(r"^(?:\d+\.\d+|SUBPHASE-\d+\.\d+|PHASE-\d+)$")
+          commit_pattern = re.compile(r"^[0-9a-f]{7,40}$")
+
+          errors = []
+          seen = set()
+
+          for index, payload_raw in enumerate(matches, start=1):
+              try:
+                  payload = json.loads(payload_raw)
+              except json.JSONDecodeError as exc:
+                  errors.append(f"marker #{index} has invalid JSON: {exc}")
+                  continue
+
+              codename = payload.get("codename")
+              subphase = payload.get("subphase")
+              commits = payload.get("commits")
+              rationale = payload.get("multi_commit_rationale")
+
+              if not isinstance(codename, str) or not codename.strip():
+                  errors.append(f"marker #{index} codename must be a non-empty string")
+
+              if not isinstance(subphase, str) or not subphase_pattern.match(subphase.strip()):
+                  errors.append(
+                      f"marker #{index} subphase must match '<n.m>', 'SUBPHASE-<n.m>', or 'PHASE-<n>'"
+                  )
+
+              if not isinstance(commits, list) or len(commits) == 0:
+                  errors.append(f"marker #{index} commits must be a non-empty array")
+                  commits = []
+
+              normalized_commits = []
+              for commit in commits:
+                  if not isinstance(commit, str) or not commit_pattern.match(commit.strip()):
+                      errors.append(f"marker #{index} commit '{commit}' must be a 7-40 char lowercase hex hash")
+                      continue
+                  normalized_commits.append(commit.strip())
+
+              if len(set(normalized_commits)) != len(normalized_commits):
+                  errors.append(f"marker #{index} commits contains duplicates")
+
+              key = (
+                  codename.strip() if isinstance(codename, str) else "",
+                  subphase.strip() if isinstance(subphase, str) else "",
+              )
+              if key in seen:
+                  errors.append(f"duplicate marker for codename/subphase pair: {key}")
+              seen.add(key)
+
+              if len(normalized_commits) > 1:
+                  if not isinstance(rationale, str) or len(rationale.strip()) < 12:
+                      errors.append(
+                          f"marker #{index} has multiple commits and requires multi_commit_rationale (>=12 chars)"
+                      )
+
+          if errors:
+              print("Subphase provenance gateway failed.")
+              for error in errors:
+                  print(f" - {error}")
+              raise SystemExit(1)
+
+          print(f"Subphase provenance gateway passed with {len(matches)} marker(s).")
+          PY

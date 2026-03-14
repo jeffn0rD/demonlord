@@ -5,7 +5,7 @@
 Run `/implement beelzebub` to start this tasklist.  
 Execution policy for this codename:
 - One **SUBPHASE per PR**
-- One **COMMIT per SUBPHASE**
+- One **COMMIT per SUBPHASE** (if multiple commits are unavoidable, PR must include `SUBPHASE_PROVENANCE` marker with `multi_commit_rationale`)
 - Complete all entry/exit criteria before moving to the next subphase
 - Keep references to issue Refs #123 intact in commit/PR metadata
 

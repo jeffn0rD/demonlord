@@ -219,6 +219,17 @@ Dispatch behavior is deterministic: tasks enter a FIFO queue by `stage` + `paral
 - **`pipelinectl off|on|advance|approve|stop`**: Shell fallback control commands via queue handoff
 - **`/worktrees`**: (Future) List and manage active worktrees
 
+### Subphase Commit Provenance Policy
+
+- Default policy is one commit per subphase and one subphase per PR.
+- If a subphase needs multiple commits, PR body must include a `SUBPHASE_PROVENANCE` marker with:
+  - `codename`
+  - `subphase`
+  - `commits` (exact hashes for that subphase)
+  - `multi_commit_rationale` (required when more than one hash is listed)
+- Use `.github/PULL_REQUEST_TEMPLATE.md` for the canonical marker format.
+- CI enforces this contract in `.github/workflows/subphase-provenance-gateway.yml`.
+
 ### Local Shell Control Fallback
 
 When slash-command UX is constrained, use the shell fallback:

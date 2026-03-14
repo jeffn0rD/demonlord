@@ -869,6 +869,42 @@ describe("communication session targeting unit tests", () => {
     }
   });
 
+  test("uses deterministic defaults when demonlord.config.json is absent", async () => {
+    const root = await mkdtemp(join(tmpdir(), "communication-missing-config-"));
+
+    try {
+      const client = createMockClient();
+      const plugin = await withEnv(
+        {
+          DISCORD_BOT_TOKEN: "test-bot-token",
+          DISCORD_WEBHOOK_ORCHESTRATOR: "https://discord.example/orchestrator",
+          DISCORD_ALLOWED_USER_IDS: "user-allow-default",
+          DISCORD_ALLOWED_ROLE_IDS: "",
+        },
+        async () => createPlugin(client, root),
+      );
+      assert.ok(plugin.event, "communication plugin must initialize when config file is missing");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("fails fast with actionable error when demonlord.config.json is malformed", async () => {
+    const root = await mkdtemp(join(tmpdir(), "communication-malformed-config-"));
+
+    try {
+      await writeFile(resolve(root, "demonlord.config.json"), "{\n  \"discord\": {\n", "utf-8");
+
+      const client = createMockClient();
+      await assert.rejects(
+        () => createPlugin(client, root),
+        /failed to parse config.*demonlord\.config\.json/i,
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test("retries outbound delivery deterministically and redacts secrets on terminal failure", async () => {
     const root = await mkdtemp(join(tmpdir(), "communication-outbound-terminal-failure-"));
 

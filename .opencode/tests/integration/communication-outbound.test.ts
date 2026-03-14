@@ -20,7 +20,7 @@ describe("communication outbound integration", () => {
       await writeConfig(root);
 
       const fixture = await readContractFixture();
-      assert.ok(fixture.outbound_events.includes("pipeline.summary"));
+      assertHasOutboundContract(fixture, "pipeline.summary");
 
       const client = createMockClient();
       const plugin = await CommunicationPlugin({
@@ -32,12 +32,13 @@ describe("communication outbound integration", () => {
       assert.ok(eventHook, "communication plugin must expose event hook");
 
       await withEnv({ DISCORD_WEBHOOK_REVIEWER: "https://discord.example/reviewer" }, async () => {
-        const emitted: Array<{ event: string; payload: Record<string, unknown> }> = [];
+        const emitted: Array<{ version?: string; event: string; payload: Record<string, unknown> }> = [];
 
         await withMockFetch(
           async (_url, init) => {
             const body = JSON.parse(typeof init?.body === "string" ? init.body : "{}") as { content?: string };
             const content = JSON.parse(body.content ?? "{}") as {
+              version?: string;
               event: string;
               payload: Record<string, unknown>;
             };
@@ -78,6 +79,8 @@ describe("communication outbound integration", () => {
           emitted.map((entry) => entry.event),
           ["pipeline.summary", "pipeline.summary"],
         );
+        assertOutboundEventMatchesContract(emitted[0], fixture, "pipeline.summary");
+        assertOutboundEventMatchesContract(emitted[1], fixture, "pipeline.summary");
         assert.equal(emitted[0]?.payload.result, "pass");
         assert.equal(emitted[1]?.payload.result, "fail");
         assert.equal(emitted[0]?.payload.persona, "reviewer");
@@ -97,7 +100,7 @@ describe("communication outbound integration", () => {
       await writeConfig(root);
 
       const fixture = await readContractFixture();
-      assert.ok(fixture.outbound_events.includes("pipeline.transition"));
+      assertHasOutboundContract(fixture, "pipeline.transition");
 
       const client = createMockClient();
       const plugin = await CommunicationPlugin({
@@ -109,12 +112,13 @@ describe("communication outbound integration", () => {
       assert.ok(eventHook, "communication plugin must expose event hook");
 
       await withEnv({ DISCORD_WEBHOOK_REVIEWER: "https://discord.example/reviewer" }, async () => {
-        const emitted: Array<{ event: string; payload: Record<string, unknown> }> = [];
+        const emitted: Array<{ version?: string; event: string; payload: Record<string, unknown> }> = [];
 
         await withMockFetch(
           async (_url, init) => {
             const body = JSON.parse(typeof init?.body === "string" ? init.body : "{}") as { content?: string };
             const content = JSON.parse(body.content ?? "{}") as {
+              version?: string;
               event: string;
               payload: Record<string, unknown>;
             };
@@ -137,7 +141,7 @@ describe("communication outbound integration", () => {
         );
 
         assert.equal(emitted.length, 1);
-        assert.equal(emitted[0]?.event, "pipeline.transition");
+        assertOutboundEventMatchesContract(emitted[0], fixture, "pipeline.transition");
         assert.equal(emitted[0]?.payload.command_action, "advance");
         assert.equal(emitted[0]?.payload.session_id, "ses-transition");
         assert.equal(emitted[0]?.payload.persona, "reviewer");
@@ -156,7 +160,7 @@ describe("communication outbound integration", () => {
       await writeConfig(root);
 
       const fixture = await readContractFixture();
-      assert.ok(fixture.outbound_events.includes("session.error"));
+      assertHasOutboundContract(fixture, "session.error");
 
       const client = createMockClient();
       const plugin = await CommunicationPlugin({
@@ -168,12 +172,13 @@ describe("communication outbound integration", () => {
       assert.ok(eventHook, "communication plugin must expose event hook");
 
       await withEnv({ DISCORD_WEBHOOK_REVIEWER: "https://discord.example/reviewer" }, async () => {
-        const emitted: Array<{ event: string; payload: Record<string, unknown> }> = [];
+        const emitted: Array<{ version?: string; event: string; payload: Record<string, unknown> }> = [];
 
         await withMockFetch(
           async (_url, init) => {
             const body = JSON.parse(typeof init?.body === "string" ? init.body : "{}") as { content?: string };
             const content = JSON.parse(body.content ?? "{}") as {
+              version?: string;
               event: string;
               payload: Record<string, unknown>;
             };
@@ -202,7 +207,7 @@ describe("communication outbound integration", () => {
         );
 
         assert.equal(emitted.length, 1);
-        assert.equal(emitted[0]?.event, "session.error");
+        assertOutboundEventMatchesContract(emitted[0], fixture, "session.error");
         assert.equal(emitted[0]?.payload.error_code, "E_TEST");
         assert.equal(emitted[0]?.payload.session_id, "ses-error");
         assert.equal(emitted[0]?.payload.persona, "reviewer");
@@ -327,14 +332,83 @@ async function writeOrchestrationState(
   await writeFile(resolve(bmadRoot, "orchestration-state.json"), `${JSON.stringify(state, null, 2)}\n`, "utf-8");
 }
 
-async function readContractFixture(): Promise<{ outbound_events: string[] }> {
+interface OutboundContractEntry {
+  event: string;
+  payload: Record<string, unknown>;
+}
+
+interface OutboundContractFixture {
+  version: string;
+  outbound_events: OutboundContractEntry[];
+}
+
+async function readContractFixture(): Promise<OutboundContractFixture> {
   const raw = await readFile(resolve(INTEGRATION_DIR, "..", "harness", "discord-contracts.v1.json"), "utf-8");
   const parsed = JSON.parse(raw) as {
-    outbound_events?: Array<{ event: string }>;
+    version?: unknown;
+    outbound_events?: Array<{ event?: unknown; payload?: unknown }>;
   };
+
+  const outboundEvents = (parsed.outbound_events ?? []).flatMap((entry) => {
+    if (!entry || typeof entry !== "object") {
+      return [];
+    }
+
+    const event = typeof entry.event === "string" ? entry.event : undefined;
+    const payload = entry.payload && typeof entry.payload === "object"
+      ? entry.payload as Record<string, unknown>
+      : undefined;
+
+    if (!event || !payload) {
+      return [];
+    }
+
+    return [{ event, payload }];
+  });
+
   return {
-    outbound_events: (parsed.outbound_events ?? []).map((entry) => entry.event),
+    version: typeof parsed.version === "string" ? parsed.version : "v1",
+    outbound_events: outboundEvents,
   };
+}
+
+function assertHasOutboundContract(fixture: OutboundContractFixture, eventName: string): void {
+  const found = fixture.outbound_events.some((entry) => entry.event === eventName);
+  assert.ok(found, `missing outbound contract fixture for event '${eventName}'`);
+}
+
+function assertOutboundEventMatchesContract(
+  emitted:
+    | {
+      version?: string;
+      event: string;
+      payload: Record<string, unknown>;
+    }
+    | undefined,
+  fixture: OutboundContractFixture,
+  expectedEvent: string,
+): void {
+  assert.ok(emitted, `expected outbound '${expectedEvent}' event to be emitted`);
+  assert.equal(emitted?.version, fixture.version);
+  assert.equal(emitted?.event, expectedEvent);
+
+  const contract = fixture.outbound_events.find((entry) => entry.event === expectedEvent);
+  assert.ok(contract, `missing outbound contract fixture for event '${expectedEvent}'`);
+
+  for (const [key, value] of Object.entries(contract?.payload ?? {})) {
+    assert.ok(
+      Object.prototype.hasOwnProperty.call(emitted?.payload ?? {}, key),
+      `payload for '${expectedEvent}' must include '${key}'`,
+    );
+
+    if (value !== null) {
+      assert.equal(
+        typeof emitted?.payload[key],
+        typeof value,
+        `payload '${key}' type for '${expectedEvent}' should be '${typeof value}'`,
+      );
+    }
+  }
 }
 
 async function withMockFetch<T>(

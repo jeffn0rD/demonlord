@@ -33,6 +33,8 @@ Repository activity (must inspect):
 
 2. Gather implementation evidence before judging.
    - Inspect current git status, staged diff, unstaged diff, and recent commit history.
+   - Build subphase commit provenance for `$2`: list commit hashes implementing the target and verify one-commit policy compliance.
+   - If more than one commit is present for `$2`, require explicit rationale and flag `spec-drift` when rationale is missing.
    - If diff scope is ambiguous, infer the candidate files from task touch points and inspect those files directly.
    - When relevant scripts exist, run validation commands and capture key outputs (prefer: `typecheck`, `lint`, `test`). If a command cannot run, state why and what is needed.
 
@@ -69,6 +71,7 @@ Repository activity (must inspect):
    A) Scope & Evidence
    - Reviewed subphase/phase
    - Commits/diff ranges inspected
+   - Subphase commit provenance (`commits`, `count`, `policy_compliance`, `rationale_if_multi_commit`)
    - Files inspected (key paths)
 
    B) Executive Verdict

@@ -754,10 +754,41 @@ function formatPartyModeResult(result: PartyModeResult, sessionID: string): stri
 }
 
 async function loadSettings(worktree: string): Promise<CommunicationSettings> {
+  const configPath = resolve(worktree, "demonlord.config.json");
+  let raw = "";
+
   try {
-    const configPath = resolve(worktree, "demonlord.config.json");
-    const raw = await readFile(configPath, "utf-8");
-    const parsed = JSON.parse(raw) as {
+    raw = await readFile(configPath, "utf-8");
+  } catch (error) {
+    const readError = error as NodeJS.ErrnoException;
+    if (readError.code === "ENOENT") {
+      raw = "{}";
+    } else {
+      throw new Error(
+        `Communication plugin failed to read config '${configPath}': ${formatError(error)}`,
+      );
+    }
+  }
+
+  let parsed: {
+    orchestration?: {
+      enabled?: unknown;
+      mode?: unknown;
+    };
+    discord?: {
+      enabled?: unknown;
+      personas?: Record<string, { name?: unknown; avatarUrl?: unknown }>;
+      authorization?: {
+        required?: unknown;
+        allowed_user_ids?: unknown;
+        allowed_role_ids?: unknown;
+        allowed_channel_id?: unknown;
+      };
+    };
+  };
+
+  try {
+    parsed = JSON.parse(raw) as {
       orchestration?: {
         enabled?: unknown;
         mode?: unknown;
@@ -773,68 +804,70 @@ async function loadSettings(worktree: string): Promise<CommunicationSettings> {
         };
       };
     };
-
-    const enabled = typeof parsed.orchestration?.enabled === "boolean"
-      ? parsed.orchestration.enabled
-      : defaults.enabled;
-    const modeCandidate = parsed.orchestration?.mode;
-    const mode: OrchestrationMode =
-      modeCandidate === "off" || modeCandidate === "manual" || modeCandidate === "auto"
-        ? modeCandidate
-        : defaults.mode;
-
-    const discordEnabled = typeof parsed.discord?.enabled === "boolean"
-      ? parsed.discord.enabled
-      : defaults.discord.enabled;
-
-    const personas = { ...defaults.discord.personas };
-    for (const [personaKey, rawPersona] of Object.entries(parsed.discord?.personas ?? {})) {
-      const existing = personas[personaKey] ?? { name: personaKey };
-      const normalizedName = typeof rawPersona?.name === "string" && rawPersona.name.trim().length > 0
-        ? rawPersona.name.trim()
-        : existing.name;
-      const normalizedAvatar = typeof rawPersona?.avatarUrl === "string" && rawPersona.avatarUrl.trim().length > 0
-        ? rawPersona.avatarUrl.trim()
-        : undefined;
-      personas[personaKey] = {
-        name: normalizedName,
-        ...(normalizedAvatar ? { avatarUrl: normalizedAvatar } : {}),
-      };
-    }
-
-    const auth = parsed.discord?.authorization;
-    const allowedUserIDs = mergeUnique(
-      readStringArrayValue(auth?.allowed_user_ids),
-      parseCommaSeparatedEnv("DISCORD_ALLOWED_USER_IDS"),
+  } catch (error) {
+    throw new Error(
+      `Communication plugin failed to parse config '${configPath}': ${formatError(error)}`,
     );
-    const allowedRoleIDs = mergeUnique(
-      readStringArrayValue(auth?.allowed_role_ids),
-      parseCommaSeparatedEnv("DISCORD_ALLOWED_ROLE_IDS"),
-    );
-    const allowedChannelID =
-      normalizeOptionalToken(typeof auth?.allowed_channel_id === "string" ? auth.allowed_channel_id : undefined) ||
-      normalizeOptionalToken(process.env.DISCORD_ALLOWED_CHANNEL_ID);
-    const required = typeof auth?.required === "boolean"
-      ? auth.required
-      : defaults.discord.authorization.required;
-
-    return {
-      enabled,
-      mode,
-      discord: {
-        enabled: discordEnabled,
-        personas,
-        authorization: {
-          required,
-          allowedUserIDs,
-          allowedRoleIDs,
-          ...(allowedChannelID ? { allowedChannelID } : {}),
-        },
-      },
-    };
-  } catch {
-    return defaults;
   }
+
+  const enabled = typeof parsed.orchestration?.enabled === "boolean"
+    ? parsed.orchestration.enabled
+    : defaults.enabled;
+  const modeCandidate = parsed.orchestration?.mode;
+  const mode: OrchestrationMode =
+    modeCandidate === "off" || modeCandidate === "manual" || modeCandidate === "auto"
+      ? modeCandidate
+      : defaults.mode;
+
+  const discordEnabled = typeof parsed.discord?.enabled === "boolean"
+    ? parsed.discord.enabled
+    : defaults.discord.enabled;
+
+  const personas = { ...defaults.discord.personas };
+  for (const [personaKey, rawPersona] of Object.entries(parsed.discord?.personas ?? {})) {
+    const existing = personas[personaKey] ?? { name: personaKey };
+    const normalizedName = typeof rawPersona?.name === "string" && rawPersona.name.trim().length > 0
+      ? rawPersona.name.trim()
+      : existing.name;
+    const normalizedAvatar = typeof rawPersona?.avatarUrl === "string" && rawPersona.avatarUrl.trim().length > 0
+      ? rawPersona.avatarUrl.trim()
+      : undefined;
+    personas[personaKey] = {
+      name: normalizedName,
+      ...(normalizedAvatar ? { avatarUrl: normalizedAvatar } : {}),
+    };
+  }
+
+  const auth = parsed.discord?.authorization;
+  const allowedUserIDs = mergeUnique(
+    readStringArrayValue(auth?.allowed_user_ids),
+    parseCommaSeparatedEnv("DISCORD_ALLOWED_USER_IDS"),
+  );
+  const allowedRoleIDs = mergeUnique(
+    readStringArrayValue(auth?.allowed_role_ids),
+    parseCommaSeparatedEnv("DISCORD_ALLOWED_ROLE_IDS"),
+  );
+  const allowedChannelID =
+    normalizeOptionalToken(typeof auth?.allowed_channel_id === "string" ? auth.allowed_channel_id : undefined) ||
+    normalizeOptionalToken(process.env.DISCORD_ALLOWED_CHANNEL_ID);
+  const required = typeof auth?.required === "boolean"
+    ? auth.required
+    : defaults.discord.authorization.required;
+
+  return {
+    enabled,
+    mode,
+    discord: {
+      enabled: discordEnabled,
+      personas,
+      authorization: {
+        required,
+        allowedUserIDs,
+        allowedRoleIDs,
+        ...(allowedChannelID ? { allowedChannelID } : {}),
+      },
+    },
+  };
 }
 
 function validateDiscordStartupConfiguration(settings: CommunicationSettings): void {
