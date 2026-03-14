@@ -17,6 +17,7 @@ Instructions:
 6. Run relevant tests/checks for modified areas.
 7. Create one local commit for this repair pass. Do not push.
 8. Output normal summary plus required machine-readable marker.
+9. The marker is mandatory even when blocked/failed and must be the last non-whitespace output.
 
 Machine-readable result marker (required at the end):
 
@@ -28,3 +29,5 @@ Rules:
 - `status=ok` only if fixes were applied and committed.
 - `status=blocked` when required evidence/input is missing.
 - `status=failed` when repair/test/commit did not complete.
+- Emit exactly one `CYCLE_REPAIR_RESULT` marker with valid JSON.
+- Do not print additional text after the marker.

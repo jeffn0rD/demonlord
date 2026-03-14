@@ -1,11 +1,21 @@
 import { createOpencodeClient } from "@opencode-ai/sdk";
 import { tool } from "@opencode-ai/plugin/tool";
-import { mkdir, readFile, writeFile } from "fs/promises";
+import { spawn } from "child_process";
+import { appendFile, mkdir, readFile, writeFile } from "fs/promises";
 import { dirname, relative, resolve } from "path";
 
 const DEFAULT_SERVER_URL = process.env.OPENCODE_SERVER_URL ?? "http://127.0.0.1:4096";
 const STATE_DIRECTORY = ["_bmad-output", "cycle-state"] as const;
 const REVIEW_ARTIFACT_DIRECTORY = ["_bmad-output", "cycle-state", "reviews"] as const;
+const EVENT_ARTIFACT_DIRECTORY = ["_bmad-output", "cycle-state", "events"] as const;
+const SKILLS_TEST_COMMAND = ["npm", "--prefix", ".opencode", "run", "skills:test"] as const;
+const SKILLS_TEST_TIMEOUT_MS = 180000;
+
+const DEFAULT_AGENT_MODEL_BY_COMMAND: Record<CommandAgent, string> = {
+  orchestrator: "openrouter/xiaomi/mimo-v2-flash",
+  minion: "openrouter/openai/gpt-5.3-codex",
+  reviewer: "openrouter/openai/gpt-5.3-codex",
+};
 
 type CommandAgent = "orchestrator" | "minion" | "reviewer";
 type ImplementStatus = "ok" | "blocked" | "failed";
@@ -17,8 +27,10 @@ interface CycleRunnerArgs {
   codename: string;
   phase: string;
   max_repair_rounds?: number;
+  max_subphases?: number;
   dry_run?: boolean;
   resume?: boolean;
+  run_skill_selfcheck?: boolean;
 }
 
 interface CycleRunnerContext {
@@ -35,11 +47,27 @@ interface RuntimeCommandInput {
   command: string;
   arguments: string;
   agent: CommandAgent;
+  model?: string;
 }
 
 interface RuntimeCommandResult {
   sessionID: string;
   outputText: string;
+}
+
+interface CycleEventEntry {
+  at: string;
+  codename: string;
+  phase: string;
+  subphase?: string;
+  event: "command_start" | "command_result" | "command_error" | "state_update";
+  command?: string;
+  agent?: CommandAgent;
+  arguments?: string;
+  model?: string;
+  sessionID?: string;
+  status?: string;
+  note?: string;
 }
 
 interface ParsedSubphase {
@@ -84,14 +112,40 @@ interface CycleRunResult {
   ok: boolean;
   codename: string;
   phase: string;
-  status: "dry_run" | "completed" | "failed";
+  status: "dry_run" | "completed" | "partial" | "failed";
   dry_run: boolean;
   max_repair_rounds: number;
+  max_subphases?: number;
   tasklist_path: string;
   state_path: string;
   subphases: string[];
   processed_subphases: string[];
+  remaining_subphases?: string[];
   failure_reason?: string;
+  skill_selfcheck?: SkillSelfCheckSummary;
+}
+
+type SkillSelfCheckStatus = "passed" | "failed" | "skipped";
+
+interface SkillSelfCheckSummary {
+  enabled: boolean;
+  command: string;
+  pre: SkillSelfCheckStatus;
+  post: SkillSelfCheckStatus;
+  note?: string;
+}
+
+interface SkillSelfCheckExecution {
+  status: SkillSelfCheckStatus;
+  note?: string;
+}
+
+interface SpawnCommandResult {
+  exitCode: number | null;
+  signal: NodeJS.Signals | null;
+  stdout: string;
+  stderr: string;
+  timedOut: boolean;
 }
 
 interface ParsedMarker<T> {
@@ -133,6 +187,10 @@ interface RepairMarkerPayload {
   notes?: unknown;
 }
 
+interface CommandStatusFallbackPayload {
+  status?: unknown;
+}
+
 const cycle_runner = tool({
   description:
     "Run deterministic implement-review-repair loops across pending subphases in a selected phase.",
@@ -152,6 +210,13 @@ const cycle_runner = tool({
       .max(5)
       .optional()
       .describe("Maximum repair-review loops per subphase before failing. Defaults to 2."),
+    max_subphases: tool.schema
+      .number()
+      .int()
+      .min(1)
+      .max(50)
+      .optional()
+      .describe("Optional limit for number of pending subphases to process in this run."),
     dry_run: tool.schema
       .boolean()
       .optional()
@@ -160,6 +225,10 @@ const cycle_runner = tool({
       .boolean()
       .optional()
       .describe("When true (default), resume from existing cycle-state file if present."),
+    run_skill_selfcheck: tool.schema
+      .boolean()
+      .optional()
+      .describe("When true (default), run non-destructive skills:test before and after cycle execution."),
   },
   async execute(args: CycleRunnerArgs, context: CycleRunnerContext) {
     const runtime = createSdkRuntime(context);
@@ -175,6 +244,9 @@ export async function runCycle(
 ): Promise<CycleRunResult> {
   const worktreeRoot = resolve(context.worktree);
   const codename = sanitizeCodename(args.codename);
+  const dryRun = args.dry_run ?? false;
+  const runSkillSelfcheck = args.run_skill_selfcheck ?? true;
+  const skillSelfCheck = initializeSkillSelfCheckSummary(runSkillSelfcheck, dryRun);
   const phase = normalizePhaseSelector(args.phase);
   if (!phase) {
     return {
@@ -182,20 +254,24 @@ export async function runCycle(
       codename,
       phase: String(args.phase ?? ""),
       status: "failed",
-      dry_run: args.dry_run ?? false,
+      dry_run: dryRun,
       max_repair_rounds: args.max_repair_rounds ?? 2,
+      max_subphases: args.max_subphases,
       tasklist_path: resolve(worktreeRoot, "agents", `${codename}_Tasklist.md`),
       state_path: resolve(worktreeRoot, ...STATE_DIRECTORY, `${codename}-phase-unknown.json`),
       subphases: [],
       processed_subphases: [],
       failure_reason: "Invalid phase selector. Use values like '1', 'PHASE-1', or 'SUBPHASE-1.2'.",
+      skill_selfcheck: skillSelfCheck,
     };
   }
 
   const tasklistPath = resolve(worktreeRoot, "agents", `${codename}_Tasklist.md`);
   const statePath = resolve(worktreeRoot, ...STATE_DIRECTORY, `${codename}-phase-${phase}.json`);
+  const eventPath = resolve(worktreeRoot, ...EVENT_ARTIFACT_DIRECTORY, `${codename}-phase-${phase}.ndjson`);
   const maxRepairRounds = args.max_repair_rounds ?? 2;
-  const dryRun = args.dry_run ?? false;
+  const maxSubphases = args.max_subphases;
+  const subphaseLimit = typeof maxSubphases === "number" ? maxSubphases : Number.POSITIVE_INFINITY;
   const shouldResume = args.resume ?? true;
 
   let tasklistRaw = "";
@@ -209,11 +285,13 @@ export async function runCycle(
       status: "failed",
       dry_run: dryRun,
       max_repair_rounds: maxRepairRounds,
+      max_subphases: maxSubphases,
       tasklist_path: tasklistPath,
       state_path: statePath,
       subphases: [],
       processed_subphases: [],
       failure_reason: `Tasklist not found or unreadable: ${tasklistPath}`,
+      skill_selfcheck: skillSelfCheck,
     };
   }
 
@@ -226,11 +304,13 @@ export async function runCycle(
       status: "failed",
       dry_run: dryRun,
       max_repair_rounds: maxRepairRounds,
+      max_subphases: maxSubphases,
       tasklist_path: tasklistPath,
       state_path: statePath,
       subphases: [],
       processed_subphases: [],
       failure_reason: `No subphases found for PHASE-${phase} in ${tasklistPath}`,
+      skill_selfcheck: skillSelfCheck,
     };
   }
 
@@ -244,11 +324,39 @@ export async function runCycle(
       status: "dry_run",
       dry_run: true,
       max_repair_rounds: maxRepairRounds,
+      max_subphases: maxSubphases,
       tasklist_path: tasklistPath,
       state_path: statePath,
       subphases: pendingSubphases,
       processed_subphases: [],
+      skill_selfcheck: skillSelfCheck,
     };
+  }
+
+  if (runSkillSelfcheck) {
+    const preCheck = await runSkillsSelfCheck(worktreeRoot);
+    skillSelfCheck.pre = preCheck.status;
+    if (preCheck.note) {
+      skillSelfCheck.note = preCheck.note;
+    }
+
+    if (preCheck.status === "failed") {
+      return {
+        ok: false,
+        codename,
+        phase,
+        status: "failed",
+        dry_run: dryRun,
+        max_repair_rounds: maxRepairRounds,
+        max_subphases: maxSubphases,
+        tasklist_path: tasklistPath,
+        state_path: statePath,
+        subphases: pendingSubphases,
+        processed_subphases: [],
+        failure_reason: `Pre-cycle skills self-check failed. ${preCheck.note ?? "Run npm --prefix .opencode run skills:test for details."}`,
+        skill_selfcheck: skillSelfCheck,
+      };
+    }
   }
 
   const state = await loadOrInitializeState({
@@ -261,7 +369,10 @@ export async function runCycle(
     shouldResume,
   });
 
+  const trackedSubphases = collectTrackedPendingSubphases(parsedSubphases, state);
+
   const processedSubphases: string[] = [];
+  let attemptedSubphases = 0;
 
   for (const subphase of parsedSubphases) {
     const entry = state.subphases[subphase.id];
@@ -269,8 +380,10 @@ export async function runCycle(
       continue;
     }
 
-    if (subphase.completed) {
+    if (shouldBootstrapTasklistCompletedSubphase(subphase, entry)) {
       entry.status = "passed";
+      state.updatedAt = new Date().toISOString();
+      await persistState(statePath, state);
       continue;
     }
 
@@ -278,21 +391,88 @@ export async function runCycle(
       continue;
     }
 
+    if (attemptedSubphases >= subphaseLimit) {
+      break;
+    }
+    attemptedSubphases += 1;
+
     state.status = "running";
     state.currentSubphase = subphase.id;
     entry.status = "in_progress";
     state.updatedAt = new Date().toISOString();
     await persistState(statePath, state);
 
-    const implementRun = await runtime.runCommand({
-      title: buildSessionTitle("implement", codename, subphase.id),
-      command: "implement",
-      arguments: `${codename} ${subphase.id}`,
-      agent: "minion",
+    await appendCycleEvent(eventPath, {
+      at: new Date().toISOString(),
+      codename,
+      phase,
+      subphase: subphase.id,
+      event: "state_update",
+      status: "in_progress",
+      note: "Beginning subphase execution.",
     });
+
+    let implementRun: RuntimeCommandResult;
+    const implementModel = resolveModelForAgent("minion");
+    await appendCycleEvent(eventPath, {
+      at: new Date().toISOString(),
+      codename,
+      phase,
+      subphase: subphase.id,
+      event: "command_start",
+      command: "implement",
+      agent: "minion",
+      arguments: `${codename} ${subphase.id}`,
+      model: implementModel,
+    });
+
+    try {
+      implementRun = await runtime.runCommand({
+        title: buildSessionTitle("implement", codename, subphase.id),
+        command: "implement",
+        arguments: `${codename} ${subphase.id}`,
+        agent: "minion",
+        model: implementModel,
+      });
+    } catch (error) {
+      entry.status = "failed";
+      state.status = "failed";
+      state.failureReason = buildRuntimeFailureReason("implement", subphase.id, error);
+      state.updatedAt = new Date().toISOString();
+      await persistState(statePath, state);
+      await appendCycleEvent(eventPath, {
+        at: new Date().toISOString(),
+        codename,
+        phase,
+        subphase: subphase.id,
+        event: "command_error",
+        command: "implement",
+        agent: "minion",
+        arguments: `${codename} ${subphase.id}`,
+        model: implementModel,
+        status: "failed",
+        note: formatUnknownError(error),
+      });
+      return buildFailureResult(state, statePath, trackedSubphases, processedSubphases, dryRun, maxRepairRounds, skillSelfCheck);
+    }
 
     const implementMarker = parseImplementMarker(implementRun.outputText);
     const implementStatus = normalizeImplementStatus(implementMarker.payload?.status);
+    await appendCycleEvent(eventPath, {
+      at: new Date().toISOString(),
+      codename,
+      phase,
+      subphase: subphase.id,
+      event: "command_result",
+      command: "implement",
+      agent: "minion",
+      arguments: `${codename} ${subphase.id}`,
+      model: implementModel,
+      sessionID: implementRun.sessionID,
+      status: implementStatus ?? "invalid",
+      note: detectInfrastructureIssue(implementRun.outputText) ?? implementMarker.error,
+    });
+
     recordStep(entry, {
       at: new Date().toISOString(),
       action: "implement",
@@ -309,22 +489,77 @@ export async function runCycle(
     if (implementStatus !== "ok") {
       entry.status = "failed";
       state.status = "failed";
-      state.failureReason = `Implementation failed for SUBPHASE-${subphase.id}. ${markerFailureHint("CYCLE_IMPLEMENT_RESULT", implementMarker)}`;
+      const infraHint = detectInfrastructureIssue(implementRun.outputText);
+      state.failureReason = infraHint
+        ? `Implementation failed for SUBPHASE-${subphase.id}. Infrastructure signal: ${infraHint}. ${markerFailureHint("CYCLE_IMPLEMENT_RESULT", implementMarker)}`
+        : `Implementation failed for SUBPHASE-${subphase.id}. ${markerFailureHint("CYCLE_IMPLEMENT_RESULT", implementMarker)}`;
       state.updatedAt = new Date().toISOString();
       await persistState(statePath, state);
-      return buildFailureResult(state, statePath, pendingSubphases, processedSubphases, dryRun, maxRepairRounds);
+      return buildFailureResult(state, statePath, trackedSubphases, processedSubphases, dryRun, maxRepairRounds, skillSelfCheck);
     }
 
     while (true) {
-      const reviewRun = await runtime.runCommand({
-        title: buildSessionTitle("creview", codename, subphase.id),
+      let reviewRun: RuntimeCommandResult;
+      const reviewModel = resolveModelForAgent("reviewer");
+      await appendCycleEvent(eventPath, {
+        at: new Date().toISOString(),
+        codename,
+        phase,
+        subphase: subphase.id,
+        event: "command_start",
         command: "creview",
-        arguments: `${codename} ${subphase.id}`,
         agent: "reviewer",
+        arguments: `${codename} ${subphase.id}`,
+        model: reviewModel,
       });
+
+      try {
+        reviewRun = await runtime.runCommand({
+          title: buildSessionTitle("creview", codename, subphase.id),
+          command: "creview",
+          arguments: `${codename} ${subphase.id}`,
+          agent: "reviewer",
+          model: reviewModel,
+        });
+      } catch (error) {
+        entry.status = "failed";
+        state.status = "failed";
+        state.failureReason = buildRuntimeFailureReason("creview", subphase.id, error);
+        state.updatedAt = new Date().toISOString();
+        await persistState(statePath, state);
+        await appendCycleEvent(eventPath, {
+          at: new Date().toISOString(),
+          codename,
+          phase,
+          subphase: subphase.id,
+          event: "command_error",
+          command: "creview",
+          agent: "reviewer",
+          arguments: `${codename} ${subphase.id}`,
+          model: reviewModel,
+          status: "failed",
+          note: formatUnknownError(error),
+        });
+        return buildFailureResult(state, statePath, trackedSubphases, processedSubphases, dryRun, maxRepairRounds, skillSelfCheck);
+      }
 
       const reviewMarker = parseReviewMarker(reviewRun.outputText);
       const reviewStatus = normalizeReviewStatus(reviewMarker.payload?.status);
+      await appendCycleEvent(eventPath, {
+        at: new Date().toISOString(),
+        codename,
+        phase,
+        subphase: subphase.id,
+        event: "command_result",
+        command: "creview",
+        agent: "reviewer",
+        arguments: `${codename} ${subphase.id}`,
+        model: reviewModel,
+        sessionID: reviewRun.sessionID,
+        status: reviewStatus ?? "invalid",
+        note: detectInfrastructureIssue(reviewRun.outputText) ?? reviewMarker.error,
+      });
+
       recordStep(entry, {
         at: new Date().toISOString(),
         action: "review",
@@ -349,10 +584,13 @@ export async function runCycle(
       if (!reviewStatus) {
         entry.status = "failed";
         state.status = "failed";
-        state.failureReason = `Review output for SUBPHASE-${subphase.id} is missing a valid cycle verdict. ${markerFailureHint("CYCLE_CREVIEW_RESULT", reviewMarker)}`;
+        const infraHint = detectInfrastructureIssue(reviewRun.outputText);
+        state.failureReason = infraHint
+          ? `Review failed for SUBPHASE-${subphase.id}. Infrastructure signal: ${infraHint}. ${markerFailureHint("CYCLE_CREVIEW_RESULT", reviewMarker)}`
+          : `Review output for SUBPHASE-${subphase.id} is missing a valid cycle verdict. ${markerFailureHint("CYCLE_CREVIEW_RESULT", reviewMarker)}`;
         state.updatedAt = new Date().toISOString();
         await persistState(statePath, state);
-        return buildFailureResult(state, statePath, pendingSubphases, processedSubphases, dryRun, maxRepairRounds);
+        return buildFailureResult(state, statePath, trackedSubphases, processedSubphases, dryRun, maxRepairRounds, skillSelfCheck);
       }
 
       if (entry.repairRounds >= maxRepairRounds) {
@@ -361,7 +599,7 @@ export async function runCycle(
         state.failureReason = `SUBPHASE-${subphase.id} exceeded max_repair_rounds=${maxRepairRounds}. Last review status: ${reviewStatus}.`;
         state.updatedAt = new Date().toISOString();
         await persistState(statePath, state);
-        return buildFailureResult(state, statePath, pendingSubphases, processedSubphases, dryRun, maxRepairRounds);
+        return buildFailureResult(state, statePath, trackedSubphases, processedSubphases, dryRun, maxRepairRounds, skillSelfCheck);
       }
 
       const reviewArtifactPath = resolve(
@@ -380,15 +618,67 @@ export async function runCycle(
       });
 
       const repairArtifactArg = relative(worktreeRoot, reviewArtifactPath).replace(/\\/g, "/");
-      const repairRun = await runtime.runCommand({
-        title: buildSessionTitle("repair", codename, subphase.id),
+      let repairRun: RuntimeCommandResult;
+      const repairModel = resolveModelForAgent("minion");
+      await appendCycleEvent(eventPath, {
+        at: new Date().toISOString(),
+        codename,
+        phase,
+        subphase: subphase.id,
+        event: "command_start",
         command: "repair",
-        arguments: `${codename} ${subphase.id} ${repairArtifactArg}`,
         agent: "minion",
+        arguments: `${codename} ${subphase.id} ${repairArtifactArg}`,
+        model: repairModel,
       });
+
+      try {
+        repairRun = await runtime.runCommand({
+          title: buildSessionTitle("repair", codename, subphase.id),
+          command: "repair",
+          arguments: `${codename} ${subphase.id} ${repairArtifactArg}`,
+          agent: "minion",
+          model: repairModel,
+        });
+      } catch (error) {
+        entry.status = "failed";
+        state.status = "failed";
+        state.failureReason = buildRuntimeFailureReason("repair", subphase.id, error);
+        state.updatedAt = new Date().toISOString();
+        await persistState(statePath, state);
+        await appendCycleEvent(eventPath, {
+          at: new Date().toISOString(),
+          codename,
+          phase,
+          subphase: subphase.id,
+          event: "command_error",
+          command: "repair",
+          agent: "minion",
+          arguments: `${codename} ${subphase.id} ${repairArtifactArg}`,
+          model: repairModel,
+          status: "failed",
+          note: formatUnknownError(error),
+        });
+        return buildFailureResult(state, statePath, trackedSubphases, processedSubphases, dryRun, maxRepairRounds, skillSelfCheck);
+      }
 
       const repairMarker = parseRepairMarker(repairRun.outputText);
       const repairStatus = normalizeImplementStatus(repairMarker.payload?.status);
+      await appendCycleEvent(eventPath, {
+        at: new Date().toISOString(),
+        codename,
+        phase,
+        subphase: subphase.id,
+        event: "command_result",
+        command: "repair",
+        agent: "minion",
+        arguments: `${codename} ${subphase.id} ${repairArtifactArg}`,
+        model: repairModel,
+        sessionID: repairRun.sessionID,
+        status: repairStatus ?? "invalid",
+        note: detectInfrastructureIssue(repairRun.outputText) ?? repairMarker.error,
+      });
+
       recordStep(entry, {
         at: new Date().toISOString(),
         action: "repair",
@@ -405,14 +695,59 @@ export async function runCycle(
       if (repairStatus !== "ok") {
         entry.status = "failed";
         state.status = "failed";
-        state.failureReason = `Repair failed for SUBPHASE-${subphase.id}. ${markerFailureHint("CYCLE_REPAIR_RESULT", repairMarker)}`;
+        const infraHint = detectInfrastructureIssue(repairRun.outputText);
+        state.failureReason = infraHint
+          ? `Repair failed for SUBPHASE-${subphase.id}. Infrastructure signal: ${infraHint}. ${markerFailureHint("CYCLE_REPAIR_RESULT", repairMarker)}`
+          : `Repair failed for SUBPHASE-${subphase.id}. ${markerFailureHint("CYCLE_REPAIR_RESULT", repairMarker)}`;
         state.updatedAt = new Date().toISOString();
         await persistState(statePath, state);
-        return buildFailureResult(state, statePath, pendingSubphases, processedSubphases, dryRun, maxRepairRounds);
+        return buildFailureResult(state, statePath, trackedSubphases, processedSubphases, dryRun, maxRepairRounds, skillSelfCheck);
       }
 
       entry.repairRounds += 1;
     }
+  }
+
+  const remainingSubphases = collectTrackedPendingSubphases(parsedSubphases, state);
+
+  if (runSkillSelfcheck) {
+    const postCheck = await runSkillsSelfCheck(worktreeRoot);
+    skillSelfCheck.post = postCheck.status;
+    if (postCheck.note) {
+      skillSelfCheck.note = postCheck.note;
+    }
+
+    if (postCheck.status === "failed") {
+      state.status = "failed";
+      state.failureReason = `Post-cycle skills self-check failed. ${postCheck.note ?? "Run npm --prefix .opencode run skills:test for details."}`;
+      state.updatedAt = new Date().toISOString();
+      await persistState(statePath, state);
+      return buildFailureResult(state, statePath, trackedSubphases, processedSubphases, dryRun, maxRepairRounds, skillSelfCheck);
+    }
+  }
+
+  if (remainingSubphases.length > 0) {
+    state.status = "running";
+    state.currentSubphase = undefined;
+    state.failureReason = undefined;
+    state.updatedAt = new Date().toISOString();
+    await persistState(statePath, state);
+
+    return {
+      ok: true,
+      codename,
+      phase,
+      status: "partial",
+      dry_run: false,
+      max_repair_rounds: maxRepairRounds,
+      max_subphases: maxSubphases,
+      tasklist_path: tasklistPath,
+      state_path: statePath,
+      subphases: trackedSubphases,
+      processed_subphases: processedSubphases,
+      remaining_subphases: remainingSubphases,
+      skill_selfcheck: skillSelfCheck,
+    };
   }
 
   state.status = "completed";
@@ -428,10 +763,12 @@ export async function runCycle(
     status: "completed",
     dry_run: false,
     max_repair_rounds: maxRepairRounds,
+    max_subphases: maxSubphases,
     tasklist_path: tasklistPath,
     state_path: statePath,
-    subphases: pendingSubphases,
+    subphases: trackedSubphases,
     processed_subphases: processedSubphases,
+    skill_selfcheck: skillSelfCheck,
   };
 }
 
@@ -467,6 +804,7 @@ function createSdkRuntime(context: CycleRunnerContext): CycleRuntime {
             command: input.command,
             arguments: input.arguments,
             agent: input.agent,
+            model: input.model,
           },
           query: {
             directory: context.worktree,
@@ -698,14 +1036,53 @@ async function loadOrInitializeState(input: {
     }
 
     existing.taskRefs = subphase.taskRefs;
-    if (subphase.completed) {
-      existing.status = "passed";
-    }
   }
+
+  reconcileStateWithTasklist(state, input.parsedSubphases);
 
   state.updatedAt = now;
   await persistState(input.statePath, state);
   return state;
+}
+
+function reconcileStateWithTasklist(state: PersistedCycleState, parsedSubphases: ParsedSubphase[]): void {
+  const isSubphasePassed = (subphaseID: string): boolean => {
+    const entry = state.subphases[subphaseID];
+    if (!entry) {
+      return false;
+    }
+
+    return entry.status === "passed";
+  };
+
+  if (state.currentSubphase && isSubphasePassed(state.currentSubphase)) {
+    state.currentSubphase = undefined;
+  }
+
+  if (state.failureReason) {
+    const failedSubphase = extractFailureSubphase(state.failureReason);
+    if (failedSubphase && isSubphasePassed(failedSubphase)) {
+      state.failureReason = undefined;
+    }
+  }
+
+  const pendingExists = parsedSubphases.some((subphase) => {
+    const entry = state.subphases[subphase.id];
+    return !entry || entry.status !== "passed";
+  });
+
+  if (state.status === "failed" && !state.failureReason) {
+    state.status = pendingExists ? "running" : "completed";
+  }
+
+  if (!pendingExists && state.status !== "failed") {
+    state.status = "completed";
+  }
+}
+
+function extractFailureSubphase(reason: string): string | null {
+  const match = reason.match(/SUBPHASE-([0-9]+(?:\.[0-9A-Za-z]+)+)/i);
+  return match && match[1] ? match[1] : null;
 }
 
 function sanitizeSubphaseStateMap(raw: unknown): Record<string, SubphaseState> {
@@ -770,8 +1147,69 @@ async function persistReviewArtifact(path: string, payload: unknown): Promise<vo
   await writeFile(path, `${JSON.stringify(payload, null, 2)}\n`, "utf-8");
 }
 
+async function appendCycleEvent(path: string, entry: CycleEventEntry): Promise<void> {
+  await mkdir(dirname(path), { recursive: true });
+  await appendFile(path, `${JSON.stringify(entry)}\n`, "utf-8");
+}
+
+function resolveModelForAgent(agent: CommandAgent): string {
+  if (agent === "orchestrator") {
+    return process.env.OPENCODE_MODEL_ORCHESTRATOR ?? DEFAULT_AGENT_MODEL_BY_COMMAND.orchestrator;
+  }
+
+  if (agent === "reviewer") {
+    return process.env.OPENCODE_MODEL_REVIEWER ?? DEFAULT_AGENT_MODEL_BY_COMMAND.reviewer;
+  }
+
+  return process.env.OPENCODE_MODEL_MINION ?? DEFAULT_AGENT_MODEL_BY_COMMAND.minion;
+}
+
+function buildRuntimeFailureReason(action: "implement" | "creview" | "repair", subphase: string, error: unknown): string {
+  return [
+    `Cycle runtime failure during ${action} for SUBPHASE-${subphase}.`,
+    `Error: ${formatUnknownError(error)}.`,
+    "This usually indicates external session interruption/deletion or a transient OpenCode backend issue.",
+  ].join(" ");
+}
+
+function detectInfrastructureIssue(outputText: string): string | null {
+  if (!outputText) {
+    return null;
+  }
+
+  if (/FOREIGN KEY constraint failed/i.test(outputText)) {
+    return "sqlite foreign-key violation";
+  }
+
+  if (/NotFoundError/i.test(outputText) || /session\s+not\s+found/i.test(outputText)) {
+    return "session not found";
+  }
+
+  if (/Unable to connect|ECONNREFUSED|fetch failed/i.test(outputText)) {
+    return "unable to connect to OpenCode server";
+  }
+
+  return null;
+}
+
 function parseImplementMarker(rawOutput: string): ParsedMarker<ImplementMarkerPayload> {
-  return parseMarkerComment<ImplementMarkerPayload>(rawOutput, "CYCLE_IMPLEMENT_RESULT");
+  const marker = parseMarkerComment<ImplementMarkerPayload>(rawOutput, "CYCLE_IMPLEMENT_RESULT");
+  if (marker.markerFound) {
+    return marker;
+  }
+
+  const fallback = parseCommandStatusFallback(rawOutput);
+  if (!fallback) {
+    return marker;
+  }
+
+  return {
+    markerFound: true,
+    payload: {
+      status: fallback.status ? String(fallback.status) : undefined,
+    },
+    error: "Used fallback parser from JSON appendix because cycle marker was not found.",
+  };
 }
 
 function parseReviewMarker(rawOutput: string): ParsedMarker<ReviewMarkerPayload> {
@@ -795,7 +1233,23 @@ function parseReviewMarker(rawOutput: string): ParsedMarker<ReviewMarkerPayload>
 }
 
 function parseRepairMarker(rawOutput: string): ParsedMarker<RepairMarkerPayload> {
-  return parseMarkerComment<RepairMarkerPayload>(rawOutput, "CYCLE_REPAIR_RESULT");
+  const marker = parseMarkerComment<RepairMarkerPayload>(rawOutput, "CYCLE_REPAIR_RESULT");
+  if (marker.markerFound) {
+    return marker;
+  }
+
+  const fallback = parseCommandStatusFallback(rawOutput);
+  if (!fallback) {
+    return marker;
+  }
+
+  return {
+    markerFound: true,
+    payload: {
+      status: fallback.status ? String(fallback.status) : undefined,
+    },
+    error: "Used fallback parser from JSON appendix because cycle marker was not found.",
+  };
 }
 
 function parseReviewFallback(rawOutput: string): ReviewFallbackPayload | null {
@@ -809,6 +1263,27 @@ function parseReviewFallback(rawOutput: string): ReviewFallbackPayload | null {
     try {
       const parsed = JSON.parse(candidate) as ReviewFallbackPayload;
       if (parsed && parsed.verdict && typeof parsed.verdict === "object") {
+        return parsed;
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  return null;
+}
+
+function parseCommandStatusFallback(rawOutput: string): CommandStatusFallbackPayload | null {
+  const codeBlocks = [...rawOutput.matchAll(/```json\s*([\s\S]*?)```/gi)];
+  for (let index = codeBlocks.length - 1; index >= 0; index -= 1) {
+    const candidate = codeBlocks[index]?.[1];
+    if (!candidate) {
+      continue;
+    }
+
+    try {
+      const parsed = JSON.parse(candidate) as CommandStatusFallbackPayload;
+      if (parsed && typeof parsed === "object" && "status" in parsed) {
         return parsed;
       }
     } catch {
@@ -875,6 +1350,26 @@ function normalizeReviewStatus(value: unknown): ReviewStatus | null {
   return null;
 }
 
+function shouldBootstrapTasklistCompletedSubphase(subphase: ParsedSubphase, entry: SubphaseState): boolean {
+  if (!subphase.completed) {
+    return false;
+  }
+
+  if (entry.status !== "pending") {
+    return false;
+  }
+
+  if (entry.repairRounds > 0) {
+    return false;
+  }
+
+  return entry.history.length === 0;
+}
+
+function collectTrackedPendingSubphases(parsedSubphases: ParsedSubphase[], state: PersistedCycleState): string[] {
+  return parsedSubphases.filter((subphase) => state.subphases[subphase.id]?.status !== "passed").map((subphase) => subphase.id);
+}
+
 function recordStep(state: SubphaseState, event: CycleStepEvent): void {
   state.history.push(event);
 }
@@ -891,6 +1386,145 @@ function markerFailureHint(marker: string, parsed: ParsedMarker<unknown>): strin
   return `${marker} marker did not provide a valid status.`;
 }
 
+function initializeSkillSelfCheckSummary(enabled: boolean, dryRun: boolean): SkillSelfCheckSummary {
+  const command = SKILLS_TEST_COMMAND.join(" ");
+  if (!enabled) {
+    return {
+      enabled: false,
+      command,
+      pre: "skipped",
+      post: "skipped",
+      note: "Disabled by run_skill_selfcheck=false.",
+    };
+  }
+
+  if (dryRun) {
+    return {
+      enabled: true,
+      command,
+      pre: "skipped",
+      post: "skipped",
+      note: "Skipped in dry-run mode.",
+    };
+  }
+
+  return {
+    enabled: true,
+    command,
+    pre: "skipped",
+    post: "skipped",
+  };
+}
+
+async function runSkillsSelfCheck(worktreeRoot: string): Promise<SkillSelfCheckExecution> {
+  const packagePath = resolve(worktreeRoot, ".opencode", "package.json");
+  const maintenanceScriptPath = resolve(worktreeRoot, ".opencode", "scripts", "skill_docs_maintenance.mjs");
+
+  const hasPackage = await fileExists(packagePath);
+  const hasMaintenanceScript = await fileExists(maintenanceScriptPath);
+  if (!hasPackage || !hasMaintenanceScript) {
+    return {
+      status: "skipped",
+      note: "skills:test prerequisites not found (.opencode/package.json or skill_docs_maintenance.mjs missing).",
+    };
+  }
+
+  const [command, ...commandArgs] = SKILLS_TEST_COMMAND;
+
+  try {
+    const result = await spawnCommandCapture(command, commandArgs, worktreeRoot, SKILLS_TEST_TIMEOUT_MS);
+    if (!result.timedOut && result.exitCode === 0) {
+      return { status: "passed" };
+    }
+
+    return {
+      status: "failed",
+      note: formatSpawnFailure(result),
+    };
+  } catch (error) {
+    return {
+      status: "failed",
+      note: `Unable to execute skills self-check: ${formatUnknownError(error)}`,
+    };
+  }
+}
+
+async function fileExists(path: string): Promise<boolean> {
+  try {
+    await readFile(path, "utf-8");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function spawnCommandCapture(
+  command: string,
+  args: string[],
+  cwd: string,
+  timeoutMs: number,
+): Promise<SpawnCommandResult> {
+  return new Promise((resolvePromise, rejectPromise) => {
+    const child = spawn(command, args, {
+      cwd,
+      env: process.env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    let stdout = "";
+    let stderr = "";
+    let timedOut = false;
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGTERM");
+    }, timeoutMs);
+
+    child.stdout.on("data", (chunk: Buffer | string) => {
+      stdout += typeof chunk === "string" ? chunk : chunk.toString("utf-8");
+    });
+
+    child.stderr.on("data", (chunk: Buffer | string) => {
+      stderr += typeof chunk === "string" ? chunk : chunk.toString("utf-8");
+    });
+
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      rejectPromise(error);
+    });
+
+    child.on("close", (exitCode, signal) => {
+      clearTimeout(timer);
+      resolvePromise({
+        exitCode,
+        signal,
+        stdout,
+        stderr,
+        timedOut,
+      });
+    });
+  });
+}
+
+function formatSpawnFailure(result: SpawnCommandResult): string {
+  if (result.timedOut) {
+    return `Command timed out after ${SKILLS_TEST_TIMEOUT_MS}ms.`;
+  }
+
+  const exitSummary = `exit code ${String(result.exitCode ?? "null")}${result.signal ? ` (signal ${result.signal})` : ""}`;
+  const output = summarizeProcessOutput(result.stdout, result.stderr);
+  return output.length > 0 ? `Command failed with ${exitSummary}. Output tail: ${output}` : `Command failed with ${exitSummary}.`;
+}
+
+function summarizeProcessOutput(stdout: string, stderr: string): string {
+  const combined = [stdout.trim(), stderr.trim()].filter((value) => value.length > 0).join("\n");
+  if (combined.length <= 700) {
+    return combined;
+  }
+
+  return combined.slice(combined.length - 700);
+}
+
 function buildFailureResult(
   state: PersistedCycleState,
   statePath: string,
@@ -898,6 +1532,7 @@ function buildFailureResult(
   processedSubphases: string[],
   dryRun: boolean,
   maxRepairRounds: number,
+  skillSelfCheck: SkillSelfCheckSummary,
 ): CycleRunResult {
   return {
     ok: false,
@@ -911,6 +1546,7 @@ function buildFailureResult(
     subphases: pendingSubphases,
     processed_subphases: processedSubphases,
     failure_reason: state.failureReason,
+    skill_selfcheck: skillSelfCheck,
   };
 }
 
@@ -938,6 +1574,8 @@ export const __cycleRunnerTestUtils = {
   normalizePhaseSelector,
   parseSubphasesForPhase,
   parseMarkerComment,
+  parseImplementMarker,
+  parseRepairMarker,
   parseReviewFallback,
 };
 

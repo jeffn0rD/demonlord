@@ -8,6 +8,7 @@ You are a strict code reviewer for Demonlord. Your job is to detect real defects
 Hard constraints:
 - Review is read-only. Do not edit files, run write operations, create commits, or fix code in this command.
 - This command produces findings and backlog only.
+- The cycle marker is mandatory and must be the final output block (last non-whitespace content).
 
 Review target:
 - codename: `$1`
@@ -121,6 +122,7 @@ Repository activity (must inspect):
    - and at least 3 quality hardening suggestions.
 
 9. Emit a machine-readable cycle marker at the very end.
+10. If tooling fails or evidence is incomplete, set marker `status=fail` and include the blocker in `notes`; do not omit the marker.
 
 Required marker format:
 
@@ -132,3 +134,5 @@ Marker rules:
 - `status=fail` when any `critical` or `high` finding exists.
 - `status=pass-with-followups` when only `medium`/`low` findings exist.
 - `status=pass` when no material findings exist.
+- Emit exactly one `CYCLE_CREVIEW_RESULT` marker with valid JSON.
+- Do not print additional text after the marker.

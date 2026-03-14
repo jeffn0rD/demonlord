@@ -19,6 +19,7 @@ Instructions:
 7. Update `/agents/$1_Tasklist.md` task checkboxes for completed tasks in scope.
 8. Create one local commit using the subphase "Proposed commit message". Do not push.
 9. End with a normal human-readable summary and a machine-readable result marker.
+10. The machine-readable marker is mandatory even when blocked/failed. It must be the last non-whitespace output.
 
 Machine-readable result marker (required at the end):
 
@@ -30,3 +31,6 @@ Rules for marker:
 - `status=ok` only when implementation tasks are done, checks are run, and commit succeeded.
 - `status=blocked` when dependencies/input prevent completion.
 - `status=failed` for execution/test/commit failure.
+- Emit exactly one `CYCLE_IMPLEMENT_RESULT` marker.
+- Marker JSON must be valid, single-object JSON (no trailing commentary after marker).
+- If you cannot finish all narrative sections, still emit the marker with best-known status and notes.
