@@ -2,10 +2,12 @@ import { execFile } from "child_process";
 import { existsSync } from "fs";
 import { mkdir, readFile, rm, writeFile } from "fs/promises";
 import { dirname, resolve } from "path";
+import { fileURLToPath, pathToFileURL } from "url";
 import { promisify } from "util";
 
 const execFileAsync = promisify(execFile);
-const REPO_ROOT = resolve(__dirname, "../..");
+const SCRIPT_PATH = fileURLToPath(import.meta.url);
+const REPO_ROOT = resolve(dirname(SCRIPT_PATH), "../..");
 const REGISTRY_PATH = resolve(REPO_ROOT, "agents/tools/worktree-registry.json");
 
 type WorktreeStatus = "active" | "orphaned";
@@ -252,7 +254,16 @@ async function runCli(): Promise<void> {
   throw new Error(`Unknown command: ${command}`);
 }
 
-if (require.main === module) {
+function isMainModule(): boolean {
+  const entrypoint = process.argv[1];
+  if (!entrypoint) {
+    return false;
+  }
+
+  return pathToFileURL(resolve(entrypoint)).href === import.meta.url;
+}
+
+if (isMainModule()) {
   runCli().catch((error: unknown) => {
     const message = error instanceof Error ? error.stack ?? error.message : String(error);
     process.stderr.write(`${message}\n`);

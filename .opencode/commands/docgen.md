@@ -1,6 +1,6 @@
 ---
 description: Generate Plan and Tasklist markdown files
-agent: build
+agent: planner
 ---
 
 You are a technical writer and delivery lead. Generate two markdown documents with deterministic anchors for agentic execution.

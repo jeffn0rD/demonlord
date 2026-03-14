@@ -134,19 +134,25 @@ fi
 EOF
 } > "$CONTEXT_FILE"
 
-cat > "$METADATA_FILE" <<EOF
-{
-  "taskId": "$SAFE_TASK_ID",
-  "agentType": "$AGENT_TYPE",
-  "purpose": "${PURPOSE//"/\\"}",
-  "parentSessionID": "$PARENT_SESSION_VALUE",
-  "skillID": "$SKILL_ID_VALUE",
-  "worktreePath": "$WORKTREE_PATH",
-  "branchName": "$BRANCH_NAME",
-  "projectContext": "$CONTEXT_FILE",
-  "createdAt": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-}
-EOF
+node - "$METADATA_FILE" "$SAFE_TASK_ID" "$AGENT_TYPE" "$PURPOSE" "$PARENT_SESSION_VALUE" "$SKILL_ID_VALUE" "$WORKTREE_PATH" "$BRANCH_NAME" "$CONTEXT_FILE" <<'NODE'
+const { writeFileSync } = require("node:fs");
+
+const [metadataPath, taskId, agentType, purpose, parentSessionID, skillID, worktreePath, branchName, projectContext] = process.argv.slice(2);
+
+const metadata = {
+  taskId,
+  agentType,
+  purpose,
+  parentSessionID,
+  skillID,
+  worktreePath,
+  branchName,
+  projectContext,
+  createdAt: new Date().toISOString(),
+};
+
+writeFileSync(metadataPath, `${JSON.stringify(metadata, null, 2)}\n`, "utf-8");
+NODE
 
 node - "$REGISTRY_PATH" "$SAFE_TASK_ID" "$AGENT_TYPE" "$PURPOSE" "$WORKTREE_PATH" "$BRANCH_NAME" "$PARENT_SESSION_VALUE" "$SKILL_ID_VALUE" <<'NODE'
 const { existsSync, readFileSync, writeFileSync, mkdirSync } = require("node:fs");

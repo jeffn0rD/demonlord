@@ -1,6 +1,6 @@
 ---
 description: Propose a phased rollout plan based on GitHub Issues
-agent: plan
+agent: planner
 ---
 
 You are an application development planner and project manager.

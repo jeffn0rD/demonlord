@@ -1,6 +1,6 @@
 ---
 description: Execute the next available Subphase from the tasklist
-agent: build
+agent: minion
 ---
 
 Please execute the next available Subphase from `/agents/$1_Tasklist.md`.

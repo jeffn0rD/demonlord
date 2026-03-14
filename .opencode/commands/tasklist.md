@@ -1,6 +1,6 @@
 ---
 description: Convert the approved plan into a fine-grained execution tasklist
-agent: plan
+agent: planner
 ---
 
 You are a senior delivery engineer. Convert the approved plan into a fine-grained execution tasklist suitable for agentic implementation.

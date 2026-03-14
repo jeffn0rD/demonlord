@@ -1,6 +1,6 @@
 ---
 description: Perform repo and agent-workspace cleanup and produce a closeout note
-agent: build
+agent: minion
 ---
 
 You are a release/closeout assistant. We have completed implementation and merged/pushed the work for the current phase in $1_Tasklist.md.
