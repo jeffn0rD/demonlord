@@ -455,6 +455,7 @@ The factory centralizes command through a Discord Command Center plugin, maintai
 Integration Hubs
 
 * Discord 2-Way Bot: The communication.ts plugin handles outbound events (session.idle) by posting summaries mapped to agent personas defined in demonlord.config.json. It also listens for inbound /slash commands (e.g., /triage, /approve, /reject [reason], /handoff [skill], /park, /party) and injects them into the relevant session via the OpenCode SDK.
+* Discord Contract Fixtures (v1): Canonical outbound event payload and inbound command envelope fixtures are versioned in `.opencode/tests/harness/discord-contracts.v1.json`, with deterministic offline harness utilities in `.opencode/tests/harness/` for retry/backoff, dedupe TTL (`10m`), and no-live-network test execution.
 * Kanban Automation: Agents are restricted to applying specific GitHub Labels (e.g., Status: In Progress). These label changes trigger GitHub Actions that physically move cards on the Project V2 boards.
 
 Enhanced Collaboration: Party Mode

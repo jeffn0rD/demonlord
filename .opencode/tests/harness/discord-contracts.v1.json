@@ -1,0 +1,198 @@
+{
+  "version": "v1",
+  "retry_policy": {
+    "max_attempts": 3,
+    "backoff_ms": [0, 250, 1000],
+    "jitter": "none"
+  },
+  "dedupe_policy": {
+    "storage": "in_memory",
+    "ttl_ms": 600000
+  },
+  "outbound_events": [
+    {
+      "event": "session.idle",
+      "payload": {
+        "session_id": "ses-100",
+        "status": "idle",
+        "summary": "Session is waiting for operator input.",
+        "persona": "orchestrator",
+        "worktree": "/tmp/worktrees/ses-100"
+      }
+    },
+    {
+      "event": "session.error",
+      "payload": {
+        "session_id": "ses-101",
+        "status": "error",
+        "error_code": "E_PLUGIN_FAILURE",
+        "persona": "orchestrator",
+        "worktree": "/tmp/worktrees/ses-101"
+      }
+    },
+    {
+      "event": "pipeline.approval_requested",
+      "payload": {
+        "session_id": "ses-102",
+        "status": "awaiting_approval",
+        "stage": "implementation",
+        "persona": "orchestrator",
+        "worktree": "/tmp/worktrees/ses-102"
+      }
+    },
+    {
+      "event": "pipeline.transition",
+      "payload": {
+        "session_id": "ses-103",
+        "from_stage": "triage",
+        "to_stage": "implementation",
+        "persona": "orchestrator",
+        "worktree": "/tmp/worktrees/ses-103"
+      }
+    },
+    {
+      "event": "pipeline.summary",
+      "payload": {
+        "session_id": "ses-104",
+        "status": "completed",
+        "result": "pass",
+        "persona": "orchestrator",
+        "worktree": "/tmp/worktrees/ses-104"
+      }
+    }
+  ],
+  "inbound_commands": [
+    {
+      "command": "approve",
+      "envelope": {
+        "version": "v1",
+        "interaction_id": "ixn-approve-1",
+        "token": "token-approve-1",
+        "session_id": "ses-200",
+        "args": {},
+        "user": {
+          "id": "user-200",
+          "role_ids": ["role-admin"]
+        },
+        "channel": {
+          "id": "channel-ops"
+        }
+      }
+    },
+    {
+      "command": "party",
+      "envelope": {
+        "version": "v1",
+        "interaction_id": "ixn-party-1",
+        "token": "token-party-1",
+        "session_id": "ses-200",
+        "args": {
+          "agents": "planner reviewer"
+        },
+        "user": {
+          "id": "user-200",
+          "role_ids": ["role-admin"]
+        },
+        "channel": {
+          "id": "channel-ops"
+        }
+      }
+    },
+    {
+      "command": "continue",
+      "envelope": {
+        "version": "v1",
+        "interaction_id": "ixn-continue-1",
+        "token": "token-continue-1",
+        "session_id": "ses-200",
+        "args": {
+          "note": "resume next round"
+        },
+        "user": {
+          "id": "user-200",
+          "role_ids": ["role-admin"]
+        },
+        "channel": {
+          "id": "channel-ops"
+        }
+      }
+    },
+    {
+      "command": "halt",
+      "envelope": {
+        "version": "v1",
+        "interaction_id": "ixn-halt-1",
+        "token": "token-halt-1",
+        "session_id": "ses-200",
+        "args": {
+          "note": "pause for review"
+        },
+        "user": {
+          "id": "user-200",
+          "role_ids": ["role-admin"]
+        },
+        "channel": {
+          "id": "channel-ops"
+        }
+      }
+    },
+    {
+      "command": "focus",
+      "envelope": {
+        "version": "v1",
+        "interaction_id": "ixn-focus-1",
+        "token": "token-focus-1",
+        "session_id": "ses-200",
+        "args": {
+          "agent": "reviewer",
+          "note": "audit error handling"
+        },
+        "user": {
+          "id": "user-200",
+          "role_ids": ["role-admin"]
+        },
+        "channel": {
+          "id": "channel-ops"
+        }
+      }
+    },
+    {
+      "command": "add-agent",
+      "envelope": {
+        "version": "v1",
+        "interaction_id": "ixn-add-agent-1",
+        "token": "token-add-agent-1",
+        "session_id": "ses-200",
+        "args": {
+          "agents": "backend-specialist"
+        },
+        "user": {
+          "id": "user-200",
+          "role_ids": ["role-admin"]
+        },
+        "channel": {
+          "id": "channel-ops"
+        }
+      }
+    },
+    {
+      "command": "export",
+      "envelope": {
+        "version": "v1",
+        "interaction_id": "ixn-export-1",
+        "token": "token-export-1",
+        "session_id": "ses-200",
+        "args": {
+          "export_path": "_bmad-output/party/ses-200.md"
+        },
+        "user": {
+          "id": "user-200",
+          "role_ids": ["role-admin"]
+        },
+        "channel": {
+          "id": "channel-ops"
+        }
+      }
+    }
+  ]
+}

@@ -41,15 +41,15 @@ Execution policy for this codename:
 
 **Tasks:**
 <!-- TASK:T-1.1.1 -->
-- **T-1.1.1** (Refs #123): Create shared Discord test harness utilities (mock sender, mock inbound interaction envelope, deterministic timer/backoff helpers). Touch points: `.opencode/tests/harness/`
+- [x] **T-1.1.1** (Refs #123): Create shared Discord test harness utilities (mock sender, mock inbound interaction envelope, deterministic timer/backoff helpers). Touch points: `.opencode/tests/harness/`
 <!-- TASK:T-1.1.2 -->
-- **T-1.1.2** (Refs #123): Add reusable orchestration/session fixture builders for multi-session targeting tests. Touch points: `.opencode/tests/harness/`, `.opencode/tests/integration/`
+- [x] **T-1.1.2** (Refs #123): Add reusable orchestration/session fixture builders for multi-session targeting tests. Touch points: `.opencode/tests/harness/`, `.opencode/tests/integration/`
 <!-- TASK:T-1.1.3 -->
-- **T-1.1.3** (Refs #123): Add dedicated scripts for Discord and round verification (e.g., `test:discord`, `verify:beelzebub`). Touch points: `.opencode/package.json`
+- [x] **T-1.1.3** (Refs #123): Add dedicated scripts for Discord and round verification (e.g., `test:discord`, `verify:beelzebub`). Touch points: `.opencode/package.json`
 <!-- TASK:T-1.1.4 -->
-- **T-1.1.4** (Refs #123): Add tests enforcing "no live network" behavior and deterministic retry timing outcomes. Touch points: `.opencode/tests/plugins/`, `.opencode/tests/integration/`
+- [x] **T-1.1.4** (Refs #123): Add tests enforcing "no live network" behavior and deterministic retry timing outcomes. Touch points: `.opencode/tests/plugins/`, `.opencode/tests/integration/`
 <!-- TASK:T-1.1.5 -->
-- **T-1.1.5** (Refs #123): Add versioned contract fixtures for outbound event payloads and inbound command envelopes. Touch points: `.opencode/tests/harness/`, `doc/engineering_spec.md`
+- [x] **T-1.1.5** (Refs #123): Add versioned contract fixtures for outbound event payloads and inbound command envelopes. Touch points: `.opencode/tests/harness/`, `doc/engineering_spec.md`
 
 ### SUBPHASE-1.2: Outbound Discord Delivery
 <!-- SUBPHASE:1.2 -->
