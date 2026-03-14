@@ -149,20 +149,20 @@ Execution policy for this codename:
 **Entry criteria:**
 - PHASE-1 complete.
 **Exit criteria / QA checklist:**
-- [ ] Dry-run validates all managed assets/paths for both local and remote source modes.
-- [ ] Preflight checks fail early with actionable messages for tools/permissions/path safety/source validity.
+- [x] Dry-run validates all managed assets/paths for both local and remote source modes.
+- [x] Preflight checks fail early with actionable messages for tools/permissions/path safety/source validity.
 **Proposed PR title:** `fix: add fail-fast installer preflight and full dry-run validation`  
 **Proposed commit message:** `fix: enforce complete installer preflight and dry-run fidelity checks (Refs #123)`
 
 **Tasks:**
 <!-- TASK:T-2.1.1 -->
-- **T-2.1.1** (Refs #123): Implement consolidated preflight validator for required tools, target git repo, path safety, and source validity. Touch points: `scripts/install-demonlord.sh`
+- [x] **T-2.1.1** (Refs #123): Implement consolidated preflight validator for required tools, target git repo, path safety, and source validity. Touch points: `scripts/install-demonlord.sh`
 <!-- TASK:T-2.1.2 -->
-- **T-2.1.2** (Refs #123): Extend dry-run to validate all required managed directories/files and planned actions without mutation. Touch points: `scripts/install-demonlord.sh`
+- [x] **T-2.1.2** (Refs #123): Extend dry-run to validate all required managed directories/files and planned actions without mutation. Touch points: `scripts/install-demonlord.sh`
 <!-- TASK:T-2.1.3 -->
-- **T-2.1.3** (Refs #123): Ensure dry-run remote mode validates source reachability and required asset manifest deterministically. Touch points: `scripts/install-demonlord.sh`
+- [x] **T-2.1.3** (Refs #123): Ensure dry-run remote mode validates source reachability and required asset manifest deterministically. Touch points: `scripts/install-demonlord.sh`
 <!-- TASK:T-2.1.4 -->
-- **T-2.1.4** (Refs #123): Add focused integration tests for missing assets and invalid remote source preflight errors (full matrix remains SUBPHASE-2.4). Touch points: `.opencode/tests/integration/installer-bootstrap.test.ts`
+- [x] **T-2.1.4** (Refs #123): Add focused integration tests for missing assets and invalid remote source preflight errors (full matrix remains SUBPHASE-2.4). Touch points: `.opencode/tests/integration/installer-bootstrap.test.ts`
 
 ### SUBPHASE-2.2: Deterministic Apply + Rollback Semantics
 <!-- SUBPHASE:2.2 -->

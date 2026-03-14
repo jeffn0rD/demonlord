@@ -70,6 +70,86 @@ describe("installer/bootstrap regression", () => {
       await rm(targetRoot, { recursive: true, force: true });
     }
   });
+
+  test("dry-run fails preflight when local source is missing required assets", async () => {
+    const sourceRoot = await mkdtemp(join(tmpdir(), "installer-missing-assets-source-"));
+    const targetRoot = await mkdtemp(join(tmpdir(), "installer-missing-assets-target-"));
+
+    try {
+      await createInstallerSourceFixture(sourceRoot);
+      await rm(join(sourceRoot, "doc"), { recursive: true, force: true });
+      await rm(join(sourceRoot, ".env.example"), { force: true });
+
+      const initResult = await runCommand("git", ["init", "-q", targetRoot]);
+      assert.equal(initResult.code, 0, initResult.stderr);
+
+      const dryRunResult = await runCommand("bash", [
+        INSTALLER_PATH,
+        "--dry-run",
+        "--skip-bootstrap",
+        "--source",
+        sourceRoot,
+        "--target",
+        targetRoot,
+      ]);
+
+      assert.notEqual(dryRunResult.code, 0);
+      assert.match(dryRunResult.stderr, /Source preflight failed/);
+      assert.match(dryRunResult.stderr, /doc/);
+      assert.match(dryRunResult.stderr, /\.env\.example/);
+    } finally {
+      await rm(sourceRoot, { recursive: true, force: true });
+      await rm(targetRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("dry-run remote mode validates required asset manifest", async () => {
+    const remoteParent = await mkdtemp(join(tmpdir(), "installer-remote-parent-"));
+    const remoteSource = join(remoteParent, "remote-source.git");
+    const targetRoot = await mkdtemp(join(tmpdir(), "installer-remote-target-"));
+
+    try {
+      await mkdir(remoteSource, { recursive: true });
+
+      const initRemote = await runCommand("git", ["init", "-q", remoteSource]);
+      assert.equal(initRemote.code, 0, initRemote.stderr);
+
+      const commitRemote = await runCommand("git", [
+        "-C",
+        remoteSource,
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.com",
+        "commit",
+        "--allow-empty",
+        "-qm",
+        "init",
+      ]);
+      assert.equal(commitRemote.code, 0, commitRemote.stderr);
+
+      const initTarget = await runCommand("git", ["init", "-q", targetRoot]);
+      assert.equal(initTarget.code, 0, initTarget.stderr);
+
+      const dryRunResult = await runCommand("bash", [
+        INSTALLER_PATH,
+        "--dry-run",
+        "--skip-bootstrap",
+        "--source",
+        remoteSource,
+        "--target",
+        targetRoot,
+      ]);
+
+      assert.notEqual(dryRunResult.code, 0);
+      assert.match(dryRunResult.stdout, /validated remote source reachability/);
+      assert.match(dryRunResult.stderr, /Source preflight failed/);
+      assert.match(dryRunResult.stderr, /\.opencode/);
+    } finally {
+      await rm(remoteParent, { recursive: true, force: true });
+      await rm(targetRoot, { recursive: true, force: true });
+    }
+  });
 });
 
 async function createInstallerSourceFixture(sourceRoot: string): Promise<void> {

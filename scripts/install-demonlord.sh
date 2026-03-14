@@ -65,6 +65,74 @@ run_cmd() {
   "$@"
 }
 
+require_tool() {
+  local tool_name="$1"
+  command -v "$tool_name" >/dev/null 2>&1 || fail "Preflight failed: required tool '$tool_name' not found on PATH"
+}
+
+validate_target_path_safety() {
+  local target="$1"
+
+  [[ -n "$target" ]] || fail "Preflight failed: target path is empty"
+
+  if [[ "$target" == "/" ]]; then
+    fail "Preflight failed: refusing to operate on filesystem root '/'"
+  fi
+
+  if [[ "$target" == "$HOME" ]]; then
+    fail "Preflight failed: refusing to operate on HOME directory '$HOME'"
+  fi
+}
+
+validate_target_preflight() {
+  local target="$1"
+
+  validate_target_path_safety "$target"
+
+  [[ -d "$target" ]] || fail "Target directory does not exist: $target"
+  [[ -r "$target" ]] || fail "Preflight failed: target directory is not readable: $target"
+  [[ -w "$target" ]] || fail "Preflight failed: target directory is not writable: $target"
+
+  if ! git -C "$target" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    fail "Preflight failed: target must be a git repository: $target"
+  fi
+}
+
+validate_source_assets() {
+  local source_root="$1"
+  local missing=()
+  local asset=""
+
+  [[ -d "$source_root" ]] || fail "Source path does not exist: $source_root"
+
+  for asset in "${ASSET_DIRS[@]}" "${ASSET_FILES[@]}"; do
+    if [[ ! -e "$source_root/$asset" ]]; then
+      missing+=("$asset")
+    fi
+  done
+
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    fail "Source preflight failed. Missing required asset(s): ${missing[*]}"
+  fi
+}
+
+validate_dry_run_plan() {
+  local target="$1"
+  local asset=""
+
+  [[ $DRY_RUN -eq 1 ]] || return 0
+
+  log "[dry-run] validating managed path plan for target: $target"
+  for asset in "${ASSET_DIRS[@]}" "${ASSET_FILES[@]}"; do
+    local destination="$target/$asset"
+    local state="absent"
+    if [[ -e "$destination" ]]; then
+      state="present"
+    fi
+    log "[dry-run] planned sync target: $destination ($state)"
+  done
+}
+
 is_git_source() {
   local value="$1"
   [[ "$value" =~ ^https?:// ]] || [[ "$value" =~ ^git@ ]] || [[ "$value" =~ \.git$ ]]
@@ -242,6 +310,15 @@ fi
 
 TARGET_DIR="$(cd "$TARGET_DIR" && pwd)"
 
+require_tool git
+require_tool bash
+require_tool cp
+require_tool rm
+require_tool mkdir
+require_tool mktemp
+
+validate_target_preflight "$TARGET_DIR"
+
 if [[ $ROLLBACK_ONLY -eq 1 ]]; then
   restore_from_backup
   exit 0
@@ -257,46 +334,33 @@ fi
 
 if is_git_source "$SOURCE_ARG"; then
   SOURCE_FROM_GIT=1
-  command -v git >/dev/null 2>&1 || fail "git is required to clone source repositories"
-  if [[ $DRY_RUN -eq 1 ]]; then
-    if git ls-remote --exit-code "$SOURCE_ARG" HEAD >/dev/null 2>&1; then
+  if git ls-remote --exit-code "$SOURCE_ARG" HEAD >/dev/null 2>&1; then
+    if [[ $DRY_RUN -eq 1 ]]; then
       log "[dry-run] validated remote source reachability: $SOURCE_ARG"
-    else
-      fail "Unable to reach remote source: $SOURCE_ARG"
     fi
   else
-    TEMP_SOURCE_DIR="$(mktemp -d)"
+    fail "Unable to reach remote source: $SOURCE_ARG"
+  fi
+
+  TEMP_SOURCE_DIR="$(mktemp -d)"
+  if [[ $DRY_RUN -eq 1 ]]; then
+    log "[dry-run] cloning remote source into temporary preflight workspace"
+    git clone --depth 1 "$SOURCE_ARG" "$TEMP_SOURCE_DIR/source" >/dev/null 2>&1 || fail "Unable to clone remote source for dry-run validation: $SOURCE_ARG"
+  else
     run_cmd git clone --depth 1 "$SOURCE_ARG" "$TEMP_SOURCE_DIR/source"
-    SOURCE_ARG="$TEMP_SOURCE_DIR/source"
   fi
+  SOURCE_ARG="$TEMP_SOURCE_DIR/source"
 fi
 
-if [[ $DRY_RUN -eq 1 && $SOURCE_FROM_GIT -eq 1 ]]; then
-  log "[dry-run] remote source preflight passed; skipping local asset checks"
-else
-  [[ -d "$SOURCE_ARG" ]] || fail "Source path does not exist: $SOURCE_ARG"
-  SOURCE_ARG="$(cd "$SOURCE_ARG" && pwd)"
+[[ -d "$SOURCE_ARG" ]] || fail "Source path does not exist: $SOURCE_ARG"
+SOURCE_ARG="$(cd "$SOURCE_ARG" && pwd)"
 
-  if [[ ! -d "$SOURCE_ARG/.opencode" ]]; then
-    fail "Source is missing .opencode directory: $SOURCE_ARG"
-  fi
-
-  if [[ ! -f "$SOURCE_ARG/scripts/bootstrap.sh" ]]; then
-    fail "Source is missing scripts/bootstrap.sh: $SOURCE_ARG"
-  fi
-
-  if [[ ! -f "$SOURCE_ARG/demonlord.config.json" ]]; then
-    fail "Source is missing demonlord.config.json: $SOURCE_ARG"
-  fi
-fi
+validate_source_assets "$SOURCE_ARG"
+validate_dry_run_plan "$TARGET_DIR"
 
 if [[ "$SOURCE_ARG" == "$TARGET_DIR" ]]; then
   log "Source and target are the same directory; skipping asset sync."
 else
-  if ! git -C "$TARGET_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    fail "Target must be a git repository: $TARGET_DIR"
-  fi
-
   log "Preparing rollback snapshot..."
   backup_existing_assets "$TARGET_DIR/.demonlord-install-backup/latest"
 
