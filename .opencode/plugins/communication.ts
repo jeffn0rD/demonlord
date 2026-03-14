@@ -9,6 +9,62 @@ type OrchestrationMode = "off" | "manual" | "auto";
 interface CommunicationSettings {
   enabled: boolean;
   mode: OrchestrationMode;
+  discord: DiscordSettings;
+}
+
+interface DiscordPersonaSettings {
+  name: string;
+  avatarUrl?: string;
+}
+
+interface DiscordSettings {
+  enabled: boolean;
+  personas: Record<string, DiscordPersonaSettings>;
+}
+
+type OutboundEventName =
+  | "session.idle"
+  | "session.error"
+  | "pipeline.approval_requested"
+  | "pipeline.transition"
+  | "pipeline.summary";
+
+interface OutboundNotification {
+  event: OutboundEventName;
+  sessionID: string;
+  personaKey: string;
+  personaName: string;
+  personaAvatarUrl?: string;
+  payload: Record<string, unknown>;
+}
+
+type OutboundMappingResult =
+  | { kind: "mapped"; notification: OutboundNotification }
+  | { kind: "unsupported"; sessionID?: string; reason: string }
+  | { kind: "ignored" };
+
+interface OrchestrationContext {
+  rootSessionID: string;
+  stage: string;
+  transition: string;
+  worktree: string;
+  pendingFrom?: string;
+  pendingTo?: string;
+}
+
+interface DiscordTransportRequest {
+  webhookURL: string;
+  payload: {
+    username: string;
+    avatar_url?: string;
+    content: string;
+  };
+}
+
+interface DiscordTransportResult {
+  ok: boolean;
+  status?: number;
+  error?: string;
 }
 
 interface ApproveCommandInput {
@@ -22,7 +78,26 @@ type PartyCommandName = "party" | "continue" | "halt" | "focus" | "add-agent" | 
 const defaults: CommunicationSettings = {
   enabled: true,
   mode: "manual",
+  discord: {
+    enabled: true,
+    personas: {
+      planner: { name: "Planner" },
+      orchestrator: { name: "Orchestrator" },
+      minion: { name: "Minion" },
+      reviewer: { name: "Reviewer" },
+    },
+  },
 };
+
+const OUTBOUND_ALLOWLIST = new Set<OutboundEventName>([
+  "session.idle",
+  "session.error",
+  "pipeline.approval_requested",
+  "pipeline.transition",
+  "pipeline.summary",
+]);
+
+const OUTBOUND_DEDUPE_TTL_MS = 10 * 60 * 1000;
 
 const partyCommandActions: Record<PartyCommandName, PartyModeAction> = {
   party: "start",
@@ -36,6 +111,7 @@ const partyCommandActions: Record<PartyCommandName, PartyModeAction> = {
 const CommunicationPlugin: Plugin = async ({ client, worktree }) => {
   const settings = await loadSettings(worktree);
   const preHandledCommands = new Map<string, number>();
+  const outboundDedupes = new Map<string, number>();
 
   if (!settings.enabled) {
     return {};
@@ -68,32 +144,56 @@ const CommunicationPlugin: Plugin = async ({ client, worktree }) => {
       setNoReplyIfSupported(output);
     },
     event: async ({ event }: { event: Event }) => {
-      if (event.type !== "command.executed") {
+      if (event.type === "command.executed") {
+        const commandName = normalizeCommandName(readString(readRecord(event, "properties"), "name"));
+        if (isManagedCommand(commandName)) {
+          const commandInput: ApproveCommandInput = {
+            name: commandName,
+            sessionID: readString(readRecord(event, "properties"), "sessionID"),
+            arguments: readString(readRecord(event, "properties"), "arguments"),
+          };
+
+          if (!wasPreHandledCommand(preHandledCommands, commandInput)) {
+            if (commandName === "approve") {
+              await forwardApproveCommand(commandInput);
+            } else {
+              const feedback = await handlePartyCommand(commandInput);
+              await sendFeedback(commandInput.sessionID, feedback);
+            }
+          }
+
+          return;
+        }
+      }
+
+      const mapped = await mapOutboundNotification(event, settings, worktree);
+      if (mapped.kind === "ignored") {
         return;
       }
 
-      const commandName = normalizeCommandName(event.properties.name);
-      if (!isManagedCommand(commandName)) {
+      if (mapped.kind === "unsupported") {
+        if (mapped.sessionID) {
+          await sendFeedback(mapped.sessionID, `Discord outbound skipped: ${mapped.reason}`);
+        }
         return;
       }
 
-      const commandInput: ApproveCommandInput = {
-        name: commandName,
-        sessionID: event.properties.sessionID,
-        arguments: event.properties.arguments,
-      };
-
-      if (wasPreHandledCommand(preHandledCommands, commandInput)) {
+      const notification = mapped.notification;
+      if (!OUTBOUND_ALLOWLIST.has(notification.event)) {
+        await sendFeedback(notification.sessionID, `Discord outbound blocked for non-allowlisted event '${notification.event}'.`);
         return;
       }
 
-      if (commandName === "approve") {
-        await forwardApproveCommand(commandInput);
+      const dedupeKey = buildOutboundDedupeKey(notification);
+      if (!rememberOutboundEvent(outboundDedupes, dedupeKey)) {
         return;
       }
 
-      const feedback = await handlePartyCommand(commandInput);
-      await sendFeedback(commandInput.sessionID, feedback);
+      const delivery = await sendOutboundNotification(notification);
+      if (!delivery.ok) {
+        const details = delivery.error ? ` ${delivery.error}` : "";
+        await sendFeedback(notification.sessionID, `Discord outbound delivery failed for '${notification.event}'.${details}`.trim());
+      }
     },
   };
 
@@ -147,6 +247,37 @@ const CommunicationPlugin: Plugin = async ({ client, worktree }) => {
       query: { directory: worktree },
     });
   }
+
+  async function sendOutboundNotification(notification: OutboundNotification): Promise<DiscordTransportResult> {
+    if (!settings.discord.enabled) {
+      return {
+        ok: true,
+      };
+    }
+
+    const webhookURL = resolveWebhookURL(notification.personaKey);
+    if (!webhookURL) {
+      return {
+        ok: false,
+        error: `Missing webhook for persona '${notification.personaKey}'. Expected env ${toWebhookEnvKey(notification.personaKey)}.`,
+      };
+    }
+
+    const transportPayload: DiscordTransportRequest = {
+      webhookURL,
+      payload: {
+        username: notification.personaName,
+        ...(notification.personaAvatarUrl ? { avatar_url: notification.personaAvatarUrl } : {}),
+        content: JSON.stringify({
+          version: "v1",
+          event: notification.event,
+          payload: notification.payload,
+        }),
+      },
+    };
+
+    return sendWithDiscordTransport(transportPayload);
+  }
 };
 
 function normalizeCommandName(command: string): string {
@@ -163,6 +294,10 @@ function isPartyCommand(commandName: string): commandName is PartyCommandName {
 
 function buildCommandDedupKey(commandInput: ApproveCommandInput): string {
   return `${normalizeCommandName(commandInput.name)}:${commandInput.sessionID}:${commandInput.arguments.trim()}`;
+}
+
+function buildOutboundDedupeKey(notification: OutboundNotification): string {
+  return `${notification.event}:${stableSerialize(notification.payload)}`;
 }
 
 function rememberPreHandledCommand(cache: Map<string, number>, commandInput: ApproveCommandInput): void {
@@ -191,6 +326,24 @@ function wasPreHandledCommand(cache: Map<string, number>, commandInput: ApproveC
   }
 
   cache.delete(key);
+  return true;
+}
+
+function rememberOutboundEvent(cache: Map<string, number>, key: string): boolean {
+  const now = Date.now();
+
+  for (const [cacheKey, expiresAt] of cache) {
+    if (expiresAt <= now) {
+      cache.delete(cacheKey);
+    }
+  }
+
+  const expiresAt = cache.get(key);
+  if (expiresAt && expiresAt > now) {
+    return false;
+  }
+
+  cache.set(key, now + OUTBOUND_DEDUPE_TTL_MS);
   return true;
 }
 
@@ -300,6 +453,10 @@ async function loadSettings(worktree: string): Promise<CommunicationSettings> {
         enabled?: unknown;
         mode?: unknown;
       };
+      discord?: {
+        enabled?: unknown;
+        personas?: Record<string, { name?: unknown; avatarUrl?: unknown }>;
+      };
     };
 
     const enabled = typeof parsed.orchestration?.enabled === "boolean"
@@ -311,7 +468,33 @@ async function loadSettings(worktree: string): Promise<CommunicationSettings> {
         ? modeCandidate
         : defaults.mode;
 
-    return { enabled, mode };
+    const discordEnabled = typeof parsed.discord?.enabled === "boolean"
+      ? parsed.discord.enabled
+      : defaults.discord.enabled;
+
+    const personas = { ...defaults.discord.personas };
+    for (const [personaKey, rawPersona] of Object.entries(parsed.discord?.personas ?? {})) {
+      const existing = personas[personaKey] ?? { name: personaKey };
+      const normalizedName = typeof rawPersona?.name === "string" && rawPersona.name.trim().length > 0
+        ? rawPersona.name.trim()
+        : existing.name;
+      const normalizedAvatar = typeof rawPersona?.avatarUrl === "string" && rawPersona.avatarUrl.trim().length > 0
+        ? rawPersona.avatarUrl.trim()
+        : undefined;
+      personas[personaKey] = {
+        name: normalizedName,
+        ...(normalizedAvatar ? { avatarUrl: normalizedAvatar } : {}),
+      };
+    }
+
+    return {
+      enabled,
+      mode,
+      discord: {
+        enabled: discordEnabled,
+        personas,
+      },
+    };
   } catch {
     return defaults;
   }
@@ -323,4 +506,380 @@ export default CommunicationPlugin;
 function setNoReplyIfSupported(output: { parts: unknown[] }): void {
   const mutable = output as { noReply?: boolean };
   mutable.noReply = true;
+}
+
+async function mapOutboundNotification(
+  event: Event,
+  settings: CommunicationSettings,
+  worktree: string,
+): Promise<OutboundMappingResult> {
+  if (event.type === "session.idle") {
+    const sessionID = readString(readRecord(event, "properties"), "sessionID");
+    if (!sessionID) {
+      return { kind: "ignored" };
+    }
+
+    const context = await loadOrchestrationContext(worktree, sessionID);
+    const metadata = buildMetadata(context, sessionID, worktree);
+
+    if (context?.transition === "awaiting_approval") {
+      return {
+        kind: "mapped",
+        notification: createNotification(settings, metadata.persona, {
+          event: "pipeline.approval_requested",
+          sessionID,
+          payload: {
+            ...metadata,
+            status: "awaiting_approval",
+            stage: context.stage,
+          },
+        }),
+      };
+    }
+
+    if (context?.transition === "completed") {
+      return {
+        kind: "mapped",
+        notification: createNotification(settings, metadata.persona, {
+          event: "pipeline.summary",
+          sessionID,
+          payload: {
+            ...metadata,
+            status: "completed",
+            result: "pass",
+          },
+        }),
+      };
+    }
+
+    return {
+      kind: "mapped",
+      notification: createNotification(settings, metadata.persona, {
+        event: "session.idle",
+        sessionID,
+        payload: {
+          ...metadata,
+          status: "idle",
+          summary: "Session is waiting for operator input.",
+        },
+      }),
+    };
+  }
+
+  if (event.type === "session.error") {
+    const properties = readRecord(event, "properties");
+    const sessionID = readString(properties, "sessionID");
+    if (!sessionID) {
+      return { kind: "ignored" };
+    }
+
+    const context = await loadOrchestrationContext(worktree, sessionID);
+    const metadata = buildMetadata(context, sessionID, worktree);
+    const error = readRecord(properties, "error");
+    const errorCode = readString(error, "code") || "UNKNOWN";
+    const errorMessage = readString(readRecord(error, "data"), "message") || "unknown error";
+
+    if (context?.transition === "blocked" || context?.transition === "stopped") {
+      return {
+        kind: "mapped",
+        notification: createNotification(settings, metadata.persona, {
+          event: "pipeline.summary",
+          sessionID,
+          payload: {
+            ...metadata,
+            status: "failed",
+            result: "fail",
+            error_code: errorCode,
+            summary: errorMessage,
+          },
+        }),
+      };
+    }
+
+    return {
+      kind: "mapped",
+      notification: createNotification(settings, metadata.persona, {
+        event: "session.error",
+        sessionID,
+        payload: {
+          ...metadata,
+          status: "error",
+          error_code: errorCode,
+          summary: errorMessage,
+        },
+      }),
+    };
+  }
+
+  if (event.type === "command.executed") {
+    const properties = readRecord(event, "properties");
+    const commandName = normalizeCommandName(readString(properties, "name"));
+    if (commandName !== "pipeline") {
+      return { kind: "ignored" };
+    }
+
+    const sessionID = readString(properties, "sessionID");
+    if (!sessionID) {
+      return {
+        kind: "unsupported",
+        reason: "Pipeline command event is missing sessionID.",
+      };
+    }
+
+    const args = readString(properties, "arguments").trim();
+    const [action = "", targetStage = ""] = args.split(/\s+/, 2);
+    if (!action || !isPipelineTransitionAction(action)) {
+      return {
+        kind: "unsupported",
+        sessionID,
+        reason: `No outbound mapping for pipeline action '${action || "(empty)"}'.`,
+      };
+    }
+
+    const context = await loadOrchestrationContext(worktree, sessionID);
+    const metadata = buildMetadata(context, sessionID, worktree);
+
+    return {
+      kind: "mapped",
+      notification: createNotification(settings, metadata.persona, {
+        event: "pipeline.transition",
+        sessionID,
+        payload: {
+          ...metadata,
+          command_action: action,
+          from_stage: context?.pendingFrom ?? context?.stage ?? metadata.stage,
+          to_stage: context?.pendingTo ?? normalizePipelineStage(targetStage) ?? context?.stage ?? metadata.stage,
+        },
+      }),
+    };
+  }
+
+  return { kind: "ignored" };
+}
+
+function createNotification(
+  settings: CommunicationSettings,
+  personaKey: string,
+  input: {
+    event: OutboundEventName;
+    sessionID: string;
+    payload: Record<string, unknown>;
+  },
+): OutboundNotification {
+  const persona = settings.discord.personas[personaKey] ?? settings.discord.personas.orchestrator ?? { name: "Orchestrator" };
+  return {
+    event: input.event,
+    sessionID: input.sessionID,
+    personaKey,
+    personaName: persona.name,
+    personaAvatarUrl: persona.avatarUrl,
+    payload: {
+      ...input.payload,
+      persona: personaKey,
+      worktree: input.payload.worktree,
+      session_id: input.payload.session_id,
+    },
+  };
+}
+
+function buildMetadata(
+  context: OrchestrationContext | undefined,
+  sessionID: string,
+  fallbackWorktree: string,
+): {
+  session_id: string;
+  root_session_id: string;
+  stage: string;
+  transition: string;
+  worktree: string;
+  persona: string;
+} {
+  const stage = context?.stage ?? "unknown";
+  return {
+    session_id: sessionID,
+    root_session_id: context?.rootSessionID ?? sessionID,
+    stage,
+    transition: context?.transition ?? "unknown",
+    worktree: context?.worktree ?? fallbackWorktree,
+    persona: resolvePersonaKey(stage),
+  };
+}
+
+async function loadOrchestrationContext(worktree: string, sessionID: string): Promise<OrchestrationContext | undefined> {
+  const statePath = resolve(worktree, "_bmad-output", "orchestration-state.json");
+
+  try {
+    const raw = await readFile(statePath, "utf-8");
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const sessionToRoot = readRecord(parsed, "sessionToRoot");
+    const pipelines = readRecord(parsed, "pipelines");
+    const pipelineSummaries = readRecord(parsed, "pipelineSummaries");
+
+    const rootSessionID = readString(sessionToRoot, sessionID) || sessionID;
+    const pipeline = readRecord(pipelines, rootSessionID);
+    const summary = readRecord(pipelineSummaries, rootSessionID);
+    const sessions = readRecord(pipeline, "sessions");
+    const sessionState = readRecord(sessions, sessionID);
+    const rootSessionState = readRecord(sessions, rootSessionID);
+    const pending = readRecord(pipeline, "pendingTransition") ?? readRecord(summary, "pendingTransition");
+
+    const stage =
+      readString(sessionState, "stage") ||
+      readString(rootSessionState, "stage") ||
+      readString(pipeline, "currentStage") ||
+      readString(summary, "currentStage") ||
+      "unknown";
+    const transition = readString(pipeline, "transition") || readString(summary, "transition") || "unknown";
+    const resolvedWorktree =
+      readString(readRecord(pipeline, "worktree"), "worktreePath") ||
+      readString(sessionState, "directory") ||
+      readString(rootSessionState, "directory") ||
+      worktree;
+
+    return {
+      rootSessionID,
+      stage,
+      transition,
+      worktree: resolvedWorktree,
+      pendingFrom: readString(pending, "from"),
+      pendingTo: readString(pending, "to"),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function resolvePersonaKey(stage: string): string {
+  if (stage === "triage") {
+    return "planner";
+  }
+
+  if (stage === "implementation") {
+    return "minion";
+  }
+
+  if (stage === "review") {
+    return "reviewer";
+  }
+
+  return "orchestrator";
+}
+
+function resolveWebhookURL(personaKey: string): string | undefined {
+  const personaSpecific = process.env[toWebhookEnvKey(personaKey)];
+  if (personaSpecific && personaSpecific.trim().length > 0) {
+    return personaSpecific.trim();
+  }
+
+  const fallback = process.env.DISCORD_WEBHOOK_ORCHESTRATOR;
+  if (fallback && fallback.trim().length > 0) {
+    return fallback.trim();
+  }
+
+  return undefined;
+}
+
+function toWebhookEnvKey(personaKey: string): string {
+  return `DISCORD_WEBHOOK_${personaKey.replace(/[^a-zA-Z0-9]/g, "_").toUpperCase()}`;
+}
+
+async function sendWithDiscordTransport(request: DiscordTransportRequest): Promise<DiscordTransportResult> {
+  try {
+    const response = await fetch(request.webhookURL, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(request.payload),
+    });
+
+    if (!response.ok) {
+      const body = await safeReadResponseBody(response);
+      return {
+        ok: false,
+        status: response.status,
+        error: `HTTP ${response.status}${body ? ` ${body}` : ""}`,
+      };
+    }
+
+    return {
+      ok: true,
+      status: response.status,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: formatError(error),
+    };
+  }
+}
+
+function readRecord(source: unknown, key: string): Record<string, unknown> | undefined {
+  if (!source || typeof source !== "object") {
+    return undefined;
+  }
+
+  const value = (source as Record<string, unknown>)[key];
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+
+  return value as Record<string, unknown>;
+}
+
+function readString(source: Record<string, unknown> | undefined, key: string): string {
+  if (!source) {
+    return "";
+  }
+
+  const value = source[key];
+  return typeof value === "string" ? value : "";
+}
+
+function stableSerialize(value: unknown): string {
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value);
+  }
+
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => stableSerialize(entry)).join(",")}]`;
+  }
+
+  const entries = Object.entries(value as Record<string, unknown>)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, entryValue]) => `${JSON.stringify(key)}:${stableSerialize(entryValue)}`);
+  return `{${entries.join(",")}}`;
+}
+
+function isPipelineTransitionAction(action: string): boolean {
+  return action === "approve" || action === "advance" || action === "stop" || action === "off" || action === "on";
+}
+
+function normalizePipelineStage(raw: string): string | undefined {
+  if (raw === "triage" || raw === "implementation" || raw === "review") {
+    return raw;
+  }
+
+  return undefined;
+}
+
+async function safeReadResponseBody(response: Response): Promise<string> {
+  try {
+    const text = (await response.text()).trim();
+    if (!text) {
+      return "";
+    }
+
+    return text.length > 160 ? `${text.slice(0, 160)}...` : text;
+  } catch {
+    return "";
+  }
+}
+
+function formatError(error: unknown): string {
+  if (error instanceof Error) {
+    return `${error.name}: ${error.message}`;
+  }
+
+  return String(error);
 }

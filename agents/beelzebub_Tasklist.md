@@ -66,17 +66,17 @@ Execution policy for this codename:
 
 **Tasks:**
 <!-- TASK:T-1.2.1 -->
-- **T-1.2.1** (Refs #123): Implement outbound Discord transport adapter with explicit success/failure return semantics. Touch points: `.opencode/plugins/communication.ts`
+- [x] **T-1.2.1** (Refs #123): Implement outbound Discord transport adapter with explicit success/failure return semantics. Touch points: `.opencode/plugins/communication.ts`
 <!-- TASK:T-1.2.2 -->
-- **T-1.2.2** (Refs #123): Map and emit deterministic payloads for `session.idle`, `session.error`, approval/transition events, completion/failure summaries. Touch points: `.opencode/plugins/communication.ts`
+- [x] **T-1.2.2** (Refs #123): Map and emit deterministic payloads for `session.idle`, `session.error`, approval/transition events, completion/failure summaries. Touch points: `.opencode/plugins/communication.ts`
 <!-- TASK:T-1.2.3 -->
-- **T-1.2.3** (Refs #123): Include persona/worktree/session metadata fields in all outbound payload builders. Touch points: `.opencode/plugins/communication.ts`
+- [x] **T-1.2.3** (Refs #123): Include persona/worktree/session metadata fields in all outbound payload builders. Touch points: `.opencode/plugins/communication.ts`
 <!-- TASK:T-1.2.4 -->
-- **T-1.2.4** (Refs #123): Implement dedupe/idempotency policy for repeated outbound event emissions. Touch points: `.opencode/plugins/communication.ts`
+- [x] **T-1.2.4** (Refs #123): Implement dedupe/idempotency policy for repeated outbound event emissions. Touch points: `.opencode/plugins/communication.ts`
 <!-- TASK:T-1.2.5 -->
-- **T-1.2.5** (Refs #123): Add unit/integration tests for payload contract, dedupe behavior, and send failure surfacing. Touch points: `.opencode/tests/plugins/`, `.opencode/tests/integration/`
+- [x] **T-1.2.5** (Refs #123): Add unit/integration tests for payload contract, dedupe behavior, and send failure surfacing. Touch points: `.opencode/tests/plugins/`, `.opencode/tests/integration/`
 <!-- TASK:T-1.2.6 -->
-- **T-1.2.6** (Refs #123): Enforce a strict outbound event allowlist and fail-safe behavior for unmapped events. Touch points: `.opencode/plugins/communication.ts`, `.opencode/tests/plugins/`
+- [x] **T-1.2.6** (Refs #123): Enforce a strict outbound event allowlist and fail-safe behavior for unmapped events. Touch points: `.opencode/plugins/communication.ts`, `.opencode/tests/plugins/`
 
 ### SUBPHASE-1.3: Inbound Discord Control Routing
 <!-- SUBPHASE:1.3 -->

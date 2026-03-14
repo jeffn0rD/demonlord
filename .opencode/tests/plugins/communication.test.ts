@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { mkdtemp, rm, writeFile } from "fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "fs/promises";
 import { tmpdir } from "os";
 import { join, resolve } from "path";
 import CommunicationPlugin from "../../plugins/communication.ts";
@@ -122,6 +122,247 @@ describe("communication plugin deterministic network-free behavior", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  test("maps idle events to approval payload with persona/worktree/session metadata", async () => {
+    const root = await mkdtemp(join(tmpdir(), "communication-outbound-approval-"));
+
+    try {
+      await writeConfig(root, {
+        orchestration: {
+          enabled: true,
+          mode: "manual",
+        },
+        discord: {
+          enabled: true,
+          personas: {
+            minion: {
+              name: "Minion Bot",
+            },
+          },
+        },
+      });
+
+      await writeOrchestrationState(root, {
+        sessionID: "ses-outbound",
+        stage: "implementation",
+        transition: "awaiting_approval",
+        directory: "/tmp/worktrees/ses-outbound",
+      });
+
+      const client = createMockClient();
+      const plugin = await createPlugin(client, root);
+      const eventHook = plugin.event;
+
+      assert.ok(eventHook, "communication plugin must expose event hook");
+
+      await withEnv({ DISCORD_WEBHOOK_MINION: "https://discord.example/minion" }, async () => {
+        const sentBodies: string[] = [];
+
+        await withMockFetch(
+          async (_url, init) => {
+            sentBodies.push(typeof init?.body === "string" ? init.body : "");
+            return createMockResponse(204);
+          },
+          async () => {
+            await eventHook?.({
+              event: {
+                type: "session.idle",
+                properties: {
+                  sessionID: "ses-outbound",
+                },
+              } as never,
+            });
+          },
+        );
+
+        assert.equal(sentBodies.length, 1);
+        const webhookPayload = JSON.parse(sentBodies[0] ?? "{}") as { username?: string; content?: string };
+        const envelope = JSON.parse(webhookPayload.content ?? "{}") as {
+          event?: string;
+          payload?: {
+            session_id?: string;
+            persona?: string;
+            worktree?: string;
+          };
+        };
+
+        assert.equal(webhookPayload.username, "Minion Bot");
+        assert.equal(envelope.event, "pipeline.approval_requested");
+        assert.equal(envelope.payload?.session_id, "ses-outbound");
+        assert.equal(envelope.payload?.persona, "minion");
+        assert.equal(envelope.payload?.worktree, "/tmp/worktrees/ses-outbound");
+      });
+
+      assert.equal(client.prompts.length, 0);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("dedupes repeated outbound emissions for identical events", async () => {
+    const root = await mkdtemp(join(tmpdir(), "communication-outbound-dedupe-"));
+
+    try {
+      await writeConfig(root, {
+        orchestration: {
+          enabled: true,
+          mode: "manual",
+        },
+        discord: {
+          enabled: true,
+        },
+      });
+
+      await writeOrchestrationState(root, {
+        sessionID: "ses-dedupe",
+        stage: "triage",
+        transition: "idle",
+        directory: "/tmp/worktrees/ses-dedupe",
+      });
+
+      const client = createMockClient();
+      const plugin = await createPlugin(client, root);
+      const eventHook = plugin.event;
+      assert.ok(eventHook, "communication plugin must expose event hook");
+
+      await withEnv({ DISCORD_WEBHOOK_PLANNER: "https://discord.example/planner" }, async () => {
+        let callCount = 0;
+
+        await withMockFetch(
+          async () => {
+            callCount += 1;
+            return createMockResponse(204);
+          },
+          async () => {
+            await eventHook?.({
+              event: {
+                type: "session.idle",
+                properties: {
+                  sessionID: "ses-dedupe",
+                },
+              } as never,
+            });
+
+            await eventHook?.({
+              event: {
+                type: "session.idle",
+                properties: {
+                  sessionID: "ses-dedupe",
+                },
+              } as never,
+            });
+          },
+        );
+
+        assert.equal(callCount, 1);
+      });
+
+      assert.equal(client.prompts.length, 0);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("surfaces outbound send failures to orchestrator prompt path", async () => {
+    const root = await mkdtemp(join(tmpdir(), "communication-outbound-failure-"));
+
+    try {
+      await writeConfig(root, {
+        orchestration: {
+          enabled: true,
+          mode: "manual",
+        },
+        discord: {
+          enabled: true,
+        },
+      });
+
+      await writeOrchestrationState(root, {
+        sessionID: "ses-fail",
+        stage: "triage",
+        transition: "idle",
+        directory: "/tmp/worktrees/ses-fail",
+      });
+
+      const client = createMockClient();
+      const plugin = await createPlugin(client, root);
+      const eventHook = plugin.event;
+      assert.ok(eventHook, "communication plugin must expose event hook");
+
+      await withEnv({ DISCORD_WEBHOOK_PLANNER: "https://discord.example/planner" }, async () => {
+        await withMockFetch(
+          async () => createMockResponse(503, "discord unavailable"),
+          async () => {
+            await eventHook?.({
+              event: {
+                type: "session.idle",
+                properties: {
+                  sessionID: "ses-fail",
+                },
+              } as never,
+            });
+          },
+        );
+      });
+
+      assert.equal(client.prompts.length, 1);
+      assert.match(client.prompts[0]?.text ?? "", /Discord outbound delivery failed/i);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("fails safe for unmapped pipeline actions under strict allowlist", async () => {
+    const root = await mkdtemp(join(tmpdir(), "communication-outbound-failsafe-"));
+
+    try {
+      await writeConfig(root, {
+        orchestration: {
+          enabled: true,
+          mode: "manual",
+        },
+        discord: {
+          enabled: true,
+        },
+      });
+
+      const client = createMockClient();
+      const plugin = await createPlugin(client, root);
+      const eventHook = plugin.event;
+      assert.ok(eventHook, "communication plugin must expose event hook");
+
+      await withEnv({ DISCORD_WEBHOOK_ORCHESTRATOR: "https://discord.example/orchestrator" }, async () => {
+        let callCount = 0;
+
+        await withMockFetch(
+          async () => {
+            callCount += 1;
+            return createMockResponse(204);
+          },
+          async () => {
+            await eventHook?.({
+              event: {
+                type: "command.executed",
+                properties: {
+                  name: "pipeline",
+                  sessionID: "ses-root",
+                  arguments: "status",
+                },
+              } as never,
+            });
+          },
+        );
+
+        assert.equal(callCount, 0);
+      });
+
+      assert.equal(client.prompts.length, 1);
+      assert.match(client.prompts[0]?.text ?? "", /Discord outbound skipped/i);
+      assert.match(client.prompts[0]?.text ?? "", /No outbound mapping for pipeline action 'status'/i);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
 
 function createMockClient(): MockClient {
@@ -152,6 +393,98 @@ function createMockClient(): MockClient {
 async function writeConfig(root: string, config: unknown): Promise<void> {
   const configPath = resolve(root, "demonlord.config.json");
   await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf-8");
+}
+
+async function writeOrchestrationState(
+  root: string,
+  state: {
+    sessionID: string;
+    stage: "triage" | "implementation" | "review";
+    transition: string;
+    directory: string;
+  },
+): Promise<void> {
+  const bmadRoot = resolve(root, "_bmad-output");
+  await mkdir(bmadRoot, { recursive: true });
+
+  const statePath = resolve(bmadRoot, "orchestration-state.json");
+  const fixture = {
+    version: 2,
+    sessionToRoot: {
+      [state.sessionID]: state.sessionID,
+    },
+    pipelines: {
+      [state.sessionID]: {
+        rootSessionID: state.sessionID,
+        currentStage: state.stage,
+        transition: state.transition,
+        sessions: {
+          [state.sessionID]: {
+            sessionID: state.sessionID,
+            stage: state.stage,
+            directory: state.directory,
+            children: [],
+            status: "active",
+          },
+        },
+      },
+    },
+  };
+
+  await writeFile(statePath, `${JSON.stringify(fixture, null, 2)}\n`, "utf-8");
+}
+
+async function withMockFetch<T>(
+  mock: (input: string, init?: RequestInit) => Promise<Response>,
+  run: () => Promise<T>,
+): Promise<T> {
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
+    const url = typeof input === "string"
+      ? input
+      : input instanceof URL
+        ? input.toString()
+        : input.url;
+    return mock(url, init);
+  }) as typeof globalThis.fetch;
+
+  try {
+    return await run();
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+}
+
+async function withEnv<T>(values: Record<string, string>, run: () => Promise<T>): Promise<T> {
+  const previous = new Map<string, string | undefined>();
+
+  for (const [key, value] of Object.entries(values)) {
+    previous.set(key, process.env[key]);
+    process.env[key] = value;
+  }
+
+  try {
+    return await run();
+  } finally {
+    for (const [key, value] of previous.entries()) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+}
+
+function createMockResponse(status: number, body = ""): Response {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    async text(): Promise<string> {
+      return body;
+    },
+  } as Response;
 }
 
 async function createPlugin(
