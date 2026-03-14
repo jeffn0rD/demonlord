@@ -32,10 +32,10 @@ Execution policy for this codename:
 - Existing `.opencode` tests pass on current branch.
 - No live-network dependency in test runtime.
 **Exit criteria / QA checklist:**
-- [ ] Deterministic Discord harness utilities exist for outbound/inbound/retry/dedupe scenarios.
-- [ ] New tests run offline and deterministically.
-- [ ] Canonical Discord command/event contract fixtures are defined and versioned.
-- [ ] Test scripts include dedicated Discord/hardening verification target and the canonical `verify:beelzebub` entrypoint.
+- [x] Deterministic Discord harness utilities exist for outbound/inbound/retry/dedupe scenarios.
+- [x] New tests run offline and deterministically.
+- [x] Canonical Discord command/event contract fixtures are defined and versioned.
+- [x] Test scripts include dedicated Discord/hardening verification target and the canonical `verify:beelzebub` entrypoint.
 **Proposed PR title:** `test: add deterministic discord command-center harness`  
 **Proposed commit message:** `test: add deterministic discord harness and fixtures for command-center hardening (Refs #123)`
 
