@@ -542,7 +542,7 @@ describe("communication session targeting unit tests", () => {
     }
   });
 
-  test("auto-targets single active session when explicit session_id is invalid", async () => {
+  test("fails closed when explicit session_id is invalid", async () => {
     const root = await mkdtemp(join(tmpdir(), "communication-session-auto-"));
 
     try {
@@ -566,7 +566,7 @@ describe("communication session targeting unit tests", () => {
         parts: [{ type: "text", text: "placeholder" }],
       };
 
-      // Provide invalid explicit session_id - should auto-target to ses-a
+      // Provide invalid explicit session_id - should fail closed
       await commandBefore(
         {
           command: "approve",
@@ -578,8 +578,9 @@ describe("communication session targeting unit tests", () => {
 
       assert.equal(output.noReply, true);
       assert.deepEqual(output.parts, []);
-      assert.equal(client.commands.length, 1);
-      assert.equal(client.commands[0]?.sessionID, "ses-a");
+      assert.equal(client.commands.length, 0);
+      assert.equal(client.prompts.length, 1);
+      assert.match(client.prompts[0]?.text ?? "", /No active session matches explicit session_id 'ses-invalid'/i);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -623,6 +624,129 @@ describe("communication session targeting unit tests", () => {
       assert.deepEqual(output.parts, []);
       assert.equal(client.prompts.length, 1);
       assert.match(client.prompts[0]?.text ?? "", /Multiple active sessions found/i);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("suppresses duplicate inbound interactions by command/session/token", async () => {
+    const root = await mkdtemp(join(tmpdir(), "communication-session-dedupe-token-"));
+
+    try {
+      await writeConfig(root, {
+        orchestration: {
+          enabled: true,
+          mode: "manual",
+        },
+      });
+
+      await writeMultiSessionOrchestrationState(root, ["ses-a"]);
+
+      const client = createMockClient();
+      const plugin = await createPlugin(client, root);
+      const commandBefore = plugin["command.execute.before"];
+      assert.ok(commandBefore, "communication plugin must expose command.execute.before hook");
+
+      const output: { parts: unknown[]; noReply?: boolean } = {
+        parts: [{ type: "text", text: "placeholder" }],
+      };
+
+      await commandBefore(
+        {
+          command: "approve",
+          sessionID: "ses-a",
+          arguments: "--interaction-token tok-dup-1",
+        } as Parameters<typeof commandBefore>[0],
+        output as Parameters<typeof commandBefore>[1],
+      );
+
+      await commandBefore(
+        {
+          command: "approve",
+          sessionID: "ses-a",
+          arguments: "--interaction-token tok-dup-1",
+        } as Parameters<typeof commandBefore>[0],
+        output as Parameters<typeof commandBefore>[1],
+      );
+
+      assert.equal(client.commands.length, 1);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("returns deterministic migration guidance for legacy commands", async () => {
+    const root = await mkdtemp(join(tmpdir(), "communication-legacy-guidance-"));
+
+    try {
+      await writeConfig(root, {
+        orchestration: {
+          enabled: true,
+          mode: "manual",
+        },
+      });
+
+      const client = createMockClient();
+      const plugin = await createPlugin(client, root);
+      const commandBefore = plugin["command.execute.before"];
+      assert.ok(commandBefore, "communication plugin must expose command.execute.before hook");
+
+      const output: { parts: unknown[]; noReply?: boolean } = {
+        parts: [{ type: "text", text: "placeholder" }],
+      };
+
+      await commandBefore(
+        {
+          command: "handoff",
+          sessionID: "ses-legacy",
+          arguments: "reviewer",
+        } as Parameters<typeof commandBefore>[0],
+        output as Parameters<typeof commandBefore>[1],
+      );
+
+      assert.equal(output.noReply, true);
+      assert.deepEqual(output.parts, []);
+      assert.equal(client.commands.length, 0);
+      assert.equal(client.prompts.length, 1);
+      assert.match(client.prompts[0]?.text ?? "", /no longer supported/i);
+      assert.match(client.prompts[0]?.text ?? "", /\/focus/i);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("does not intercept non-managed non-legacy commands", async () => {
+    const root = await mkdtemp(join(tmpdir(), "communication-non-managed-pass-through-"));
+
+    try {
+      await writeConfig(root, {
+        orchestration: {
+          enabled: true,
+          mode: "manual",
+        },
+      });
+
+      const client = createMockClient();
+      const plugin = await createPlugin(client, root);
+      const commandBefore = plugin["command.execute.before"];
+      assert.ok(commandBefore, "communication plugin must expose command.execute.before hook");
+
+      const output: { parts: unknown[]; noReply?: boolean } = {
+        parts: [{ type: "text", text: "placeholder" }],
+      };
+
+      await commandBefore(
+        {
+          command: "pipeline",
+          sessionID: "ses-any",
+          arguments: "status",
+        } as Parameters<typeof commandBefore>[0],
+        output as Parameters<typeof commandBefore>[1],
+      );
+
+      assert.equal(output.noReply, undefined);
+      assert.equal(client.commands.length, 0);
+      assert.equal(client.prompts.length, 0);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

@@ -87,7 +87,7 @@ Execution policy for this codename:
 - [x] `/approve`, `/party`, `/continue`, `/halt`, `/focus`, `/add-agent`, `/export` are routed deterministically.
 - [x] Multi-session targeting rules are deterministic and fail-closed on ambiguity.
 - [x] Duplicate inbound command handling is idempotent.
-- [ ] Unsupported/legacy commands fail deterministically with migration guidance.
+- [x] Unsupported/legacy commands fail deterministically with migration guidance.
 **Proposed PR title:** `feat: add deterministic inbound discord control routing`  
 **Proposed commit message:** `feat: route discord control commands to target opencode sessions deterministically (Refs #123)`
 

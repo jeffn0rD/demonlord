@@ -213,10 +213,18 @@ The system posts to Discord for:
 
 ### Inbound Commands
 Control the system via Discord slash commands:
-- **`/approve`**: Approve the current pending action
-- **`/reject [reason]`**: Reject with optional feedback
-- **`/park`**: Pause current work for later resumption
-- **`/handoff [skill]`**: Transfer to a different specialized agent
+- **`/approve [session_id?]`**: Approve the current pending action via the deterministic pipeline path
+- **`/party [agents...]`**: Start Party Mode for the targeted session
+- **`/continue [note]`**: Continue the current Party Mode round
+- **`/halt [note]`**: Halt/pause Party Mode for review or operator intervention
+- **`/focus <agent> [note]`**: Focus Party Mode on one agent
+- **`/add-agent <agent...>`**: Add one or more agents to the Party Mode roster
+- **`/export [path]`**: Export Party Mode transcript markdown
+
+Legacy Discord commands are fail-closed with migration guidance:
+- **`/reject`** -> use `/halt <reason>` or `/pipeline stop [session_id]`
+- **`/park`** -> use `/halt [note]` then `/continue [note]`
+- **`/handoff`** -> use `/focus <agent> [note]` or `/add-agent <agent...>`
 
 Control the orchestration pipeline locally via CLI commands:
 - **`/pipeline status [session]`**

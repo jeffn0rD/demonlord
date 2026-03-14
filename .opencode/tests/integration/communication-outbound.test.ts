@@ -303,7 +303,7 @@ describe("communication session targeting integration", () => {
     }
   });
 
-  test("auto-targets single active session when explicit session_id is invalid", async () => {
+  test("fails closed when explicit session_id is invalid", async () => {
     const root = await mkdtemp(join(tmpdir(), "communication-session-auto-"));
 
     try {
@@ -325,7 +325,7 @@ describe("communication session targeting integration", () => {
         parts: [{ type: "text", text: "placeholder" }],
       };
 
-      // Provide invalid explicit session_id - should auto-target to ses-a
+      // Provide invalid explicit session_id - should fail closed
       await commandBefore(
         {
           command: "approve",
@@ -337,8 +337,9 @@ describe("communication session targeting integration", () => {
 
       assert.equal(output.noReply, true);
       assert.deepEqual(output.parts, []);
-      assert.equal(client.commands.length, 1);
-      assert.equal(client.commands[0]?.sessionID, "ses-a");
+      assert.equal(client.commands.length, 0);
+      assert.equal(client.prompts.length, 1);
+      assert.match(client.prompts[0]?.text ?? "", /No active session matches explicit session_id 'ses-invalid'/i);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -419,7 +420,90 @@ describe("communication session targeting integration", () => {
       assert.equal(output.noReply, true);
       assert.deepEqual(output.parts, []);
       assert.equal(client.prompts.length, 1);
-      assert.match(client.prompts[0]?.text ?? "", /Explicit session_id 'ses-any' is not active/i);
+      assert.match(client.prompts[0]?.text ?? "", /No active session matches explicit session_id 'ses-any'/i);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("suppresses duplicate inbound interactions by command/session/token", async () => {
+    const root = await mkdtemp(join(tmpdir(), "communication-session-dedupe-token-int-"));
+
+    try {
+      await writeConfig(root);
+      await writeMultiSessionOrchestrationState(root, ["ses-a"]);
+
+      const client = createMockClient();
+      const plugin = await CommunicationPlugin({
+        client: client as unknown as Parameters<typeof CommunicationPlugin>[0]["client"],
+        worktree: root,
+      } as Parameters<typeof CommunicationPlugin>[0]);
+
+      const commandBefore = plugin["command.execute.before"];
+      assert.ok(commandBefore, "communication plugin must expose command.execute.before hook");
+
+      const output: { parts: unknown[]; noReply?: boolean } = {
+        parts: [{ type: "text", text: "placeholder" }],
+      };
+
+      await commandBefore(
+        {
+          command: "approve",
+          sessionID: "ses-a",
+          arguments: "--interaction-token tok-int-1",
+        } as Parameters<typeof commandBefore>[0],
+        output as Parameters<typeof commandBefore>[1],
+      );
+
+      await commandBefore(
+        {
+          command: "approve",
+          sessionID: "ses-a",
+          arguments: "--interaction-token tok-int-1",
+        } as Parameters<typeof commandBefore>[0],
+        output as Parameters<typeof commandBefore>[1],
+      );
+
+      assert.equal(client.commands.length, 1);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("returns deterministic migration guidance for unsupported legacy command", async () => {
+    const root = await mkdtemp(join(tmpdir(), "communication-legacy-int-"));
+
+    try {
+      await writeConfig(root);
+
+      const client = createMockClient();
+      const plugin = await CommunicationPlugin({
+        client: client as unknown as Parameters<typeof CommunicationPlugin>[0]["client"],
+        worktree: root,
+      } as Parameters<typeof CommunicationPlugin>[0]);
+
+      const commandBefore = plugin["command.execute.before"];
+      assert.ok(commandBefore, "communication plugin must expose command.execute.before hook");
+
+      const output: { parts: unknown[]; noReply?: boolean } = {
+        parts: [{ type: "text", text: "placeholder" }],
+      };
+
+      await commandBefore(
+        {
+          command: "park",
+          sessionID: "ses-legacy",
+          arguments: "",
+        } as Parameters<typeof commandBefore>[0],
+        output as Parameters<typeof commandBefore>[1],
+      );
+
+      assert.equal(output.noReply, true);
+      assert.deepEqual(output.parts, []);
+      assert.equal(client.commands.length, 0);
+      assert.equal(client.prompts.length, 1);
+      assert.match(client.prompts[0]?.text ?? "", /no longer supported/i);
+      assert.match(client.prompts[0]?.text ?? "", /\/halt/i);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

@@ -78,17 +78,16 @@ interface ApproveCommandInput {
   name: string;
   sessionID: string;
   arguments: string;
+  interactionToken?: string;
 }
 
 type PartyCommandName = "party" | "continue" | "halt" | "focus" | "add-agent" | "export";
 
-// Legacy commands that are no longer supported with migration guidance
-type LegacyCommandName = "start" | "stop" | "status" | "restart";
+type LegacyCommandName = "reject" | "park" | "handoff";
 const LEGACY_COMMANDS: Record<LegacyCommandName, string> = {
-  start: "Use `/pipeline advance` to start or resume a pipeline.",
-  stop: "Use `/pipeline stop` to halt a pipeline.",
-  status: "Use `/pipeline status` to check pipeline status.",
-  restart: "Use `/pipeline stop` followed by `/pipeline advance` to restart a pipeline.",
+  reject: "Use `/halt <reason>` to pause execution with context, or `/pipeline stop [session_id]` for a hard stop.",
+  park: "Use `/halt [note]` to pause, then `/continue [note]` to resume the party round.",
+  handoff: "Use `/focus <agent> [note]` for targeted work or `/add-agent <agent...>` to expand the party.",
 };
 
 const defaults: CommunicationSettings = {
@@ -114,6 +113,7 @@ const OUTBOUND_ALLOWLIST = new Set<OutboundEventName>([
 ]);
 
 const OUTBOUND_DEDUPE_TTL_MS = 10 * 60 * 1000;
+const INBOUND_DEDUPE_TTL_MS = 10 * 60 * 1000;
 
 const partyCommandActions: Record<PartyCommandName, PartyModeAction> = {
   party: "start",
@@ -127,6 +127,7 @@ const partyCommandActions: Record<PartyCommandName, PartyModeAction> = {
 const CommunicationPlugin: Plugin = async ({ client, worktree }) => {
   const settings = await loadSettings(worktree);
   const preHandledCommands = new Map<string, number>();
+  const inboundDedupes = new Map<string, number>();
   const outboundDedupes = new Map<string, number>();
 
   if (!settings.enabled) {
@@ -136,7 +137,7 @@ const CommunicationPlugin: Plugin = async ({ client, worktree }) => {
   return {
     "command.execute.before": async (input, output) => {
       const commandName = normalizeCommandName(input.command);
-      
+
       // Check if command is a legacy command
       if (commandName in LEGACY_COMMANDS) {
         output.parts = [];
@@ -144,14 +145,12 @@ const CommunicationPlugin: Plugin = async ({ client, worktree }) => {
         setNoReplyIfSupported(output);
         return;
       }
-      
+
       if (!isManagedCommand(commandName)) {
-        // Unknown command - provide helpful message
-        output.parts = [];
-        await sendFeedback(input.sessionID, `Unknown command '${commandName}'. Available commands: /approve, /party, /continue, /halt, /focus, /add-agent, /export.`);
-        setNoReplyIfSupported(output);
         return;
       }
+
+      const parsed = parseInboundCommandArguments(input.arguments, readInteractionTokenFromSource(input));
 
       // Resolve target session using session targeting policy
       const sessionResolution = await resolveSessionTarget(worktree, input.sessionID);
@@ -166,8 +165,15 @@ const CommunicationPlugin: Plugin = async ({ client, worktree }) => {
       const commandInput: ApproveCommandInput = {
         name: commandName,
         sessionID: targetSessionID,
-        arguments: input.arguments,
+        arguments: parsed.arguments,
+        interactionToken: parsed.interactionToken,
       };
+
+      if (!rememberInboundCommand(inboundDedupes, commandInput)) {
+        output.parts = [];
+        setNoReplyIfSupported(output);
+        return;
+      }
 
       rememberPreHandledCommand(preHandledCommands, commandInput);
 
@@ -184,15 +190,25 @@ const CommunicationPlugin: Plugin = async ({ client, worktree }) => {
     },
     event: async ({ event }: { event: Event }) => {
       if (event.type === "command.executed") {
-        const commandName = normalizeCommandName(readString(readRecord(event, "properties"), "name"));
+        const properties = readRecord(event, "properties");
+        const commandName = normalizeCommandName(readString(properties, "name"));
         if (isManagedCommand(commandName)) {
+          const parsed = parseInboundCommandArguments(
+            readString(properties, "arguments"),
+            readInteractionTokenFromSource(properties),
+          );
           const commandInput: ApproveCommandInput = {
             name: commandName,
-            sessionID: readString(readRecord(event, "properties"), "sessionID"),
-            arguments: readString(readRecord(event, "properties"), "arguments"),
+            sessionID: readString(properties, "sessionID"),
+            arguments: parsed.arguments,
+            interactionToken: parsed.interactionToken,
           };
 
           if (!wasPreHandledCommand(preHandledCommands, commandInput)) {
+            if (!rememberInboundCommand(inboundDedupes, commandInput)) {
+              return;
+            }
+
             if (commandName === "approve") {
               await forwardApproveCommand(commandInput);
             } else {
@@ -332,6 +348,10 @@ function isPartyCommand(commandName: string): commandName is PartyCommandName {
 }
 
 function buildCommandDedupKey(commandInput: ApproveCommandInput): string {
+  if (commandInput.interactionToken) {
+    return `${normalizeCommandName(commandInput.name)}:${commandInput.sessionID}:token:${commandInput.interactionToken}`;
+  }
+
   return `${normalizeCommandName(commandInput.name)}:${commandInput.sessionID}:${commandInput.arguments.trim()}`;
 }
 
@@ -384,6 +404,103 @@ function rememberOutboundEvent(cache: Map<string, number>, key: string): boolean
 
   cache.set(key, now + OUTBOUND_DEDUPE_TTL_MS);
   return true;
+}
+
+function rememberInboundCommand(cache: Map<string, number>, commandInput: ApproveCommandInput): boolean {
+  const now = Date.now();
+
+  for (const [key, expiresAt] of cache) {
+    if (expiresAt <= now) {
+      cache.delete(key);
+    }
+  }
+
+  const dedupeKey = buildCommandDedupKey(commandInput);
+  const expiresAt = cache.get(dedupeKey);
+  if (expiresAt && expiresAt > now) {
+    return false;
+  }
+
+  cache.set(dedupeKey, now + INBOUND_DEDUPE_TTL_MS);
+  return true;
+}
+
+function parseInboundCommandArguments(
+  rawArguments: string,
+  metadataToken?: string,
+): { arguments: string; interactionToken?: string } {
+  const tokens = rawArguments
+    .trim()
+    .split(/\s+/)
+    .filter((token) => token.length > 0);
+
+  const kept: string[] = [];
+  let interactionToken: string | undefined = normalizeOptionalToken(metadataToken);
+
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index]!;
+
+    const inlineToken = readInlineInteractionFlag(token);
+    if (inlineToken) {
+      interactionToken = interactionToken ?? inlineToken;
+      continue;
+    }
+
+    if (isInteractionFlag(token)) {
+      const next = tokens[index + 1];
+      if (next) {
+        interactionToken = interactionToken ?? normalizeOptionalToken(next);
+        index += 1;
+      }
+      continue;
+    }
+
+    kept.push(token);
+  }
+
+  return {
+    arguments: kept.join(" "),
+    interactionToken,
+  };
+}
+
+function isInteractionFlag(token: string): boolean {
+  return token === "--interaction-token" || token === "--interaction-id";
+}
+
+function readInlineInteractionFlag(token: string): string | undefined {
+  if (token.startsWith("--interaction-token=")) {
+    return normalizeOptionalToken(token.slice("--interaction-token=".length));
+  }
+
+  if (token.startsWith("--interaction-id=")) {
+    return normalizeOptionalToken(token.slice("--interaction-id=".length));
+  }
+
+  return undefined;
+}
+
+function readInteractionTokenFromSource(source: unknown): string | undefined {
+  if (!source || typeof source !== "object") {
+    return undefined;
+  }
+
+  const record = source as Record<string, unknown>;
+  const metadata = readRecord(record, "metadata");
+
+  return normalizeOptionalToken(
+    readString(record, "interactionToken") ||
+      readString(record, "interaction_id") ||
+      readString(record, "token") ||
+      readString(metadata, "interactionToken") ||
+      readString(metadata, "interaction_id") ||
+      readString(metadata, "token"),
+  );
+}
+
+function normalizeOptionalToken(value: string | undefined): string | undefined {
+  const normalized = value?.trim();
+  return normalized ? normalized : undefined;
 }
 
 function parsePartyModeArgs(commandInput: ApproveCommandInput, commandName: PartyCommandName): PartyModeArgs {
@@ -844,30 +961,14 @@ async function resolveSessionTarget(
         sessionID: explicitSessionID,
         candidates: activeSessions,
       };
-    } else {
-      // Explicit session_id is provided but invalid - try to auto-target
-      // This follows the policy: explicit target first, but if it's invalid, fall back to auto-target
-      if (activeSessions.length === 1) {
-        return {
-          ok: true,
-          sessionID: activeSessions[0],
-          candidates: activeSessions,
-          reason: `Explicit session_id '${explicitSessionID}' is not active. Auto-targeting to single active session.`,
-        };
-      } else if (activeSessions.length === 0) {
-        return {
-          ok: false,
-          reason: `Explicit session_id '${explicitSessionID}' is not active, and no other active sessions are available.`,
-          candidates: [],
-        };
-      } else {
-        return {
-          ok: false,
-          reason: `Explicit session_id '${explicitSessionID}' is not active. Multiple active sessions found. Provide an explicit session_id.`,
-          candidates: activeSessions,
-        };
-      }
     }
+
+    const candidateHint = activeSessions.length > 0 ? activeSessions.join(", ") : "none";
+    return {
+      ok: false,
+      reason: `No active session matches explicit session_id '${explicitSessionID}'. Active candidates: ${candidateHint}.`,
+      candidates: activeSessions,
+    };
   }
 
   // No explicit session_id provided - try to auto-target
@@ -890,7 +991,7 @@ async function resolveSessionTarget(
   // Multiple active sessions - require explicit session_id
   return {
     ok: false,
-    reason: "Multiple active sessions found. Provide an explicit session_id.",
+    reason: `Multiple active sessions found (${activeSessions.join(", ")}). Provide an explicit session_id.`,
     candidates: activeSessions,
   };
 }
