@@ -87,23 +87,46 @@ describe("communication outbound integration", () => {
   });
 });
 
-function createMockClient(): {
-  prompts: Array<{ sessionID: string; text: string }>;
+interface MockCommandCall {
+  sessionID: string;
+  command: string;
+  arguments: string;
+}
+
+interface MockPromptCall {
+  sessionID: string;
+  text: string;
+}
+
+interface MockClient {
+  commands: MockCommandCall[];
+  prompts: MockPromptCall[];
   session: {
-    command(_input: unknown): Promise<void>;
+    command(input: {
+      path: { id: string };
+      body: { command: string; arguments: string };
+    }): Promise<void>;
     prompt(input: {
       path: { id: string };
       body: { parts: Array<{ type: string; text: string }> };
     }): Promise<void>;
   };
-} {
-  const prompts: Array<{ sessionID: string; text: string }> = [];
+}
+
+function createMockClient(): MockClient {
+  const commands: MockCommandCall[] = [];
+  const prompts: MockPromptCall[] = [];
 
   return {
+    commands,
     prompts,
     session: {
-      async command(): Promise<void> {
-        return;
+      async command(input): Promise<void> {
+        commands.push({
+          sessionID: input.path.id,
+          command: input.body.command,
+          arguments: input.body.arguments,
+        });
       },
       async prompt(input): Promise<void> {
         prompts.push({
@@ -237,4 +260,203 @@ function createMockResponse(status: number, body = ""): Response {
       return body;
     },
   } as Response;
+}
+
+describe("communication session targeting integration", () => {
+  test("resolves explicit session_id when provided and active", async () => {
+    const root = await mkdtemp(join(tmpdir(), "communication-session-explicit-"));
+
+    try {
+      await writeConfig(root);
+
+      // Create multi-session state with ses-a and ses-b active
+      await writeMultiSessionOrchestrationState(root, ["ses-a", "ses-b"]);
+
+      const client = createMockClient();
+      const plugin = await CommunicationPlugin({
+        client: client as unknown as Parameters<typeof CommunicationPlugin>[0]["client"],
+        worktree: root,
+      } as Parameters<typeof CommunicationPlugin>[0]);
+
+      const commandBefore = plugin["command.execute.before"];
+      assert.ok(commandBefore, "communication plugin must expose command.execute.before hook");
+
+      const output: { parts: unknown[]; noReply?: boolean } = {
+        parts: [{ type: "text", text: "placeholder" }],
+      };
+
+      await commandBefore(
+        {
+          command: "approve",
+          sessionID: "ses-b",
+          arguments: "",
+        } as Parameters<typeof commandBefore>[0],
+        output as Parameters<typeof commandBefore>[1],
+      );
+
+      assert.equal(output.noReply, true);
+      assert.deepEqual(output.parts, []);
+      assert.equal(client.commands.length, 1);
+      assert.equal(client.commands[0]?.sessionID, "ses-b");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("auto-targets single active session when explicit session_id is invalid", async () => {
+    const root = await mkdtemp(join(tmpdir(), "communication-session-auto-"));
+
+    try {
+      await writeConfig(root);
+
+      // Create single active session
+      await writeMultiSessionOrchestrationState(root, ["ses-a"]);
+
+      const client = createMockClient();
+      const plugin = await CommunicationPlugin({
+        client: client as unknown as Parameters<typeof CommunicationPlugin>[0]["client"],
+        worktree: root,
+      } as Parameters<typeof CommunicationPlugin>[0]);
+
+      const commandBefore = plugin["command.execute.before"];
+      assert.ok(commandBefore, "communication plugin must expose command.execute.before hook");
+
+      const output: { parts: unknown[]; noReply?: boolean } = {
+        parts: [{ type: "text", text: "placeholder" }],
+      };
+
+      // Provide invalid explicit session_id - should auto-target to ses-a
+      await commandBefore(
+        {
+          command: "approve",
+          sessionID: "ses-invalid",
+          arguments: "",
+        } as Parameters<typeof commandBefore>[0],
+        output as Parameters<typeof commandBefore>[1],
+      );
+
+      assert.equal(output.noReply, true);
+      assert.deepEqual(output.parts, []);
+      assert.equal(client.commands.length, 1);
+      assert.equal(client.commands[0]?.sessionID, "ses-a");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("fails closed when multiple active sessions and no explicit session_id", async () => {
+    const root = await mkdtemp(join(tmpdir(), "communication-session-ambiguous-"));
+
+    try {
+      await writeConfig(root);
+
+      // Create multi-session state
+      await writeMultiSessionOrchestrationState(root, ["ses-a", "ses-b"]);
+
+      const client = createMockClient();
+      const plugin = await CommunicationPlugin({
+        client: client as unknown as Parameters<typeof CommunicationPlugin>[0]["client"],
+        worktree: root,
+      } as Parameters<typeof CommunicationPlugin>[0]);
+
+      const commandBefore = plugin["command.execute.before"];
+      assert.ok(commandBefore, "communication plugin must expose command.execute.before hook");
+
+      const output: { parts: unknown[]; noReply?: boolean } = {
+        parts: [{ type: "text", text: "placeholder" }],
+      };
+
+      // Provide empty session_id - should fail closed
+      await commandBefore(
+        {
+          command: "approve",
+          sessionID: "",
+          arguments: "",
+        } as Parameters<typeof commandBefore>[0],
+        output as Parameters<typeof commandBefore>[1],
+      );
+
+      assert.equal(output.noReply, true);
+      assert.deepEqual(output.parts, []);
+      assert.equal(client.prompts.length, 1);
+      assert.match(client.prompts[0]?.text ?? "", /Multiple active sessions found/i);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("fails closed when no active sessions available", async () => {
+    const root = await mkdtemp(join(tmpdir(), "communication-session-none-"));
+
+    try {
+      await writeConfig(root);
+
+      // Create state with no active sessions
+      await writeMultiSessionOrchestrationState(root, []);
+
+      const client = createMockClient();
+      const plugin = await CommunicationPlugin({
+        client: client as unknown as Parameters<typeof CommunicationPlugin>[0]["client"],
+        worktree: root,
+      } as Parameters<typeof CommunicationPlugin>[0]);
+
+      const commandBefore = plugin["command.execute.before"];
+      assert.ok(commandBefore, "communication plugin must expose command.execute.before hook");
+
+      const output: { parts: unknown[]; noReply?: boolean } = {
+        parts: [{ type: "text", text: "placeholder" }],
+      };
+
+      await commandBefore(
+        {
+          command: "approve",
+          sessionID: "ses-any",
+          arguments: "",
+        } as Parameters<typeof commandBefore>[0],
+        output as Parameters<typeof commandBefore>[1],
+      );
+
+      assert.equal(output.noReply, true);
+      assert.deepEqual(output.parts, []);
+      assert.equal(client.prompts.length, 1);
+      assert.match(client.prompts[0]?.text ?? "", /Explicit session_id 'ses-any' is not active/i);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+async function writeMultiSessionOrchestrationState(root: string, sessionIDs: string[]): Promise<void> {
+  const bmadRoot = resolve(root, "_bmad-output");
+  await mkdir(bmadRoot, { recursive: true });
+
+  const statePath = resolve(bmadRoot, "orchestration-state.json");
+  const pipelines: Record<string, unknown> = {};
+  const sessionToRoot: Record<string, string> = {};
+
+  for (const sessionID of sessionIDs) {
+    sessionToRoot[sessionID] = sessionID;
+    pipelines[sessionID] = {
+      rootSessionID: sessionID,
+      currentStage: "implementation",
+      transition: "idle",
+      sessions: {
+        [sessionID]: {
+          sessionID,
+          stage: "implementation",
+          directory: `/tmp/worktrees/${sessionID}`,
+          children: [],
+          status: "active",
+        },
+      },
+    };
+  }
+
+  const fixture = {
+    version: 2,
+    sessionToRoot,
+    pipelines,
+  };
+
+  await writeFile(statePath, `${JSON.stringify(fixture, null, 2)}\n`, "utf-8");
 }

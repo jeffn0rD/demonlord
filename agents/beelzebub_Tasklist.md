@@ -84,26 +84,26 @@ Execution policy for this codename:
 **Entry criteria:**
 - SUBPHASE-1.2 complete.
 **Exit criteria / QA checklist:**
-- [ ] `/approve`, `/party`, `/continue`, `/halt`, `/focus`, `/add-agent`, `/export` are routed deterministically.
-- [ ] Multi-session targeting rules are deterministic and fail-closed on ambiguity.
-- [ ] Duplicate inbound command handling is idempotent.
+- [x] `/approve`, `/party`, `/continue`, `/halt`, `/focus`, `/add-agent`, `/export` are routed deterministically.
+- [x] Multi-session targeting rules are deterministic and fail-closed on ambiguity.
+- [x] Duplicate inbound command handling is idempotent.
 - [ ] Unsupported/legacy commands fail deterministically with migration guidance.
 **Proposed PR title:** `feat: add deterministic inbound discord control routing`  
 **Proposed commit message:** `feat: route discord control commands to target opencode sessions deterministically (Refs #123)`
 
 **Tasks:**
 <!-- TASK:T-1.3.1 -->
-- **T-1.3.1** (Refs #123): Implement inbound command parsing/dispatch for required Discord commands. Touch points: `.opencode/plugins/communication.ts`
+- [x] **T-1.3.1** (Refs #123): Implement inbound command parsing/dispatch for required Discord commands. Touch points: `.opencode/plugins/communication.ts`
 <!-- TASK:T-1.3.2 -->
-- **T-1.3.2** (Refs #123): Define and implement session targeting policy: explicit target first, single-candidate auto-target, ambiguity fail-closed with actionable message. Touch points: `.opencode/plugins/communication.ts`
+- [x] **T-1.3.2** (Refs #123): Define and implement session targeting policy: explicit target first, single-candidate auto-target, ambiguity fail-closed with actionable message. Touch points: `.opencode/plugins/communication.ts`
 <!-- TASK:T-1.3.3 -->
-- **T-1.3.3** (Refs #123): Route `/approve` through pipeline command path and Party Mode commands through `party_mode` flow with deterministic argument handling. Touch points: `.opencode/plugins/communication.ts`, `.opencode/tools/party_mode.ts`
+- [x] **T-1.3.3** (Refs #123): Route `/approve` through pipeline command path and Party Mode commands through `party_mode` flow with deterministic argument handling. Touch points: `.opencode/plugins/communication.ts`, `.opencode/tools/party_mode.ts`
 <!-- TASK:T-1.3.4 -->
-- **T-1.3.4** (Refs #123): Add inbound interaction dedupe/idempotency guard keyed by command/session/interaction token. Touch points: `.opencode/plugins/communication.ts`
+- [x] **T-1.3.4** (Refs #123): Add inbound interaction dedupe/idempotency guard keyed by command/session/interaction token. Touch points: `.opencode/plugins/communication.ts`
 <!-- TASK:T-1.3.5 -->
-- **T-1.3.5** (Refs #123): Add integration tests for multi-session routing, ambiguity error path, and duplicate suppression. Touch points: `.opencode/tests/integration/`, `.opencode/tests/plugins/`
+- [x] **T-1.3.5** (Refs #123): Add integration tests for multi-session routing, ambiguity error path, and duplicate suppression. Touch points: `.opencode/tests/integration/`, `.opencode/tests/plugins/`
 <!-- TASK:T-1.3.6 -->
-- **T-1.3.6** (Refs #123): Add deterministic handling for unsupported legacy commands with actionable migration text. Touch points: `.opencode/plugins/communication.ts`, `USAGE.md`
+- [x] **T-1.3.6** (Refs #123): Add deterministic handling for unsupported legacy commands with actionable migration text. Touch points: `.opencode/plugins/communication.ts`, `USAGE.md`
 
 ### SUBPHASE-1.4: Reliability, Safety, Config, and Docs
 <!-- SUBPHASE:1.4 -->

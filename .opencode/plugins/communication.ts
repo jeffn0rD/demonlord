@@ -52,6 +52,13 @@ interface OrchestrationContext {
   pendingTo?: string;
 }
 
+interface SessionTargetResolution {
+  ok: boolean;
+  sessionID?: string;
+  reason?: string;
+  candidates: string[];
+}
+
 interface DiscordTransportRequest {
   webhookURL: string;
   payload: {
@@ -74,6 +81,15 @@ interface ApproveCommandInput {
 }
 
 type PartyCommandName = "party" | "continue" | "halt" | "focus" | "add-agent" | "export";
+
+// Legacy commands that are no longer supported with migration guidance
+type LegacyCommandName = "start" | "stop" | "status" | "restart";
+const LEGACY_COMMANDS: Record<LegacyCommandName, string> = {
+  start: "Use `/pipeline advance` to start or resume a pipeline.",
+  stop: "Use `/pipeline stop` to halt a pipeline.",
+  status: "Use `/pipeline status` to check pipeline status.",
+  restart: "Use `/pipeline stop` followed by `/pipeline advance` to restart a pipeline.",
+};
 
 const defaults: CommunicationSettings = {
   enabled: true,
@@ -120,13 +136,36 @@ const CommunicationPlugin: Plugin = async ({ client, worktree }) => {
   return {
     "command.execute.before": async (input, output) => {
       const commandName = normalizeCommandName(input.command);
+      
+      // Check if command is a legacy command
+      if (commandName in LEGACY_COMMANDS) {
+        output.parts = [];
+        await sendFeedback(input.sessionID, `Command '${commandName}' is no longer supported. ${LEGACY_COMMANDS[commandName as LegacyCommandName]}`);
+        setNoReplyIfSupported(output);
+        return;
+      }
+      
       if (!isManagedCommand(commandName)) {
+        // Unknown command - provide helpful message
+        output.parts = [];
+        await sendFeedback(input.sessionID, `Unknown command '${commandName}'. Available commands: /approve, /party, /continue, /halt, /focus, /add-agent, /export.`);
+        setNoReplyIfSupported(output);
         return;
       }
 
+      // Resolve target session using session targeting policy
+      const sessionResolution = await resolveSessionTarget(worktree, input.sessionID);
+      if (!sessionResolution.ok) {
+        output.parts = [];
+        await sendFeedback(input.sessionID, `Session resolution failed: ${sessionResolution.reason}`);
+        setNoReplyIfSupported(output);
+        return;
+      }
+
+      const targetSessionID = sessionResolution.sessionID!;
       const commandInput: ApproveCommandInput = {
         name: commandName,
-        sessionID: input.sessionID,
+        sessionID: targetSessionID,
         arguments: input.arguments,
       };
 
@@ -138,7 +177,7 @@ const CommunicationPlugin: Plugin = async ({ client, worktree }) => {
       } else {
         const feedback = await handlePartyCommand(commandInput);
         output.parts = [];
-        await sendFeedback(commandInput.sessionID, feedback);
+        await sendFeedback(targetSessionID, feedback);
       }
 
       setNoReplyIfSupported(output);
@@ -747,6 +786,113 @@ async function loadOrchestrationContext(worktree: string, sessionID: string): Pr
   } catch {
     return undefined;
   }
+}
+
+async function resolveSessionTarget(
+  worktree: string,
+  explicitSessionID?: string,
+): Promise<SessionTargetResolution> {
+  // Load orchestration state to get all active sessions
+  const statePath = resolve(worktree, "_bmad-output", "orchestration-state.json");
+  let activeSessions: string[] = [];
+
+  try {
+    const raw = await readFile(statePath, "utf-8");
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const pipelines = readRecord(parsed, "pipelines");
+
+    // Collect all active sessions from all pipelines
+    for (const [rootSessionID, pipelineData] of Object.entries(pipelines ?? {})) {
+      const pipeline = pipelineData as Record<string, unknown>;
+      const sessions = readRecord(pipeline, "sessions");
+      if (sessions) {
+        for (const [sessionID, sessionData] of Object.entries(sessions)) {
+          const session = sessionData as Record<string, unknown>;
+          const status = readString(session, "status");
+          if (status === "active") {
+            activeSessions.push(sessionID);
+          }
+        }
+      }
+    }
+  } catch {
+    // If we can't load the state, fall back to using the explicit session_id if provided
+    if (explicitSessionID && explicitSessionID.trim().length > 0) {
+      return {
+        ok: true,
+        sessionID: explicitSessionID,
+        candidates: [explicitSessionID],
+        reason: "Orchestration state not available, using provided session_id.",
+      };
+    }
+    // If no explicit session_id is provided and no state is available, we can't resolve
+    return {
+      ok: false,
+      reason: "Unable to load orchestration state and no explicit session_id provided.",
+      candidates: [],
+    };
+  }
+
+  // Deduplicate sessions
+  activeSessions = [...new Set(activeSessions)];
+
+  // If explicit session_id is provided, validate it
+  if (explicitSessionID && explicitSessionID.trim().length > 0) {
+    if (activeSessions.includes(explicitSessionID)) {
+      return {
+        ok: true,
+        sessionID: explicitSessionID,
+        candidates: activeSessions,
+      };
+    } else {
+      // Explicit session_id is provided but invalid - try to auto-target
+      // This follows the policy: explicit target first, but if it's invalid, fall back to auto-target
+      if (activeSessions.length === 1) {
+        return {
+          ok: true,
+          sessionID: activeSessions[0],
+          candidates: activeSessions,
+          reason: `Explicit session_id '${explicitSessionID}' is not active. Auto-targeting to single active session.`,
+        };
+      } else if (activeSessions.length === 0) {
+        return {
+          ok: false,
+          reason: `Explicit session_id '${explicitSessionID}' is not active, and no other active sessions are available.`,
+          candidates: [],
+        };
+      } else {
+        return {
+          ok: false,
+          reason: `Explicit session_id '${explicitSessionID}' is not active. Multiple active sessions found. Provide an explicit session_id.`,
+          candidates: activeSessions,
+        };
+      }
+    }
+  }
+
+  // No explicit session_id provided - try to auto-target
+  if (activeSessions.length === 0) {
+    return {
+      ok: false,
+      reason: "No active candidate session is available.",
+      candidates: [],
+    };
+  }
+
+  if (activeSessions.length === 1) {
+    return {
+      ok: true,
+      sessionID: activeSessions[0],
+      candidates: activeSessions,
+    };
+  }
+
+  // Multiple active sessions - require explicit session_id
+  return {
+    ok: false,
+    reason: "Multiple active sessions found. Provide an explicit session_id.",
+    candidates: activeSessions,
+  };
 }
 
 function resolvePersonaKey(stage: string): string {
