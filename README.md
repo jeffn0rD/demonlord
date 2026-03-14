@@ -67,6 +67,7 @@ cd .. && ./scripts/bootstrap.sh
 
 - Copy `.env.example` to `.env`
 - Add your GitHub PAT (`GITHUB_PAT`) and Discord credentials
+- Configure Discord command allowlists (`DISCORD_ALLOWED_USER_IDS`, `DISCORD_ALLOWED_ROLE_IDS`, optional `DISCORD_ALLOWED_CHANNEL_ID`)
 - Add a GitHub repository secret named `PROJECT_V2_TOKEN` for Project V2 automation
 - Review `demonlord.config.json` for worktree and orchestration settings
 
@@ -94,6 +95,7 @@ pipelinectl status
 ```
 
 - Confirm `.env` has placeholders filled for `GITHUB_PAT`, `DISCORD_BOT_TOKEN`, and Discord webhook URLs.
+- Confirm inbound Discord authorization IDs are configured in `.env` and/or `demonlord.config.json`.
 - Confirm `demonlord.config.json` exists (bootstrap creates minimum defaults if missing).
 - Confirm `pipelinectl` resolves (`type pipelinectl`) or use `./agents/tools/pipelinectl.sh status` directly.
 
@@ -249,9 +251,24 @@ Expected behavior: deterministic status text, then queued control messages for `
 ### Discord Integration
 Receive notifications and control agents via Discord slash commands:
 - **`/approve`**: Approve worktree creation or code changes
-- **`/reject`**: Reject and provide feedback
-- **`/park`**: Pause current work for later
-- **`/handoff`**: Transfer to a different agent skill
+- **`/party`**: Start Party Mode for the targeted session
+- **`/continue`**: Continue Party Mode execution
+- **`/halt`**: Pause Party Mode execution
+- **`/focus`**: Focus Party Mode on a specific agent
+- **`/add-agent`**: Add agents to Party Mode
+- **`/export`**: Export Party Mode transcript
+
+Discord command-center hardening defaults:
+- Inbound commands are allowlist-gated by `discord.authorization.allowed_user_ids` and/or `discord.authorization.allowed_role_ids`.
+- Optional `discord.authorization.allowed_channel_id` restricts commands to one channel.
+- Retry/backoff policy is fixed and deterministic: `max_attempts=3`, delays `0ms`, `250ms`, `1000ms`, no jitter.
+- Outbound/inbound dedupe uses in-memory TTL (`10m`) for this cycle.
+
+Verification entrypoint:
+
+```bash
+npm --prefix .opencode run verify:beelzebub
+```
 
 ## Quality Gates
 
@@ -277,6 +294,7 @@ This ensures that all code meets your quality standards before being committed.
 - **Installer fails midway**: run `./scripts/install-demonlord.sh --rollback`, resolve the error, then rerun installer
 - **Offline/proxy npm install issues**: rerun bootstrap with configured proxy env (`HTTPS_PROXY`, `HTTP_PROXY`, optional `NPM_CONFIG_REGISTRY`) or run `./scripts/install-demonlord.sh --skip-bootstrap` and bootstrap later
 - **Bootstrap takes too long**: Check network connectivity and npm registry access
+- **Discord command denied**: verify `discord.authorization` allowlists and optional channel gate match the caller context
 
 ## Validation Requirements
 

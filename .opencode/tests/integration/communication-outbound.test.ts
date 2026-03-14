@@ -8,6 +8,10 @@ import CommunicationPlugin from "../../plugins/communication.ts";
 
 const INTEGRATION_DIR = dirname(fileURLToPath(import.meta.url));
 
+process.env.DISCORD_BOT_TOKEN ??= "test-bot-token";
+process.env.DISCORD_WEBHOOK_ORCHESTRATOR ??= "https://discord.example/orchestrator";
+process.env.DISCORD_ALLOWED_USER_IDS ??= "user-allow-default";
+
 describe("communication outbound integration", () => {
   test("emits deterministic pipeline.summary pass/fail payloads for terminal states", async () => {
     const root = await mkdtemp(join(tmpdir(), "communication-outbound-integration-"));
@@ -575,6 +579,15 @@ describe("communication session targeting integration", () => {
           command: "approve",
           sessionID: "ses-a",
           arguments: "--interaction-token tok-int-1",
+          metadata: {
+            user: {
+              id: "user-allow-default",
+              role_ids: [],
+            },
+            channel: {
+              id: "channel-ops",
+            },
+          },
         } as Parameters<typeof commandBefore>[0],
         output as Parameters<typeof commandBefore>[1],
       );
@@ -584,6 +597,15 @@ describe("communication session targeting integration", () => {
           command: "approve",
           sessionID: "ses-a",
           arguments: "--interaction-token tok-int-1",
+          metadata: {
+            user: {
+              id: "user-allow-default",
+              role_ids: [],
+            },
+            channel: {
+              id: "channel-ops",
+            },
+          },
         } as Parameters<typeof commandBefore>[0],
         output as Parameters<typeof commandBefore>[1],
       );
@@ -628,6 +650,78 @@ describe("communication session targeting integration", () => {
       assert.equal(client.prompts.length, 1);
       assert.match(client.prompts[0]?.text ?? "", /no longer supported/i);
       assert.match(client.prompts[0]?.text ?? "", /\/halt/i);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("denies unauthorized Discord command.executed payloads", async () => {
+    const root = await mkdtemp(join(tmpdir(), "communication-authz-deny-int-"));
+
+    try {
+      await writeFile(
+        resolve(root, "demonlord.config.json"),
+        `${JSON.stringify(
+          {
+            orchestration: {
+              enabled: true,
+              mode: "manual",
+            },
+            discord: {
+              enabled: true,
+              authorization: {
+                required: true,
+                allowed_user_ids: ["user-allow"],
+                allowed_role_ids: ["role-allow"],
+                allowed_channel_id: "channel-ops",
+              },
+              personas: {
+                reviewer: {
+                  name: "Reviewer Bot",
+                },
+              },
+            },
+          },
+          null,
+          2,
+        )}\n`,
+        "utf-8",
+      );
+
+      await writeMultiSessionOrchestrationState(root, ["ses-a"]);
+
+      const client = createMockClient();
+      const plugin = await CommunicationPlugin({
+        client: client as unknown as Parameters<typeof CommunicationPlugin>[0]["client"],
+        worktree: root,
+      } as Parameters<typeof CommunicationPlugin>[0]);
+
+      const eventHook = plugin.event;
+      assert.ok(eventHook, "communication plugin must expose event hook");
+
+      await eventHook?.({
+        event: {
+          type: "command.executed",
+          properties: {
+            name: "approve",
+            sessionID: "ses-a",
+            arguments: "--interaction-token tok-authz",
+            metadata: {
+              user: {
+                id: "user-deny",
+                role_ids: ["role-deny"],
+              },
+              channel: {
+                id: "channel-other",
+              },
+            },
+          },
+        } as never,
+      });
+
+      assert.equal(client.commands.length, 0);
+      assert.equal(client.prompts.length, 1);
+      assert.match(client.prompts[0]?.text ?? "", /command denied/i);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

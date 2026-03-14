@@ -20,6 +20,14 @@ interface DiscordPersonaSettings {
 interface DiscordSettings {
   enabled: boolean;
   personas: Record<string, DiscordPersonaSettings>;
+  authorization: DiscordAuthorizationSettings;
+}
+
+interface DiscordAuthorizationSettings {
+  required: boolean;
+  allowedUserIDs: string[];
+  allowedRoleIDs: string[];
+  allowedChannelID?: string;
 }
 
 type OutboundEventName =
@@ -72,6 +80,14 @@ interface DiscordTransportResult {
   ok: boolean;
   status?: number;
   error?: string;
+  attempts?: number;
+}
+
+interface InboundAuthorizationContext {
+  hasDiscordSignal: boolean;
+  userID?: string;
+  roleIDs: string[];
+  channelID?: string;
 }
 
 interface ApproveCommandInput {
@@ -101,6 +117,11 @@ const defaults: CommunicationSettings = {
       minion: { name: "Minion" },
       reviewer: { name: "Reviewer" },
     },
+    authorization: {
+      required: true,
+      allowedUserIDs: [],
+      allowedRoleIDs: [],
+    },
   },
 };
 
@@ -114,6 +135,9 @@ const OUTBOUND_ALLOWLIST = new Set<OutboundEventName>([
 
 const OUTBOUND_DEDUPE_TTL_MS = 10 * 60 * 1000;
 const INBOUND_DEDUPE_TTL_MS = 10 * 60 * 1000;
+const RETRY_MAX_ATTEMPTS = 3;
+const RETRY_BACKOFF_MS = [0, 250, 1000] as const;
+const MASKED_SECRET = "[REDACTED]";
 
 const partyCommandActions: Record<PartyCommandName, PartyModeAction> = {
   party: "start",
@@ -134,11 +158,12 @@ const CommunicationPlugin: Plugin = async ({ client, worktree }) => {
     return {};
   }
 
+  validateDiscordStartupConfiguration(settings);
+
   return {
     "command.execute.before": async (input, output) => {
       const commandName = normalizeCommandName(input.command);
 
-      // Check if command is a legacy command
       if (commandName in LEGACY_COMMANDS) {
         output.parts = [];
         await sendFeedback(input.sessionID, `Command '${commandName}' is no longer supported. ${LEGACY_COMMANDS[commandName as LegacyCommandName]}`);
@@ -151,8 +176,15 @@ const CommunicationPlugin: Plugin = async ({ client, worktree }) => {
       }
 
       const parsed = parseInboundCommandArguments(input.arguments, readInteractionTokenFromSource(input));
+      const authContext = buildInboundAuthorizationContext(input, parsed.interactionToken);
+      const authz = authorizeInboundCommand(settings.discord.authorization, authContext);
+      if (!authz.ok) {
+        output.parts = [];
+        await sendFeedback(input.sessionID, authz.reason);
+        setNoReplyIfSupported(output);
+        return;
+      }
 
-      // Resolve target session using session targeting policy
       const sessionResolution = await resolveSessionTarget(worktree, input.sessionID);
       if (!sessionResolution.ok) {
         output.parts = [];
@@ -177,13 +209,12 @@ const CommunicationPlugin: Plugin = async ({ client, worktree }) => {
 
       rememberPreHandledCommand(preHandledCommands, commandInput);
 
-      if (commandName === "approve") {
-        await forwardApproveCommand(commandInput);
-        output.parts = [];
-      } else {
-        const feedback = await handlePartyCommand(commandInput);
-        output.parts = [];
-        await sendFeedback(targetSessionID, feedback);
+      output.parts = [];
+      const result = await executeInboundCommand(commandInput);
+      if (!result.ok) {
+        await sendFeedback(targetSessionID, result.error);
+      } else if (result.feedback) {
+        await sendFeedback(targetSessionID, result.feedback);
       }
 
       setNoReplyIfSupported(output);
@@ -197,6 +228,16 @@ const CommunicationPlugin: Plugin = async ({ client, worktree }) => {
             readString(properties, "arguments"),
             readInteractionTokenFromSource(properties),
           );
+          const authContext = buildInboundAuthorizationContext(properties, parsed.interactionToken);
+          const authz = authorizeInboundCommand(settings.discord.authorization, authContext);
+          if (!authz.ok) {
+            const inputSessionID = readString(properties, "sessionID");
+            if (inputSessionID) {
+              await sendFeedback(inputSessionID, authz.reason);
+            }
+            return;
+          }
+
           const commandInput: ApproveCommandInput = {
             name: commandName,
             sessionID: readString(properties, "sessionID"),
@@ -209,11 +250,11 @@ const CommunicationPlugin: Plugin = async ({ client, worktree }) => {
               return;
             }
 
-            if (commandName === "approve") {
-              await forwardApproveCommand(commandInput);
-            } else {
-              const feedback = await handlePartyCommand(commandInput);
-              await sendFeedback(commandInput.sessionID, feedback);
+            const result = await executeInboundCommand(commandInput);
+            if (!result.ok) {
+              await sendFeedback(commandInput.sessionID, result.error);
+            } else if (result.feedback) {
+              await sendFeedback(commandInput.sessionID, result.feedback);
             }
           }
 
@@ -248,38 +289,71 @@ const CommunicationPlugin: Plugin = async ({ client, worktree }) => {
       if (delivery.ok) {
         commitOutboundDedupe(outboundDedupes, dedupeKey);
       } else {
-        const details = delivery.error ? ` ${delivery.error}` : "";
-        await sendFeedback(notification.sessionID, `Discord outbound delivery failed for '${notification.event}'.${details}`.trim());
+        const details = delivery.error ? ` ${redactSecrets(delivery.error)}` : "";
+        const attempts = delivery.attempts ? ` after ${delivery.attempts} attempts` : "";
+        await sendFeedback(
+          notification.sessionID,
+          `Discord outbound delivery failed for '${notification.event}'${attempts}.${details}`.trim(),
+        );
       }
     },
   };
 
-  async function forwardApproveCommand(commandInput: ApproveCommandInput): Promise<void> {
-      if (settings.mode === "off") {
-        await client.session.prompt({
-          path: { id: commandInput.sessionID },
-          body: {
-            agent: "orchestrator",
-            noReply: true,
-            parts: [{ type: "text", text: "Orchestration is OFF. `/approve` is unavailable." }],
-          },
-          query: { directory: worktree },
-        });
-        return;
+  async function executeInboundCommand(
+    commandInput: ApproveCommandInput,
+  ): Promise<{ ok: true; feedback?: string } | { ok: false; error: string }> {
+    const commandName = normalizeCommandName(commandInput.name);
+    const operation: () => Promise<string | undefined> = commandName === "approve"
+      ? async () => {
+        await forwardApproveCommand(commandInput);
+        return undefined;
       }
+      : () => handlePartyCommand(commandInput);
+    const retried = await executeWithDeterministicRetry(operation);
 
-      const args = commandInput.arguments.trim();
-      const commandArgs = args.length > 0 ? `approve ${args}` : "approve";
+    if (!retried.ok) {
+      return {
+        ok: false,
+        error: `Inbound command '${commandName}' failed after ${retried.attempts} attempts. ${retried.error}`,
+      };
+    }
 
-      await client.session.command({
+    if (typeof retried.value === "string") {
+      return {
+        ok: true,
+        feedback: retried.value,
+      };
+    }
+
+    return { ok: true };
+  }
+
+  async function forwardApproveCommand(commandInput: ApproveCommandInput): Promise<void> {
+    if (settings.mode === "off") {
+      await client.session.prompt({
         path: { id: commandInput.sessionID },
         body: {
-          command: "pipeline",
-          arguments: commandArgs,
           agent: "orchestrator",
+          noReply: true,
+          parts: [{ type: "text", text: "Orchestration is OFF. `/approve` is unavailable." }],
         },
         query: { directory: worktree },
       });
+      return;
+    }
+
+    const args = commandInput.arguments.trim();
+    const commandArgs = args.length > 0 ? `approve ${args}` : "approve";
+
+    await client.session.command({
+      path: { id: commandInput.sessionID },
+      body: {
+        command: "pipeline",
+        arguments: commandArgs,
+        agent: "orchestrator",
+      },
+      query: { directory: worktree },
+    });
   }
 
   async function handlePartyCommand(commandInput: ApproveCommandInput): Promise<string> {
@@ -299,7 +373,7 @@ const CommunicationPlugin: Plugin = async ({ client, worktree }) => {
       body: {
         agent: "orchestrator",
         noReply: true,
-        parts: [{ type: "text", text: message }],
+        parts: [{ type: "text", text: redactSecrets(message) }],
       },
       query: { directory: worktree },
     });
@@ -510,6 +584,78 @@ function normalizeOptionalToken(value: string | undefined): string | undefined {
   return normalized ? normalized : undefined;
 }
 
+function buildInboundAuthorizationContext(source: unknown, interactionToken?: string): InboundAuthorizationContext {
+  const record = typeof source === "object" && source ? source as Record<string, unknown> : undefined;
+  const metadata = readRecord(record, "metadata");
+  const userRecord = readRecord(record, "user") ?? readRecord(metadata, "user");
+  const channelRecord = readRecord(record, "channel") ?? readRecord(metadata, "channel");
+
+  const userID =
+    normalizeOptionalToken(readString(record, "user_id")) ||
+    normalizeOptionalToken(readString(record, "userID")) ||
+    normalizeOptionalToken(readString(userRecord, "id")) ||
+    normalizeOptionalToken(readString(metadata, "user_id"));
+  const roleIDs = mergeUnique(
+    readStringArrayValue(record?.role_ids),
+    readStringArrayValue(record?.roleIDs),
+    readStringArrayValue(userRecord?.role_ids),
+    readStringArrayValue(userRecord?.roles),
+    readStringArrayValue(metadata?.role_ids),
+  );
+  const channelID =
+    normalizeOptionalToken(readString(record, "channel_id")) ||
+    normalizeOptionalToken(readString(record, "channelID")) ||
+    normalizeOptionalToken(readString(channelRecord, "id")) ||
+    normalizeOptionalToken(readString(metadata, "channel_id"));
+
+  const hasDiscordSignal = Boolean(
+    interactionToken ||
+      normalizeOptionalToken(readString(record, "interaction_id")) ||
+      normalizeOptionalToken(readString(record, "interactionToken")) ||
+      normalizeOptionalToken(readString(metadata, "interaction_id")) ||
+      normalizeOptionalToken(readString(metadata, "interactionToken")) ||
+      userID ||
+      roleIDs.length > 0 ||
+      channelID,
+  );
+
+  return {
+    hasDiscordSignal,
+    roleIDs,
+    ...(userID ? { userID } : {}),
+    ...(channelID ? { channelID } : {}),
+  };
+}
+
+function authorizeInboundCommand(
+  settings: DiscordAuthorizationSettings,
+  context: InboundAuthorizationContext,
+): { ok: true } | { ok: false; reason: string } {
+  if (!settings.required || !context.hasDiscordSignal) {
+    return { ok: true };
+  }
+
+  const channelConstraint = settings.allowedChannelID;
+  if (channelConstraint && context.channelID !== channelConstraint) {
+    const actual = context.channelID ?? "(missing)";
+    return {
+      ok: false,
+      reason: `Discord command denied: channel '${actual}' is not authorized. Expected '${channelConstraint}'.`,
+    };
+  }
+
+  const userAllowed = Boolean(context.userID && settings.allowedUserIDs.includes(context.userID));
+  const roleAllowed = context.roleIDs.some((roleID) => settings.allowedRoleIDs.includes(roleID));
+  if (userAllowed || roleAllowed) {
+    return { ok: true };
+  }
+
+  return {
+    ok: false,
+    reason: "Discord command denied: caller is not in the configured user/role allowlist.",
+  };
+}
+
 function parsePartyModeArgs(commandInput: ApproveCommandInput, commandName: PartyCommandName): PartyModeArgs {
   const sessionID = commandInput.sessionID;
   const rawArgs = commandInput.arguments.trim();
@@ -619,6 +765,12 @@ async function loadSettings(worktree: string): Promise<CommunicationSettings> {
       discord?: {
         enabled?: unknown;
         personas?: Record<string, { name?: unknown; avatarUrl?: unknown }>;
+        authorization?: {
+          required?: unknown;
+          allowed_user_ids?: unknown;
+          allowed_role_ids?: unknown;
+          allowed_channel_id?: unknown;
+        };
       };
     };
 
@@ -650,16 +802,65 @@ async function loadSettings(worktree: string): Promise<CommunicationSettings> {
       };
     }
 
+    const auth = parsed.discord?.authorization;
+    const allowedUserIDs = mergeUnique(
+      readStringArrayValue(auth?.allowed_user_ids),
+      parseCommaSeparatedEnv("DISCORD_ALLOWED_USER_IDS"),
+    );
+    const allowedRoleIDs = mergeUnique(
+      readStringArrayValue(auth?.allowed_role_ids),
+      parseCommaSeparatedEnv("DISCORD_ALLOWED_ROLE_IDS"),
+    );
+    const allowedChannelID =
+      normalizeOptionalToken(typeof auth?.allowed_channel_id === "string" ? auth.allowed_channel_id : undefined) ||
+      normalizeOptionalToken(process.env.DISCORD_ALLOWED_CHANNEL_ID);
+    const required = typeof auth?.required === "boolean"
+      ? auth.required
+      : defaults.discord.authorization.required;
+
     return {
       enabled,
       mode,
       discord: {
         enabled: discordEnabled,
         personas,
+        authorization: {
+          required,
+          allowedUserIDs,
+          allowedRoleIDs,
+          ...(allowedChannelID ? { allowedChannelID } : {}),
+        },
       },
     };
   } catch {
     return defaults;
+  }
+}
+
+function validateDiscordStartupConfiguration(settings: CommunicationSettings): void {
+  if (!settings.discord.enabled) {
+    return;
+  }
+
+  const missing: string[] = [];
+  if (!normalizeOptionalToken(process.env.DISCORD_BOT_TOKEN)) {
+    missing.push("DISCORD_BOT_TOKEN");
+  }
+  if (!normalizeOptionalToken(process.env.DISCORD_WEBHOOK_ORCHESTRATOR)) {
+    missing.push("DISCORD_WEBHOOK_ORCHESTRATOR");
+  }
+  if (
+    settings.discord.authorization.required &&
+    settings.discord.authorization.allowedUserIDs.length === 0 &&
+    settings.discord.authorization.allowedRoleIDs.length === 0
+  ) {
+    missing.push("discord.authorization.allowed_user_ids or discord.authorization.allowed_role_ids");
+  }
+
+  if (missing.length > 0) {
+    throw new Error(
+      `Communication plugin startup validation failed. Missing required Discord configuration: ${missing.join(", ")}.`,
+    );
   }
 }
 
@@ -1038,6 +1239,33 @@ function toWebhookEnvKey(personaKey: string): string {
 }
 
 async function sendWithDiscordTransport(request: DiscordTransportRequest): Promise<DiscordTransportResult> {
+  let lastStatus: number | undefined;
+  const retried = await executeWithDeterministicRetry(async () => {
+    const attempt = await sendWithDiscordTransportOnce(request);
+    if (!attempt.ok) {
+      lastStatus = attempt.status;
+      throw new Error(attempt.error ?? "unknown Discord transport failure");
+    }
+
+    return attempt;
+  });
+
+  if (retried.ok) {
+    return {
+      ...retried.value,
+      attempts: retried.attempts,
+    };
+  }
+
+  return {
+    ok: false,
+    status: lastStatus,
+    attempts: retried.attempts,
+    error: retried.error,
+  };
+}
+
+async function sendWithDiscordTransportOnce(request: DiscordTransportRequest): Promise<DiscordTransportResult> {
   try {
     const response = await fetch(request.webhookURL, {
       method: "POST",
@@ -1068,6 +1296,46 @@ async function sendWithDiscordTransport(request: DiscordTransportRequest): Promi
   }
 }
 
+async function executeWithDeterministicRetry<T>(
+  operation: () => Promise<T>,
+): Promise<{ ok: true; attempts: number; value: T } | { ok: false; attempts: number; error: string }> {
+  let lastError = "unknown failure";
+
+  for (let attempt = 0; attempt < RETRY_MAX_ATTEMPTS; attempt += 1) {
+    const backoff = RETRY_BACKOFF_MS[Math.min(attempt, RETRY_BACKOFF_MS.length - 1)] ?? 0;
+    if (backoff > 0) {
+      await sleep(backoff);
+    }
+
+    try {
+      const value = await operation();
+      return {
+        ok: true,
+        attempts: attempt + 1,
+        value,
+      };
+    } catch (error) {
+      lastError = formatError(error);
+    }
+  }
+
+  return {
+    ok: false,
+    attempts: RETRY_MAX_ATTEMPTS,
+    error: `retry policy exhausted (${RETRY_MAX_ATTEMPTS} attempts; backoff ${RETRY_BACKOFF_MS.join("/")}ms). Last error: ${lastError}`,
+  };
+}
+
+async function sleep(ms: number): Promise<void> {
+  if (ms <= 0) {
+    return;
+  }
+
+  await new Promise<void>((resolveDelay) => {
+    setTimeout(() => resolveDelay(), ms);
+  });
+}
+
 function readRecord(source: unknown, key: string): Record<string, unknown> | undefined {
   if (!source || typeof source !== "object") {
     return undefined;
@@ -1088,6 +1356,41 @@ function readString(source: Record<string, unknown> | undefined, key: string): s
 
   const value = source[key];
   return typeof value === "string" ? value : "";
+}
+
+function readStringArrayValue(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value
+      .filter((entry): entry is string => typeof entry === "string")
+      .map((entry) => entry.trim())
+      .filter((entry) => entry.length > 0);
+  }
+
+  if (typeof value === "string") {
+    return value
+      .split(",")
+      .map((entry) => entry.trim())
+      .filter((entry) => entry.length > 0);
+  }
+
+  return [];
+}
+
+function parseCommaSeparatedEnv(name: string): string[] {
+  return readStringArrayValue(process.env[name]);
+}
+
+function mergeUnique(...groups: string[][]): string[] {
+  const merged = new Set<string>();
+  for (const group of groups) {
+    for (const value of group) {
+      if (value.length > 0) {
+        merged.add(value);
+      }
+    }
+  }
+
+  return [...merged];
 }
 
 function stableSerialize(value: unknown): string {
@@ -1124,7 +1427,8 @@ async function safeReadResponseBody(response: Response): Promise<string> {
       return "";
     }
 
-    return text.length > 160 ? `${text.slice(0, 160)}...` : text;
+    const redacted = redactSecrets(text);
+    return redacted.length > 160 ? `${redacted.slice(0, 160)}...` : redacted;
   } catch {
     return "";
   }
@@ -1132,8 +1436,38 @@ async function safeReadResponseBody(response: Response): Promise<string> {
 
 function formatError(error: unknown): string {
   if (error instanceof Error) {
-    return `${error.name}: ${error.message}`;
+    return redactSecrets(`${error.name}: ${error.message}`);
   }
 
-  return String(error);
+  return redactSecrets(String(error));
+}
+
+function redactSecrets(raw: string): string {
+  let value = raw;
+
+  const secretEnvKeys = [
+    "DISCORD_BOT_TOKEN",
+    "DISCORD_WEBHOOK_PLANNER",
+    "DISCORD_WEBHOOK_ORCHESTRATOR",
+    "DISCORD_WEBHOOK_MINION",
+    "DISCORD_WEBHOOK_REVIEWER",
+  ];
+
+  for (const envKey of secretEnvKeys) {
+    const secret = normalizeOptionalToken(process.env[envKey]);
+    if (secret) {
+      value = replaceAllLiteral(value, secret, MASKED_SECRET);
+    }
+  }
+
+  value = value.replace(/https:\/\/discord\.com\/api\/webhooks\/[^\s"']+/gi, MASKED_SECRET);
+  return value;
+}
+
+function replaceAllLiteral(source: string, search: string, replacement: string): string {
+  if (search.length === 0) {
+    return source;
+  }
+
+  return source.split(search).join(replacement);
 }

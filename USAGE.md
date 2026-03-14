@@ -51,6 +51,7 @@ pipelinectl status
 
 Check all of the following before your first `/triage` run:
 - `.env` includes `GITHUB_PAT`, `DISCORD_BOT_TOKEN`, and Discord webhook values
+- Discord command allowlists are configured (`DISCORD_ALLOWED_USER_IDS`, `DISCORD_ALLOWED_ROLE_IDS`, optional `DISCORD_ALLOWED_CHANNEL_ID`)
 - `demonlord.config.json` exists (bootstrap will create minimum defaults when missing)
 - `type pipelinectl` resolves, or `./agents/tools/pipelinectl.sh status` works directly
 
@@ -226,6 +227,18 @@ Legacy Discord commands are fail-closed with migration guidance:
 - **`/park`** -> use `/halt [note]` then `/continue [note]`
 - **`/handoff`** -> use `/focus <agent> [note]` or `/add-agent <agent...>`
 
+Authorization and reliability policy:
+- Inbound Discord commands are allowlist-gated via `discord.authorization.allowed_user_ids` and/or `discord.authorization.allowed_role_ids`.
+- Optional `discord.authorization.allowed_channel_id` enforces a single-command channel.
+- Retry/backoff is deterministic and fixed (`max_attempts=3`, `0ms/250ms/1000ms`, no jitter).
+- Outbound/inbound dedupe uses in-memory TTL (`10m`).
+
+Verification entrypoint:
+
+```bash
+npm --prefix .opencode run verify:beelzebub
+```
+
 Control the orchestration pipeline locally via CLI commands:
 - **`/pipeline status [session]`**
 - **`/pipeline advance <triage|implementation|review> [session]`**
@@ -274,6 +287,10 @@ Discord integration is configured in `demonlord.config.json`:
 - **`orchestration.pipeline_command_short_circuit`**: `/pipeline` pre-hook short-circuit strategy (`no_reply` default, `prehook_error` fallback)
 - **`discord.enabled`**: Enable/disable Discord integration
 - **`discord.personas`**: Agent-specific Discord persona settings
+- **`discord.authorization.required`**: Require authorization checks for inbound Discord-originated commands
+- **`discord.authorization.allowed_user_ids`**: Explicit Discord user allowlist
+- **`discord.authorization.allowed_role_ids`**: Explicit Discord role allowlist
+- **`discord.authorization.allowed_channel_id`**: Optional inbound channel constraint
 
 When execution graph logging is enabled, events are written to `_bmad-output/execution-graph.ndjson` with deterministic `seq` ordering and spawn/queue/block visibility.
 
@@ -334,6 +351,10 @@ When execution graph logging is enabled, events are written to `_bmad-output/exe
 **Discord messages not appearing**
 - **Solution**: Verify `.env` contains correct Discord webhook URLs
 - **Check**: Ensure `discord.enabled` is set to `true`
+
+**Discord command denied as unauthorized**
+- **Solution**: Add caller user/role IDs to Discord allowlists
+- **Check**: Confirm optional channel gate matches the command channel
 
 **Issues are not moving on Project V2 board**
 - **Solution**: Verify `PROJECT_V2_TOKEN` secret and all `PROJECT_V2_*` repository variables are set

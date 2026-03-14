@@ -6,6 +6,10 @@ import { join, resolve } from "path";
 import CommunicationPlugin from "../../plugins/communication.ts";
 import { withNoLiveNetwork } from "../harness/discord-harness.ts";
 
+process.env.DISCORD_BOT_TOKEN ??= "test-bot-token";
+process.env.DISCORD_WEBHOOK_ORCHESTRATOR ??= "https://discord.example/orchestrator";
+process.env.DISCORD_ALLOWED_USER_IDS ??= "user-allow-default";
+
 interface MockCommandCall {
   sessionID: string;
   command: string;
@@ -656,6 +660,15 @@ describe("communication session targeting unit tests", () => {
           command: "approve",
           sessionID: "ses-a",
           arguments: "--interaction-token tok-dup-1",
+          metadata: {
+            user: {
+              id: "user-allow-default",
+              role_ids: [],
+            },
+            channel: {
+              id: "channel-ops",
+            },
+          },
         } as Parameters<typeof commandBefore>[0],
         output as Parameters<typeof commandBefore>[1],
       );
@@ -665,6 +678,15 @@ describe("communication session targeting unit tests", () => {
           command: "approve",
           sessionID: "ses-a",
           arguments: "--interaction-token tok-dup-1",
+          metadata: {
+            user: {
+              id: "user-allow-default",
+              role_ids: [],
+            },
+            channel: {
+              id: "channel-ops",
+            },
+          },
         } as Parameters<typeof commandBefore>[0],
         output as Parameters<typeof commandBefore>[1],
       );
@@ -752,7 +774,7 @@ describe("communication session targeting unit tests", () => {
     }
   });
 
-  test("retries outbound event after transient failure (dedupe not committed on failure)", async () => {
+  test("retries outbound event on transient failure and commits dedupe after success", async () => {
     const root = await mkdtemp(join(tmpdir(), "communication-dedupe-retry-"));
 
     try {
@@ -782,7 +804,7 @@ describe("communication session targeting unit tests", () => {
             return createMockResponse(204); // Second call succeeds
           },
           async () => {
-            // First event - should fail but not commit dedupe
+            // First event should retry and eventually succeed.
             await eventHook?.({
               event: {
                 type: "session.idle",
@@ -792,7 +814,7 @@ describe("communication session targeting unit tests", () => {
               } as never,
             });
 
-            // Second event - should retry because dedupe was not committed
+            // Second identical event should be deduped after first succeeds.
             await eventHook?.({
               event: {
                 type: "session.idle",
@@ -806,8 +828,206 @@ describe("communication session targeting unit tests", () => {
       });
 
       assert.equal(callCount, 2, "Should have attempted delivery twice");
-      assert.equal(client.prompts.length, 1); // Only one feedback for the failure
-      assert.match(client.prompts[0]?.text ?? "", /Discord outbound delivery failed/i);
+      assert.equal(client.prompts.length, 0);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("fails fast when required Discord startup env keys are missing", async () => {
+    const root = await mkdtemp(join(tmpdir(), "communication-startup-validation-"));
+
+    try {
+      await writeConfig(root, {
+        orchestration: {
+          enabled: true,
+          mode: "manual",
+        },
+      });
+
+      const client = createMockClient();
+      await assert.rejects(
+        () =>
+          withEnv(
+            {
+              DISCORD_BOT_TOKEN: "",
+              DISCORD_WEBHOOK_ORCHESTRATOR: "",
+              DISCORD_ALLOWED_USER_IDS: "",
+              DISCORD_ALLOWED_ROLE_IDS: "",
+            },
+            async () => {
+              await CommunicationPlugin({
+                client: client as unknown as Parameters<typeof CommunicationPlugin>[0]["client"],
+                worktree: root,
+              } as Parameters<typeof CommunicationPlugin>[0]);
+            },
+          ),
+        /startup validation failed/i,
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("retries outbound delivery deterministically and redacts secrets on terminal failure", async () => {
+    const root = await mkdtemp(join(tmpdir(), "communication-outbound-terminal-failure-"));
+
+    try {
+      await writeConfig(root, {
+        orchestration: {
+          enabled: true,
+          mode: "manual",
+        },
+        discord: {
+          enabled: true,
+        },
+      });
+
+      const client = createMockClient();
+      const plugin = await createPlugin(client, root);
+      const eventHook = plugin.event;
+      assert.ok(eventHook, "communication plugin must expose event hook");
+
+      let callCount = 0;
+      await withEnv(
+        {
+          DISCORD_WEBHOOK_ORCHESTRATOR: "https://discord.com/api/webhooks/secret-hook/value",
+          DISCORD_BOT_TOKEN: "bot-secret-value",
+        },
+        async () => {
+          await withMockFetch(
+            async () => {
+              callCount += 1;
+              return createMockResponse(503, "downstream token bot-secret-value and https://discord.com/api/webhooks/secret-hook/value");
+            },
+            async () => {
+              await eventHook?.({
+                event: {
+                  type: "session.idle",
+                  properties: {
+                    sessionID: "ses-terminal-fail",
+                  },
+                } as never,
+              });
+            },
+          );
+        },
+      );
+
+      assert.equal(callCount, 3);
+      assert.equal(client.prompts.length, 1);
+      assert.match(client.prompts[0]?.text ?? "", /after 3 attempts/i);
+      assert.doesNotMatch(client.prompts[0]?.text ?? "", /bot-secret-value/);
+      assert.doesNotMatch(client.prompts[0]?.text ?? "", /discord\.com\/api\/webhooks/i);
+      assert.match(client.prompts[0]?.text ?? "", /\[REDACTED\]/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("denies unauthorized inbound Discord callers deterministically", async () => {
+    const root = await mkdtemp(join(tmpdir(), "communication-inbound-authz-deny-"));
+
+    try {
+      await writeConfig(root, {
+        orchestration: {
+          enabled: true,
+          mode: "manual",
+        },
+        discord: {
+          enabled: true,
+          authorization: {
+            required: true,
+            allowed_user_ids: ["user-allow"],
+            allowed_role_ids: ["role-allow"],
+            allowed_channel_id: "channel-ops",
+          },
+        },
+      });
+
+      const client = createMockClient();
+      const plugin = await createPlugin(client, root);
+      const commandBefore = plugin["command.execute.before"];
+      assert.ok(commandBefore, "communication plugin must expose command.execute.before hook");
+
+      const output: { parts: unknown[]; noReply?: boolean } = {
+        parts: [{ type: "text", text: "placeholder" }],
+      };
+
+      await commandBefore(
+        {
+          command: "approve",
+          sessionID: "ses-authz",
+          arguments: "--interaction-token tok-authz",
+          metadata: {
+            user: { id: "user-deny", role_ids: ["role-deny"] },
+            channel: { id: "channel-other" },
+          },
+        } as Parameters<typeof commandBefore>[0],
+        output as Parameters<typeof commandBefore>[1],
+      );
+
+      assert.equal(output.noReply, true);
+      assert.deepEqual(output.parts, []);
+      assert.equal(client.commands.length, 0);
+      assert.equal(client.prompts.length, 1);
+      assert.match(client.prompts[0]?.text ?? "", /command denied/i);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("retries inbound command handling errors and surfaces terminal failure", async () => {
+    const root = await mkdtemp(join(tmpdir(), "communication-inbound-retry-failure-"));
+
+    try {
+      await writeConfig(root, {
+        orchestration: {
+          enabled: true,
+          mode: "manual",
+        },
+      });
+
+      const commands: MockCommandCall[] = [];
+      const prompts: MockPromptCall[] = [];
+      const client: MockClient = {
+        commands,
+        prompts,
+        session: {
+          async command(input): Promise<void> {
+            commands.push({
+              sessionID: input.path.id,
+              command: input.body.command,
+              arguments: input.body.arguments,
+            });
+            throw new Error("forced inbound failure");
+          },
+          async prompt(input): Promise<void> {
+            prompts.push({
+              sessionID: input.path.id,
+              text: input.body.parts[0]?.text ?? "",
+            });
+          },
+        },
+      };
+
+      const plugin = await createPlugin(client, root);
+      const commandBefore = plugin["command.execute.before"];
+      assert.ok(commandBefore, "communication plugin must expose command.execute.before hook");
+
+      const output: { parts: unknown[]; noReply?: boolean } = { parts: [] };
+      await commandBefore(
+        {
+          command: "approve",
+          sessionID: "ses-inbound-retry",
+          arguments: "",
+        } as Parameters<typeof commandBefore>[0],
+        output as Parameters<typeof commandBefore>[1],
+      );
+
+      assert.equal(commands.length, 3);
+      assert.equal(prompts.length, 1);
+      assert.match(prompts[0]?.text ?? "", /failed after 3 attempts/i);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

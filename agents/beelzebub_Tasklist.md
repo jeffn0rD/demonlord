@@ -111,30 +111,30 @@ Execution policy for this codename:
 **Entry criteria:**
 - SUBPHASE-1.2 and SUBPHASE-1.3 complete.
 **Exit criteria / QA checklist:**
-- [ ] Retry/backoff policy is explicit, bounded, deterministic, and tested (`max_attempts=3`, `0ms/250ms/1000ms`, no jitter).
-- [ ] Startup validation fails fast for missing Discord config/env requirements.
-- [ ] Secrets are redacted from logs and error surfaces.
-- [ ] Inbound command authorization is enforced via allowlisted user/role/channel rules.
-- [ ] Discord config schema keys are explicit in config template + `.env.example`.
-- [ ] Operator docs include setup, permissions, failure modes, and verification steps.
+- [x] Retry/backoff policy is explicit, bounded, deterministic, and tested (`max_attempts=3`, `0ms/250ms/1000ms`, no jitter).
+- [x] Startup validation fails fast for missing Discord config/env requirements.
+- [x] Secrets are redacted from logs and error surfaces.
+- [x] Inbound command authorization is enforced via allowlisted user/role/channel rules.
+- [x] Discord config schema keys are explicit in config template + `.env.example`.
+- [x] Operator docs include setup, permissions, failure modes, and verification steps.
 **Proposed PR title:** `fix: harden discord reliability safety and operator docs`  
 **Proposed commit message:** `fix: add bounded retry startup validation and operator docs for discord command center (Refs #123)`
 
 **Tasks:**
 <!-- TASK:T-1.4.1 -->
-- **T-1.4.1** (Refs #123): Implement deterministic bounded retry/backoff and terminal failure reporting for outbound send and inbound handling errors. Touch points: `.opencode/plugins/communication.ts`
+- [x] **T-1.4.1** (Refs #123): Implement deterministic bounded retry/backoff and terminal failure reporting for outbound send and inbound handling errors. Touch points: `.opencode/plugins/communication.ts`
 <!-- TASK:T-1.4.2 -->
-- **T-1.4.2** (Refs #123): Add fail-fast startup validation for required Discord env/config keys. Touch points: `.opencode/plugins/communication.ts`, `demonlord.config.json`
+- [x] **T-1.4.2** (Refs #123): Add fail-fast startup validation for required Discord env/config keys. Touch points: `.opencode/plugins/communication.ts`, `demonlord.config.json`
 <!-- TASK:T-1.4.3 -->
-- **T-1.4.3** (Refs #123): Add secret-redaction utility and enforce no token/webhook leakage in logs. Touch points: `.opencode/plugins/communication.ts`
+- [x] **T-1.4.3** (Refs #123): Add secret-redaction utility and enforce no token/webhook leakage in logs. Touch points: `.opencode/plugins/communication.ts`
 <!-- TASK:T-1.4.4 -->
-- **T-1.4.4** (Refs #123): Extend explicit Discord config keys in `demonlord.config.json`, `.opencode/templates/demonlord.config.default.json`, and `.env.example`. Touch points: `demonlord.config.json`, `.opencode/templates/demonlord.config.default.json`, `.env.example`
+- [x] **T-1.4.4** (Refs #123): Extend explicit Discord config keys in `demonlord.config.json`, `.opencode/templates/demonlord.config.default.json`, and `.env.example`. Touch points: `demonlord.config.json`, `.opencode/templates/demonlord.config.default.json`, `.env.example`
 <!-- TASK:T-1.4.5 -->
-- **T-1.4.5** (Refs #123): Update operator docs for Discord setup, permissions, failure modes, and verification. Touch points: `README.md`, `USAGE.md`, `doc/engineering_spec.md`, `doc/engineering_reference.md`
+- [x] **T-1.4.5** (Refs #123): Update operator docs for Discord setup, permissions, failure modes, and verification. Touch points: `README.md`, `USAGE.md`, `doc/engineering_spec.md`, `doc/engineering_reference.md`
 <!-- TASK:T-1.4.6 -->
-- **T-1.4.6** (Refs #123): Add deterministic tests for retry exhaustion, startup validation failure, redaction, and error surfacing. Touch points: `.opencode/tests/plugins/`, `.opencode/tests/integration/`
+- [x] **T-1.4.6** (Refs #123): Add deterministic tests for retry exhaustion, startup validation failure, redaction, and error surfacing. Touch points: `.opencode/tests/plugins/`, `.opencode/tests/integration/`
 <!-- TASK:T-1.4.7 -->
-- **T-1.4.7** (Refs #123): Implement inbound command authorization (allowed user IDs, role IDs, optional channel ID) with deterministic deny responses and tests. Touch points: `.opencode/plugins/communication.ts`, `demonlord.config.json`, `.opencode/templates/demonlord.config.default.json`, `.opencode/tests/plugins/`, `.opencode/tests/integration/`
+- [x] **T-1.4.7** (Refs #123): Implement inbound command authorization (allowed user IDs, role IDs, optional channel ID) with deterministic deny responses and tests. Touch points: `.opencode/plugins/communication.ts`, `demonlord.config.json`, `.opencode/templates/demonlord.config.default.json`, `.opencode/tests/plugins/`, `.opencode/tests/integration/`
 
 ---
 

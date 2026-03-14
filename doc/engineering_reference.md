@@ -26,7 +26,7 @@ The Event-Driven Pipeline The software factory operates through event-driven orc
    - Spec-first enforcement: ambiguous or requirement-heavy requests route through `spec-expert` first, and coding sessions only start after a valid spec handoff marker is written.
    - Spec-handoff continuity: once handoff validates, orchestrator resumes using the pre-resolved execution target (`taskRef`, `role`, `tier`, `agentID`, `skill`) for implementation spawn.
 3. Deterministic Gates (The "Black Box"): This is a critical quality intercept. Agents are stripped of native git commands and must call a TypeScript custom tool, submit_implementation(). This tool programmatically runs lints and tests; if they fail, the function intercepts the stack trace and feeds it back to the agent for auto-correction.
-4. Review: Upon `session.idle` event, a plugin triggers the Reviewer Agent to analyze the output before posting a Discord notification for human-in-the-loop approval via Slash Commands (e.g., /approve, /reject).
+4. Review: Upon `session.idle` event, a plugin triggers the Reviewer Agent to analyze the output before posting a Discord notification for human-in-the-loop approval via slash commands (`/approve`, `/party`, `/continue`, `/halt`, `/focus`, `/add-agent`, `/export`) with fail-closed user/role/channel allowlist authorization.
 
 V1 role/tier families and compatibility:
 
@@ -61,6 +61,8 @@ When slash-command handling is limited by core hook behavior, operators can use 
 * `pipelinectl stop [session]`
 
 The orchestrator plugin injects deterministic shell context via `shell.env` (`OPENCODE_SESSION_ID`, `OPENCODE_WORKTREE`, `OPENCODE_ORCHESTRATION_STATE`, `OPENCODE_ORCHESTRATION_COMMAND_QUEUE`) and prepends worktree tool paths so `pipelinectl` runs without manual session/worktree copy-paste.
+
+Discord command-center reliability is fixed for this cycle: retries are bounded (`max_attempts=3`) with deterministic backoff (`0ms`, `250ms`, `1000ms`) and no jitter, dedupe retention remains in-memory TTL (`10m`), and startup validation fails fast when required Discord env/config keys are absent.
 
 V1 constrained parallel dispatch and visibility:
 

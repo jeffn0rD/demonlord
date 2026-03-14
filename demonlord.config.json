@@ -57,6 +57,16 @@
   },
   "discord": {
     "enabled": true,
+    "authorization": {
+      "required": true,
+      "allowed_user_ids": [
+        "replace-with-discord-user-id"
+      ],
+      "allowed_role_ids": [
+        "replace-with-discord-role-id"
+      ],
+      "allowed_channel_id": "replace-with-discord-channel-id"
+    },
     "personas": {
       "planner": {
         "name": "Planner",
