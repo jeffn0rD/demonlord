@@ -308,7 +308,7 @@ Ordering and dedupe guarantees:
 Example event:
 
 ```json
-{"seq":14,"ts":"2026-03-13T12:03:55.004Z","rootSessionID":"root-42","eventType":"task_blocked","sessionID":"sess-impl-2","parentSessionID":"root-42","stage":"implementation","taskRef":"T-3.8.3","agentID":"minion-pro","tier":"pro","skillID":"backend-specialist","parallelGroup":"impl-core","slot":"implementation:2","status":"blocked","reason":"depends_on unresolved: T-3.8.1"}
+{"seq":14,"ts":"2026-03-13T12:03:55.004Z","rootSessionID":"root-42","eventType":"task_blocked","sessionID":"sess-impl-2","parentSessionID":"root-42","stage":"implementation","taskRef":"T-3.8.3","agentID":"minion-pro","tier":"pro","skillID":"demonlord-specialist","parallelGroup":"impl-core","slot":"implementation:2","status":"blocked","reason":"depends_on unresolved: T-3.8.1"}
 ```
 
 Human status summary contract (`/pipeline status`):
@@ -486,7 +486,7 @@ demonlord.config.json
 ├── opencode.jsonc.known-good   # Backup for recovery
 ├── commands/
 ├── skills/
-│   └── frontend-specialist/
+│   └── demonlord-specialist/
 │       └── SKILL.md
 ├── tools/
 │   ├── submit_implementation.ts

@@ -23,8 +23,6 @@ Use this skill for orchestration flow changes, pipeline transition logic, and de
 - `.opencode/tools/party_mode.ts`
 - `agents/tools/spawn_worktree.sh`
 - `agents/tools/pipelinectl.sh`
-- `_bmad-output/orchestration-state.json` (schema contract)
-- `_bmad-output/orchestration-commands.ndjson` (queue contract)
 
 ## Context Budget Rules
 

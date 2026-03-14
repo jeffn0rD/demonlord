@@ -99,7 +99,7 @@ Do not edit manually. Run `npm run skills:maintain` from `.opencode`.
 ### `orchestration-specialist`
 - Description: Implements and hardens Demonlord orchestration state machines, pipeline controls, worktree spawning, and command-queue behavior.
 - Skill file: `.opencode/skills/orchestration-specialist/SKILL.md`
-- Reference paths: `_bmad-output/orchestration-commands.ndjson`, `_bmad-output/orchestration-state.json`, `.opencode/plugins/communication.ts`, `.opencode/plugins/orchestrator.ts`, `.opencode/tools/cycle_runner.ts`, `.opencode/tools/matchmaker.ts`, `.opencode/tools/party_mode.ts`, `agents/*_Tasklist.md`, `agents/tools/pipelinectl.sh`, `agents/tools/spawn_worktree.sh`, `doc/engineering_reference.md`, `doc/engineering_spec.md`
+- Reference paths: `.opencode/plugins/communication.ts`, `.opencode/plugins/orchestrator.ts`, `.opencode/tools/cycle_runner.ts`, `.opencode/tools/matchmaker.ts`, `.opencode/tools/party_mode.ts`, `agents/*_Tasklist.md`, `agents/tools/pipelinectl.sh`, `agents/tools/spawn_worktree.sh`, `doc/engineering_reference.md`, `doc/engineering_spec.md`
 - Routing keywords: orchestrator, pipeline, transition, idle, session.error, noReply, approval, worktree, spawn, queue, snapshot, pipelinectl, dedupe, state machine.
 - Landmarks:
   - `doc/engineering_spec.md`:
