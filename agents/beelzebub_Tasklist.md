@@ -57,10 +57,10 @@ Execution policy for this codename:
 **Entry criteria:**
 - SUBPHASE-1.1 complete.
 **Exit criteria / QA checklist:**
-- [ ] Real Discord send path implemented (no no-op placeholder behavior).
-- [ ] Deterministic payload mapping exists for locked event families: `session.idle`, `session.error`, approval/transition, completion/failure summary.
-- [ ] Payload includes persona/worktree/session context.
-- [ ] Dedupe/idempotency coverage exists for repeated events.
+- [x] Real Discord send path implemented (no no-op placeholder behavior).
+- [x] Deterministic payload mapping exists for locked event families: `session.idle`, `session.error`, approval/transition, completion/failure summary.
+- [x] Payload includes persona/worktree/session context.
+- [x] Dedupe/idempotency coverage exists for repeated events (fixed ordering to prevent suppression on failure).
 **Proposed PR title:** `feat: implement deterministic outbound discord delivery`  
 **Proposed commit message:** `feat: add real discord outbound notifications for critical orchestration events (Refs #123)`
 
