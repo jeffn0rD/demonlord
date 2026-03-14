@@ -266,3 +266,71 @@ Execution policy for this codename:
 - **T-3.1.3** (Refs #123): Document explicit go/no-go criteria for first client-repo adoption. Touch points: `README.md`, `doc/engineering_spec.md`
 <!-- TASK:T-3.1.4 -->
 - **T-3.1.4** (Refs #123): Add final regression test pass evidence requirements for Discord command center + installer hardening matrix. Touch points: `doc/releases/`, `README.md`
+
+---
+
+## PHASE-4: Internal Cycle Orchestration (Plugin-Native)
+<!-- PHASE:4 -->
+**Goal:** Move cycle execution into orchestrator plugin control flow to remove external SDK server dependency while preserving deterministic implement-review-repair behavior.  
+**Plan reference:** `/agents/beelzebub_Plan.md` `<!-- PHASE:4 -->`
+
+### SUBPHASE-4.1: Pipeline Command Surface + Persisted Cycle State
+<!-- SUBPHASE:4.1 -->
+**Plan reference:** `/agents/beelzebub_Plan.md` `<!-- PHASE:4 -->` + `<!-- SUBPHASE:4.1 -->`  
+**Entry criteria:**
+- PHASE-3 complete.
+**Exit criteria / QA checklist:**
+- [ ] Pipeline control plane includes deterministic cycle actions (`start`, `status`, `resume`, `stop`).
+- [ ] Cycle state persists atomically in orchestration state files and survives restart.
+- [ ] Cycle command semantics are explicit and fail closed on invalid phase/subphase targets.
+**Proposed PR title:** `feat: add plugin-native cycle control surface and persisted state`  
+**Proposed commit message:** `feat: add orchestrator-native cycle command surface and durable cycle state (Refs #123)`
+
+**Tasks:**
+<!-- TASK:T-4.1.1 -->
+- **T-4.1.1** (Refs #123): Extend orchestrator state schema with cycle metadata (phase, current subphase, repair round counters, stop reason) and atomic persistence. Touch points: `.opencode/plugins/orchestrator.ts`
+<!-- TASK:T-4.1.2 -->
+- **T-4.1.2** (Refs #123): Add deterministic `/pipeline cycle` action parsing and validation (`start|status|resume|stop`). Touch points: `.opencode/plugins/orchestrator.ts`, `.opencode/commands/pipeline.md`
+<!-- TASK:T-4.1.3 -->
+- **T-4.1.3** (Refs #123): Add focused tests for invalid selectors, restart/resume behavior, and stop/resume state transitions. Touch points: `.opencode/tests/plugins/orchestrator.test.ts`
+
+### SUBPHASE-4.2: Deterministic Implement-Review-Repair Loop Integration
+<!-- SUBPHASE:4.2 -->
+**Plan reference:** `/agents/beelzebub_Plan.md` `<!-- PHASE:4 -->` + `<!-- SUBPHASE:4.2 -->`  
+**Entry criteria:**
+- SUBPHASE-4.1 complete.
+**Exit criteria / QA checklist:**
+- [ ] Plugin-native loop executes in-order per subphase: implement -> review -> repair -> review.
+- [ ] Review remains read-only and cannot mutate implementation artifacts.
+- [ ] Bounded repair rounds are enforced with deterministic stop reason on exhaustion.
+- [ ] Subphase advancement only occurs on review `pass`.
+**Proposed PR title:** `feat: integrate bounded cycle loop into orchestrator plugin`  
+**Proposed commit message:** `feat: implement plugin-native bounded implement-review-repair cycle loop (Refs #123)`
+
+**Tasks:**
+<!-- TASK:T-4.2.1 -->
+- **T-4.2.1** (Refs #123): Wire cycle loop transitions into orchestrator stage handling using existing manual-gate controls and task traversal metadata. Touch points: `.opencode/plugins/orchestrator.ts`
+<!-- TASK:T-4.2.2 -->
+- **T-4.2.2** (Refs #123): Enforce strict loop stop conditions (max repair rounds, malformed review marker/artifact, blocked implementation). Touch points: `.opencode/plugins/orchestrator.ts`
+<!-- TASK:T-4.2.3 -->
+- **T-4.2.3** (Refs #123): Add deterministic tests for pass path, fail-repair-pass path, and round-exhaustion failure path. Touch points: `.opencode/tests/plugins/orchestrator.test.ts`
+
+### SUBPHASE-4.3: Migration, Compatibility, and Verification
+<!-- SUBPHASE:4.3 -->
+**Plan reference:** `/agents/beelzebub_Plan.md` `<!-- PHASE:4 -->` + `<!-- SUBPHASE:4.3 -->`  
+**Entry criteria:**
+- SUBPHASE-4.1 and SUBPHASE-4.2 complete.
+**Exit criteria / QA checklist:**
+- [ ] `/cycle` operator behavior remains backward-compatible (or explicit migration guidance is documented).
+- [ ] Documentation clearly states server-dependent vs plugin-native cycle paths and recommended default.
+- [ ] Verification includes deterministic parity checks between legacy and plugin-native cycle outcomes.
+**Proposed PR title:** `docs: migrate cycle workflow to plugin-native orchestration path`  
+**Proposed commit message:** `docs: document cycle migration and validate plugin-native parity behavior (Refs #123)`
+
+**Tasks:**
+<!-- TASK:T-4.3.1 -->
+- **T-4.3.1** (Refs #123): Update command docs and operator runbooks for plugin-native cycle usage and fallback behavior. Touch points: `.opencode/commands/cycle.md`, `README.md`, `USAGE.md`
+<!-- TASK:T-4.3.2 -->
+- **T-4.3.2** (Refs #123): Add regression checks proving parity between existing cycle runner and plugin-native cycle for a representative phase. Touch points: `.opencode/tests/integration/`, `doc/releases/`
+<!-- TASK:T-4.3.3 -->
+- **T-4.3.3** (Refs #123): Define deprecation guardrails/timeline for any superseded cycle command path if migration is complete. Touch points: `README.md`, `doc/engineering_spec.md`

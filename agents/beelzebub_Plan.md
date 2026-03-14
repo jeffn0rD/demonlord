@@ -130,6 +130,33 @@ The following decisions are locked for this implementation cycle and are no long
 
 ---
 
+## PHASE-4: Internal Cycle Orchestration (Plugin-Native)
+<!-- PHASE:4 -->
+**Goal:** Move phase/subphase cycling from external SDK-server dependency into orchestrator-native control flow while preserving deterministic implement-review-repair behavior and context isolation.  
+**Included Issues:** Refs #123  
+**Dependencies:** PHASE-3 complete; current `/cycle` command/tool behavior available as baseline.  
+**Risks:** State-machine drift, duplicate dispatch, non-deterministic retries, migration confusion.
+
+### SUBPHASE-4.1: Pipeline Command Surface + Persisted Cycle State
+<!-- SUBPHASE:4.1 -->
+**Goal:** Extend orchestrator control plane with explicit cycle actions (start/status/resume/stop) and persisted cycle state model independent of external SDK URL configuration.  
+**Dependencies:** PHASE-3 complete (phase entry).  
+**Risks:** Ambiguous command semantics and partial-state corruption on restart.
+
+### SUBPHASE-4.2: Deterministic Implement-Review-Repair Loop Integration
+<!-- SUBPHASE:4.2 -->
+**Goal:** Implement plugin-native bounded looping per subphase (`implement -> review -> repair -> review`) with strict stop conditions and fail-closed review gates.  
+**Dependencies:** SUBPHASE-4.1.  
+**Risks:** Infinite loop risk or incorrect subphase advancement when review artifacts are malformed.
+
+### SUBPHASE-4.3: Migration, Compatibility, and Verification
+<!-- SUBPHASE:4.3 -->
+**Goal:** Preserve backward compatibility for `/cycle` operator usage, document migration path, and validate deterministic outcomes against prior external-runner behavior.  
+**Dependencies:** SUBPHASE-4.1, SUBPHASE-4.2.  
+**Risks:** Operator confusion if legacy and plugin-native commands diverge.
+
+---
+
 ## Deferred Issues (with reasons)
 
 1. **Advanced Discord interaction UX (threading/embeds customization/visual polish)**  
