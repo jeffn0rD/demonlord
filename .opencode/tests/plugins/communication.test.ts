@@ -751,6 +751,67 @@ describe("communication session targeting unit tests", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  test("retries outbound event after transient failure (dedupe not committed on failure)", async () => {
+    const root = await mkdtemp(join(tmpdir(), "communication-dedupe-retry-"));
+
+    try {
+      await writeConfig(root, {
+        orchestration: {
+          enabled: true,
+          mode: "manual",
+        },
+        discord: {
+          enabled: true,
+        },
+      });
+
+      const client = createMockClient();
+      const plugin = await createPlugin(client, root);
+      const eventHook = plugin.event;
+      assert.ok(eventHook, "communication plugin must expose event hook");
+
+      let callCount = 0;
+      await withEnv({ DISCORD_WEBHOOK_ORCHESTRATOR: "https://discord.example/orchestrator" }, async () => {
+        await withMockFetch(
+          async () => {
+            callCount += 1;
+            if (callCount === 1) {
+              return createMockResponse(500); // First call fails
+            }
+            return createMockResponse(204); // Second call succeeds
+          },
+          async () => {
+            // First event - should fail but not commit dedupe
+            await eventHook?.({
+              event: {
+                type: "session.idle",
+                properties: {
+                  sessionID: "ses-retry",
+                },
+              } as never,
+            });
+
+            // Second event - should retry because dedupe was not committed
+            await eventHook?.({
+              event: {
+                type: "session.idle",
+                properties: {
+                  sessionID: "ses-retry",
+                },
+              } as never,
+            });
+          },
+        );
+      });
+
+      assert.equal(callCount, 2, "Should have attempted delivery twice");
+      assert.equal(client.prompts.length, 1); // Only one feedback for the failure
+      assert.match(client.prompts[0]?.text ?? "", /Discord outbound delivery failed/i);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
 
 async function writeMultiSessionOrchestrationState(root: string, sessionIDs: string[]): Promise<void> {

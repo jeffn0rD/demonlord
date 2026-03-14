@@ -85,6 +85,130 @@ describe("communication outbound integration", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  test("emits deterministic pipeline.transition payloads for pipeline commands", async () => {
+    const root = await mkdtemp(join(tmpdir(), "communication-outbound-transition-"));
+
+    try {
+      await writeConfig(root);
+
+      const fixture = await readContractFixture();
+      assert.ok(fixture.outbound_events.includes("pipeline.transition"));
+
+      const client = createMockClient();
+      const plugin = await CommunicationPlugin({
+        client: client as unknown as Parameters<typeof CommunicationPlugin>[0]["client"],
+        worktree: root,
+      } as Parameters<typeof CommunicationPlugin>[0]);
+      const eventHook = plugin.event;
+
+      assert.ok(eventHook, "communication plugin must expose event hook");
+
+      await withEnv({ DISCORD_WEBHOOK_REVIEWER: "https://discord.example/reviewer" }, async () => {
+        const emitted: Array<{ event: string; payload: Record<string, unknown> }> = [];
+
+        await withMockFetch(
+          async (_url, init) => {
+            const body = JSON.parse(typeof init?.body === "string" ? init.body : "{}") as { content?: string };
+            const content = JSON.parse(body.content ?? "{}") as {
+              event: string;
+              payload: Record<string, unknown>;
+            };
+            emitted.push(content);
+            return createMockResponse(204);
+          },
+          async () => {
+            await writeOrchestrationState(root, "ses-transition", "review", "idle", "/tmp/worktrees/ses-transition");
+            await eventHook?.({
+              event: {
+                type: "command.executed",
+                properties: {
+                  name: "pipeline",
+                  sessionID: "ses-transition",
+                  arguments: "advance",
+                },
+              } as never,
+            });
+          },
+        );
+
+        assert.equal(emitted.length, 1);
+        assert.equal(emitted[0]?.event, "pipeline.transition");
+        assert.equal(emitted[0]?.payload.command_action, "advance");
+        assert.equal(emitted[0]?.payload.session_id, "ses-transition");
+        assert.equal(emitted[0]?.payload.persona, "reviewer");
+      });
+
+      assert.equal(client.prompts.length, 0);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("emits deterministic session.error payloads for non-terminal errors", async () => {
+    const root = await mkdtemp(join(tmpdir(), "communication-outbound-error-non-terminal-"));
+
+    try {
+      await writeConfig(root);
+
+      const fixture = await readContractFixture();
+      assert.ok(fixture.outbound_events.includes("session.error"));
+
+      const client = createMockClient();
+      const plugin = await CommunicationPlugin({
+        client: client as unknown as Parameters<typeof CommunicationPlugin>[0]["client"],
+        worktree: root,
+      } as Parameters<typeof CommunicationPlugin>[0]);
+      const eventHook = plugin.event;
+
+      assert.ok(eventHook, "communication plugin must expose event hook");
+
+      await withEnv({ DISCORD_WEBHOOK_REVIEWER: "https://discord.example/reviewer" }, async () => {
+        const emitted: Array<{ event: string; payload: Record<string, unknown> }> = [];
+
+        await withMockFetch(
+          async (_url, init) => {
+            const body = JSON.parse(typeof init?.body === "string" ? init.body : "{}") as { content?: string };
+            const content = JSON.parse(body.content ?? "{}") as {
+              event: string;
+              payload: Record<string, unknown>;
+            };
+            emitted.push(content);
+            return createMockResponse(204);
+          },
+          async () => {
+            // Write state with transition NOT blocked/stopped (e.g., "idle" or "active")
+            // Use stage "review" to match DISCORD_WEBHOOK_REVIEWER
+            await writeOrchestrationState(root, "ses-error", "review", "idle", "/tmp/worktrees/ses-error");
+            await eventHook?.({
+              event: {
+                type: "session.error",
+                properties: {
+                  sessionID: "ses-error",
+                  error: {
+                    code: "E_TEST",
+                    data: {
+                      message: "non-terminal error",
+                    },
+                  },
+                },
+              } as never,
+            });
+          },
+        );
+
+        assert.equal(emitted.length, 1);
+        assert.equal(emitted[0]?.event, "session.error");
+        assert.equal(emitted[0]?.payload.error_code, "E_TEST");
+        assert.equal(emitted[0]?.payload.session_id, "ses-error");
+        assert.equal(emitted[0]?.payload.persona, "reviewer");
+      });
+
+      assert.equal(client.prompts.length, 0);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
 
 interface MockCommandCall {

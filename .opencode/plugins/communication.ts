@@ -240,12 +240,14 @@ const CommunicationPlugin: Plugin = async ({ client, worktree }) => {
       }
 
       const dedupeKey = buildOutboundDedupeKey(notification);
-      if (!rememberOutboundEvent(outboundDedupes, dedupeKey)) {
+      if (!checkOutboundDedupe(outboundDedupes, dedupeKey)) {
         return;
       }
 
       const delivery = await sendOutboundNotification(notification);
-      if (!delivery.ok) {
+      if (delivery.ok) {
+        commitOutboundDedupe(outboundDedupes, dedupeKey);
+      } else {
         const details = delivery.error ? ` ${delivery.error}` : "";
         await sendFeedback(notification.sessionID, `Discord outbound delivery failed for '${notification.event}'.${details}`.trim());
       }
@@ -388,9 +390,10 @@ function wasPreHandledCommand(cache: Map<string, number>, commandInput: ApproveC
   return true;
 }
 
-function rememberOutboundEvent(cache: Map<string, number>, key: string): boolean {
+function checkOutboundDedupe(cache: Map<string, number>, key: string): boolean {
   const now = Date.now();
 
+  // Cleanup expired entries
   for (const [cacheKey, expiresAt] of cache) {
     if (expiresAt <= now) {
       cache.delete(cacheKey);
@@ -399,11 +402,15 @@ function rememberOutboundEvent(cache: Map<string, number>, key: string): boolean
 
   const expiresAt = cache.get(key);
   if (expiresAt && expiresAt > now) {
-    return false;
+    return false; // Already exists, do not send
   }
 
+  return true; // Should send
+}
+
+function commitOutboundDedupe(cache: Map<string, number>, key: string): void {
+  const now = Date.now();
   cache.set(key, now + OUTBOUND_DEDUPE_TTL_MS);
-  return true;
 }
 
 function rememberInboundCommand(cache: Map<string, number>, commandInput: ApproveCommandInput): boolean {
