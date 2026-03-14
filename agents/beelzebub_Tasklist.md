@@ -9,6 +9,15 @@ Execution policy for this codename:
 - Complete all entry/exit criteria before moving to the next subphase
 - Keep references to issue Refs #123 intact in commit/PR metadata
 
+## Cycle decision lock (must be implemented as written)
+
+- Inbound Discord command authorization is required in this cycle and must fail closed for unauthorized callers.
+- Post-install verification must be available both as `scripts/verify-demonlord.sh` and installer `--verify`.
+- Dedupe retention policy is in-memory TTL for this cycle (`10m`), non-persisted.
+- Session targeting policy is fixed: explicit `session_id` first, single-candidate auto-target, ambiguity fail-closed.
+- Retry policy constants are fixed: `max_attempts=3`, backoff intervals `0ms, 250ms, 1000ms`, no jitter.
+- Verification entrypoint for this cycle is `npm run verify:beelzebub` (introduced in SUBPHASE-1.1 and reused in release gates).
+
 ---
 
 ## PHASE-1: Discord Command Center Completion
@@ -25,7 +34,8 @@ Execution policy for this codename:
 **Exit criteria / QA checklist:**
 - [ ] Deterministic Discord harness utilities exist for outbound/inbound/retry/dedupe scenarios.
 - [ ] New tests run offline and deterministically.
-- [ ] Test scripts include dedicated Discord/hardening verification target.
+- [ ] Canonical Discord command/event contract fixtures are defined and versioned.
+- [ ] Test scripts include dedicated Discord/hardening verification target and the canonical `verify:beelzebub` entrypoint.
 **Proposed PR title:** `test: add deterministic discord command-center harness`  
 **Proposed commit message:** `test: add deterministic discord harness and fixtures for command-center hardening (Refs #123)`
 
@@ -38,6 +48,8 @@ Execution policy for this codename:
 - **T-1.1.3** (Refs #123): Add dedicated scripts for Discord and round verification (e.g., `test:discord`, `verify:beelzebub`). Touch points: `.opencode/package.json`
 <!-- TASK:T-1.1.4 -->
 - **T-1.1.4** (Refs #123): Add tests enforcing "no live network" behavior and deterministic retry timing outcomes. Touch points: `.opencode/tests/plugins/`, `.opencode/tests/integration/`
+<!-- TASK:T-1.1.5 -->
+- **T-1.1.5** (Refs #123): Add versioned contract fixtures for outbound event payloads and inbound command envelopes. Touch points: `.opencode/tests/harness/`, `doc/engineering_spec.md`
 
 ### SUBPHASE-1.2: Outbound Discord Delivery
 <!-- SUBPHASE:1.2 -->
@@ -46,7 +58,7 @@ Execution policy for this codename:
 - SUBPHASE-1.1 complete.
 **Exit criteria / QA checklist:**
 - [ ] Real Discord send path implemented (no no-op placeholder behavior).
-- [ ] Deterministic payload mapping exists for required event families.
+- [ ] Deterministic payload mapping exists for locked event families: `session.idle`, `session.error`, approval/transition, completion/failure summary.
 - [ ] Payload includes persona/worktree/session context.
 - [ ] Dedupe/idempotency coverage exists for repeated events.
 **Proposed PR title:** `feat: implement deterministic outbound discord delivery`  
@@ -63,6 +75,8 @@ Execution policy for this codename:
 - **T-1.2.4** (Refs #123): Implement dedupe/idempotency policy for repeated outbound event emissions. Touch points: `.opencode/plugins/communication.ts`
 <!-- TASK:T-1.2.5 -->
 - **T-1.2.5** (Refs #123): Add unit/integration tests for payload contract, dedupe behavior, and send failure surfacing. Touch points: `.opencode/tests/plugins/`, `.opencode/tests/integration/`
+<!-- TASK:T-1.2.6 -->
+- **T-1.2.6** (Refs #123): Enforce a strict outbound event allowlist and fail-safe behavior for unmapped events. Touch points: `.opencode/plugins/communication.ts`, `.opencode/tests/plugins/`
 
 ### SUBPHASE-1.3: Inbound Discord Control Routing
 <!-- SUBPHASE:1.3 -->
@@ -73,6 +87,7 @@ Execution policy for this codename:
 - [ ] `/approve`, `/party`, `/continue`, `/halt`, `/focus`, `/add-agent`, `/export` are routed deterministically.
 - [ ] Multi-session targeting rules are deterministic and fail-closed on ambiguity.
 - [ ] Duplicate inbound command handling is idempotent.
+- [ ] Unsupported/legacy commands fail deterministically with migration guidance.
 **Proposed PR title:** `feat: add deterministic inbound discord control routing`  
 **Proposed commit message:** `feat: route discord control commands to target opencode sessions deterministically (Refs #123)`
 
@@ -87,6 +102,8 @@ Execution policy for this codename:
 - **T-1.3.4** (Refs #123): Add inbound interaction dedupe/idempotency guard keyed by command/session/interaction token. Touch points: `.opencode/plugins/communication.ts`
 <!-- TASK:T-1.3.5 -->
 - **T-1.3.5** (Refs #123): Add integration tests for multi-session routing, ambiguity error path, and duplicate suppression. Touch points: `.opencode/tests/integration/`, `.opencode/tests/plugins/`
+<!-- TASK:T-1.3.6 -->
+- **T-1.3.6** (Refs #123): Add deterministic handling for unsupported legacy commands with actionable migration text. Touch points: `.opencode/plugins/communication.ts`, `USAGE.md`
 
 ### SUBPHASE-1.4: Reliability, Safety, Config, and Docs
 <!-- SUBPHASE:1.4 -->
@@ -94,9 +111,10 @@ Execution policy for this codename:
 **Entry criteria:**
 - SUBPHASE-1.2 and SUBPHASE-1.3 complete.
 **Exit criteria / QA checklist:**
-- [ ] Retry/backoff policy is explicit, bounded, deterministic, and tested.
+- [ ] Retry/backoff policy is explicit, bounded, deterministic, and tested (`max_attempts=3`, `0ms/250ms/1000ms`, no jitter).
 - [ ] Startup validation fails fast for missing Discord config/env requirements.
 - [ ] Secrets are redacted from logs and error surfaces.
+- [ ] Inbound command authorization is enforced via allowlisted user/role/channel rules.
 - [ ] Discord config schema keys are explicit in config template + `.env.example`.
 - [ ] Operator docs include setup, permissions, failure modes, and verification steps.
 **Proposed PR title:** `fix: harden discord reliability safety and operator docs`  
@@ -115,6 +133,8 @@ Execution policy for this codename:
 - **T-1.4.5** (Refs #123): Update operator docs for Discord setup, permissions, failure modes, and verification. Touch points: `README.md`, `USAGE.md`, `doc/engineering_spec.md`, `doc/engineering_reference.md`
 <!-- TASK:T-1.4.6 -->
 - **T-1.4.6** (Refs #123): Add deterministic tests for retry exhaustion, startup validation failure, redaction, and error surfacing. Touch points: `.opencode/tests/plugins/`, `.opencode/tests/integration/`
+<!-- TASK:T-1.4.7 -->
+- **T-1.4.7** (Refs #123): Implement inbound command authorization (allowed user IDs, role IDs, optional channel ID) with deterministic deny responses and tests. Touch points: `.opencode/plugins/communication.ts`, `demonlord.config.json`, `.opencode/templates/demonlord.config.default.json`, `.opencode/tests/plugins/`, `.opencode/tests/integration/`
 
 ---
 
@@ -142,7 +162,7 @@ Execution policy for this codename:
 <!-- TASK:T-2.1.3 -->
 - **T-2.1.3** (Refs #123): Ensure dry-run remote mode validates source reachability and required asset manifest deterministically. Touch points: `scripts/install-demonlord.sh`
 <!-- TASK:T-2.1.4 -->
-- **T-2.1.4** (Refs #123): Add integration tests for missing assets and invalid remote source preflight errors. Touch points: `.opencode/tests/integration/installer-bootstrap.test.ts`
+- **T-2.1.4** (Refs #123): Add focused integration tests for missing assets and invalid remote source preflight errors (full matrix remains SUBPHASE-2.4). Touch points: `.opencode/tests/integration/installer-bootstrap.test.ts`
 
 ### SUBPHASE-2.2: Deterministic Apply + Rollback Semantics
 <!-- SUBPHASE:2.2 -->
@@ -164,7 +184,7 @@ Execution policy for this codename:
 <!-- TASK:T-2.2.3 -->
 - **T-2.2.3** (Refs #123): Introduce deterministic exit code taxonomy and standardized actionable error messages. Touch points: `scripts/install-demonlord.sh`, `README.md`, `USAGE.md`
 <!-- TASK:T-2.2.4 -->
-- **T-2.2.4** (Refs #123): Add tests for permission denied and partial failure + rollback behavior. Touch points: `.opencode/tests/integration/installer-bootstrap.test.ts`
+- **T-2.2.4** (Refs #123): Add focused tests for permission denied and partial failure + rollback behavior (full matrix remains SUBPHASE-2.4). Touch points: `.opencode/tests/integration/installer-bootstrap.test.ts`
 
 ### SUBPHASE-2.3: Source Modes + Post-Install Verification
 <!-- SUBPHASE:2.3 -->
@@ -173,7 +193,7 @@ Execution policy for this codename:
 - SUBPHASE-2.2 complete.
 **Exit criteria / QA checklist:**
 - [ ] Local and remote source modes behave robustly and consistently.
-- [ ] Deterministic post-install smoke-check command(s) prove ready state.
+- [ ] Deterministic post-install smoke checks are exposed both as `scripts/verify-demonlord.sh` and installer `--verify`.
 - [ ] Bootstrap remains idempotent and production-safe on reruns.
 **Proposed PR title:** `feat: add deterministic post-install verification and source-mode hardening`  
 **Proposed commit message:** `feat: harden installer source modes and add deterministic post-install smoke checks (Refs #123)`
@@ -182,7 +202,7 @@ Execution policy for this codename:
 <!-- TASK:T-2.3.1 -->
 - **T-2.3.1** (Refs #123): Harden source mode control flow and diagnostics for local path and remote git source. Touch points: `scripts/install-demonlord.sh`
 <!-- TASK:T-2.3.2 -->
-- **T-2.3.2** (Refs #123): Add deterministic post-install verification script/command set for “ready to use” checks. Touch points: `scripts/verify-demonlord.sh`, `scripts/install-demonlord.sh`
+- **T-2.3.2** (Refs #123): Add deterministic post-install verification as both `scripts/verify-demonlord.sh` and installer `--verify` for “ready to use” checks with aligned exit semantics. Touch points: `scripts/verify-demonlord.sh`, `scripts/install-demonlord.sh`
 <!-- TASK:T-2.3.3 -->
 - **T-2.3.3** (Refs #123): Harden bootstrap preflight and rerun-idempotency guarantees. Touch points: `scripts/bootstrap.sh`
 <!-- TASK:T-2.3.4 -->
@@ -196,6 +216,7 @@ Execution policy for this codename:
 **Exit criteria / QA checklist:**
 - [ ] Automated deterministic tests cover all required success/failure paths.
 - [ ] Repeat install on same target proves idempotent behavior.
+- [ ] Rollback-only and backup-integrity failure paths are covered deterministically.
 - [ ] No test requires live network dependencies.
 **Proposed PR title:** `test: add installer hardening failure-matrix regression coverage`  
 **Proposed commit message:** `test: validate installer deterministic failure matrix and rerun idempotency (Refs #123)`
@@ -211,6 +232,8 @@ Execution policy for this codename:
 - **T-2.4.4** (Refs #123): Add integration test for partial failure with rollback/recovery assertions. Touch points: `.opencode/tests/integration/installer-bootstrap.test.ts`
 <!-- TASK:T-2.4.5 -->
 - **T-2.4.5** (Refs #123): Add integration test for repeat install on same target to verify idempotent deterministic outcome. Touch points: `.opencode/tests/integration/installer-bootstrap.test.ts`
+<!-- TASK:T-2.4.6 -->
+- **T-2.4.6** (Refs #123): Add integration tests for rollback-only behavior and missing/corrupted backup manifest handling. Touch points: `.opencode/tests/integration/installer-bootstrap.test.ts`
 
 ---
 
@@ -236,7 +259,7 @@ Execution policy for this codename:
 
 **Tasks:**
 <!-- TASK:T-3.1.1 -->
-- **T-3.1.1** (Refs #123): Define strict automated gate list and verification command sequence (single deterministic entrypoint). Touch points: `.opencode/package.json`, `README.md`, `USAGE.md`
+- **T-3.1.1** (Refs #123): Wire strict automated gate list behind `npm run verify:beelzebub` and document it as the single deterministic entrypoint. Touch points: `.opencode/package.json`, `README.md`, `USAGE.md`
 <!-- TASK:T-3.1.2 -->
 - **T-3.1.2** (Refs #123): Add concise <15-minute manual QA checklist with expected outputs and failure interpretation. Touch points: `README.md`, `USAGE.md`
 <!-- TASK:T-3.1.3 -->

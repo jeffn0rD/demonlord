@@ -25,6 +25,26 @@ Use a **contract-first implementation strategy** with a deterministic test harne
 3. **Minimal installer patching only**  
    - Lower effort, but leaves operational risk in partial-failure and repeat-install scenarios.
 
+## Cycle Decision Lock (Normative)
+
+The following decisions are locked for this implementation cycle and are no longer open:
+
+1. **Inbound Discord authorization is required in this cycle.**
+   - Enforce allowlists at plugin level (user IDs, role IDs, and optional channel ID).
+   - Unauthorized commands fail closed with deterministic, actionable feedback.
+2. **Post-install verification ships as both script and flag.**
+   - Canonical verifier: `scripts/verify-demonlord.sh`.
+   - Installer `--verify` executes the same checks and returns the same exit semantics.
+3. **Discord dedupe retention is in-memory TTL for this cycle.**
+   - No persisted dedupe state in V1; behavior must be deterministic within a process lifetime.
+4. **Session targeting ambiguity fails closed.**
+   - Explicit `session_id` wins.
+   - Single candidate may auto-target.
+   - More than one candidate requires explicit `session_id`; response includes candidate hints.
+5. **Reliability constants are fixed for this cycle.**
+   - Retry policy: bounded deterministic backoff (`max_attempts=3`, intervals `0ms, 250ms, 1000ms`, no jitter).
+   - Command/event dedupe TTL: `10m` in-memory.
+
 ---
 
 ## Phase Breakdown
@@ -44,19 +64,19 @@ Use a **contract-first implementation strategy** with a deterministic test harne
 
 ### SUBPHASE-1.2: Outbound Discord Delivery
 <!-- SUBPHASE:1.2 -->
-**Goal:** Implement real Discord send path (non-placeholder) for required orchestration events with persona/worktree/session context.  
+**Goal:** Implement real Discord send path (non-placeholder) for a fixed required orchestration event contract with persona/worktree/session context.  
 **Dependencies:** SUBPHASE-1.1  
 **Risks:** Event duplication, inconsistent payload structure, webhook failure handling drift.
 
 ### SUBPHASE-1.3: Inbound Discord Control Routing
 <!-- SUBPHASE:1.3 -->
-**Goal:** Deterministically map Discord commands to target OpenCode sessions for `/approve`, `/party`, `/continue`, `/halt`, `/focus`, `/add-agent`, `/export`.  
+**Goal:** Deterministically map Discord commands to target OpenCode sessions for `/approve`, `/party`, `/continue`, `/halt`, `/focus`, `/add-agent`, `/export` with fail-closed ambiguity handling.  
 **Dependencies:** SUBPHASE-1.1, SUBPHASE-1.2  
 **Risks:** Incorrect session targeting when multiple pipelines are active; non-idempotent retries.
 
 ### SUBPHASE-1.4: Reliability, Safety, Config, and Docs
 <!-- SUBPHASE:1.4 -->
-**Goal:** Add bounded retry/backoff, explicit startup validation, safe logging, explicit config schema keys, and operator documentation with verification and failure modes.  
+**Goal:** Add bounded retry/backoff, explicit startup validation, inbound authorization allowlists, safe logging, explicit config schema keys, and operator documentation with verification and failure modes.  
 **Dependencies:** SUBPHASE-1.2, SUBPHASE-1.3  
 **Risks:** Misconfigured environments causing silent degradation if fail-fast is not strict.
 
@@ -66,13 +86,13 @@ Use a **contract-first implementation strategy** with a deterministic test harne
 <!-- PHASE:2 -->
 **Goal:** Make install/bootstrap deterministic, idempotent, rollback-aware, and safe across local/remote source modes with complete failure-path coverage.  
 **Included Issues:** Refs #123  
-**Dependencies:** Existing installer/bootstrap scripts and baseline integration tests are present.  
+**Dependencies:** PHASE-1 complete; existing installer/bootstrap scripts and baseline integration tests are present.  
 **Risks:** Partial installs, stale backups, weak dry-run fidelity, permission/path safety gaps.
 
 ### SUBPHASE-2.1: Dry-Run Fidelity + Preflight
 <!-- SUBPHASE:2.1 -->
 **Goal:** Validate all managed assets/paths and fail early with actionable diagnostics in dry-run and apply paths.  
-**Dependencies:** None (phase entry).  
+**Dependencies:** PHASE-1 complete (phase entry).  
 **Risks:** False-positive passes in dry-run leading to apply-time failures.
 
 ### SUBPHASE-2.2: Deterministic Apply + Rollback Semantics
@@ -123,9 +143,9 @@ Use a **contract-first implementation strategy** with a deterministic test harne
 
 ---
 
-## Open Questions
+## Closed Questions (Locked for this cycle)
 
-1. Should inbound Discord command permissions be role-gated at plugin level (e.g., allowed user/role IDs) in this round or the next hardening round?
-2. Should post-install smoke verification be a standalone script (`scripts/verify-demonlord.sh`) only, or both script + installer `--verify` flag?
-3. What is the canonical retention policy for Discord delivery dedupe state (in-memory TTL vs persisted artifact)?
-4. Should "session targeting ambiguity" return top N candidate sessions or require explicit `session_id` always when >1 active pipeline exists?
+1. Inbound Discord command permissions are role/user/channel-gated at plugin level in this round.
+2. Post-install smoke verification is available as both `scripts/verify-demonlord.sh` and installer `--verify`.
+3. Dedupe retention uses in-memory TTL for this round; persistence is deferred.
+4. Session targeting ambiguity fails closed when more than one active candidate exists and no explicit `session_id` is provided.
