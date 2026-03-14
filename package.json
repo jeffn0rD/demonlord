@@ -4,7 +4,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "lint": "exit 0",
+    "lint": "eslint .",
     "test": "exit 0"
+  },
+  "devDependencies": {
+    "eslint": "^9.0.0"
   }
 }
