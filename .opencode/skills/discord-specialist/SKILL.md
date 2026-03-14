@@ -33,9 +33,16 @@ Use this skill for Discord integration work across plugin transport, command rou
   - plugin/tool runtime boundaries
 - `agents/*_Plan.md` and `agents/*_Tasklist.md` for codename-specific contracts
 
+## Context Budget Rules
+
+- Start with `.opencode/plugins/communication.ts` and its direct tests.
+- Read only event/permissions sections relevant to the specific Discord flow.
+- Avoid broad orchestrator/state-machine scans unless Discord routing crosses those boundaries.
+
 ## Routing Hints
 
 - Keywords: discord, webhook, interaction, slash command, communication plugin, outbound event, inbound routing, authz, allowlist, retry, backoff, dedupe, idempotent, persona.
+- De-prioritize generic orchestration-state transitions with no Discord transport semantics (`orchestration-specialist`).
 
 ## Boundaries
 

@@ -4,12 +4,15 @@
     "build": "npm run typecheck",
     "typecheck": "tsc -p tsconfig.json",
     "test": "node --test --experimental-strip-types tests/**/*.test.ts",
+    "skills:maintain": "node scripts/skill_docs_maintenance.mjs --write",
+    "skills:check": "node scripts/skill_docs_maintenance.mjs --check",
+    "skills:test": "npm run skills:check && node --test --experimental-strip-types tests/tools/docslice.test.ts",
     "test:discord": "node --test --experimental-strip-types tests/harness/**/*.test.ts tests/plugins/communication.test.ts tests/integration/discord-harness.test.ts",
     "test:tools": "node --test --experimental-strip-types tests/tools/**/*.test.ts",
     "test:plugins": "node --test --experimental-strip-types tests/plugins/**/*.test.ts",
     "test:integration": "node --test --experimental-strip-types tests/integration/**/*.test.ts",
-    "verify:beelzebub": "npm run typecheck && npm run test:discord && npm run test:tools && npm run test:plugins && npm run test:integration",
-    "verify:phase3": "npm run typecheck && npm run test:tools && npm run test:plugins && npm run test:integration",
+    "verify:beelzebub": "npm run typecheck && npm run skills:check && npm run test:discord && npm run test:tools && npm run test:plugins && npm run test:integration",
+    "verify:phase3": "npm run typecheck && npm run skills:check && npm run test:tools && npm run test:plugins && npm run test:integration",
     "pipelinectl": "bash ../agents/tools/pipelinectl.sh"
   },
   "dependencies": {

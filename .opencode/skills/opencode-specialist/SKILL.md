@@ -10,7 +10,7 @@ Use this skill for OpenCode-native command and tooling work, especially when imp
 ## Primary Responsibilities
 
 - Build and maintain command definitions in `.opencode/commands/`.
-- Implement deterministic custom tools in `.opencode/tools/` with strict schemas.
+- Integrate command behavior with deterministic tool interfaces in `.opencode/tools/`.
 - Harden machine-readable command contracts for automation (`/implement`, `/creview`, `/repair`, `/cycle`).
 - Preserve session isolation and low-context orchestration patterns for long-running loops.
 
@@ -20,6 +20,12 @@ Use this skill for OpenCode-native command and tooling work, especially when imp
 - `.opencode/tools/*.ts`
 - `.opencode/tests/tools/*.test.ts`
 - `.opencode/plugins/orchestrator.ts` (only when command/tool changes require integration)
+
+## Context Budget Rules
+
+- Start from the command contract file, then trace only directly connected tool handlers.
+- Read schema and output markers before reading broader docs.
+- Use referenced spec sections selectively; avoid full-document ingestion.
 
 ## Targeted Spec Navigation Hints
 
@@ -38,6 +44,8 @@ Use this skill for OpenCode-native command and tooling work, especially when imp
 ## Routing Hints
 
 - Keywords: opencode, command, slash command, tool schema, deterministic output, cycle loop, implement, creview, repair, session automation, machine-readable marker, noReply.
+- De-prioritize isolated custom tool implementation with no command-contract impact (`demonlord-tooling-specialist`).
+- De-prioritize runtime recovery/runbook triage (`demonlord-ops-specialist`).
 
 ## Boundaries
 

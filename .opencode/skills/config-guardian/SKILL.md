@@ -41,6 +41,12 @@ Use this skill for configuration edits, policy enforcement, provider/model setti
   - `Governance: Permissions, Configuration, and Security`
   - `Model Context Protocol (MCP) & The Dual-Mode Matchmaker`
 
+## Context Budget Rules
+
+- Read only config files and schema-governance sections tied to the requested change.
+- Validate key names and required fields before broader config exploration.
+- Prefer minimal diffs; avoid unrelated config browsing.
+
 ## Routing Hints
 
 - Keywords: config, opencode.jsonc, schema, provider, model, variant, reasoningEffort, permission, mcp, command, policy, known-good.

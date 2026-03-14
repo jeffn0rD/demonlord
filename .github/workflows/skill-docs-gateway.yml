@@ -1,0 +1,62 @@
+name: Gateway - Skill Docs Hygiene
+
+on:
+  pull_request:
+    paths:
+      - .opencode/skills/**
+      - .opencode/scripts/skill_docs_maintenance.mjs
+      - .opencode/commands/skills-maintain.md
+      - .opencode/commands/skills-selfcheck.md
+      - .opencode/tools/docslice.ts
+      - .opencode/tests/tools/docslice.test.ts
+      - .opencode/package.json
+      - doc/agent_docs_index.md
+      - doc/routing_policy.md
+      - doc/engineering_spec.md
+      - doc/Autonomous_Factory_Summary.md
+      - doc/tests_backlog.md
+      - README.md
+      - USAGE.md
+      - .opencode/tests/harness/discord-contracts.v1.json
+      - .github/workflows/skill-docs-gateway.yml
+  push:
+    branches:
+      - main
+    paths:
+      - .opencode/skills/**
+      - .opencode/scripts/skill_docs_maintenance.mjs
+      - .opencode/commands/skills-maintain.md
+      - .opencode/commands/skills-selfcheck.md
+      - .opencode/tools/docslice.ts
+      - .opencode/tests/tools/docslice.test.ts
+      - .opencode/package.json
+      - doc/agent_docs_index.md
+      - doc/routing_policy.md
+      - doc/engineering_spec.md
+      - doc/Autonomous_Factory_Summary.md
+      - doc/tests_backlog.md
+      - README.md
+      - USAGE.md
+      - .opencode/tests/harness/discord-contracts.v1.json
+      - .github/workflows/skill-docs-gateway.yml
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  validate-skill-docs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Validate skill docs index and references
+        run: node .opencode/scripts/skill_docs_maintenance.mjs --check

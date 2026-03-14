@@ -31,7 +31,7 @@ Canonical metadata shape:
 
 ```md
 <!-- TASK:T-3.7.4 -->
-<!-- EXECUTION:{"execution":{"role":"implementation","tier":"standard","skill":"backend-specialist","parallel_group":"impl-core","depends_on":["T-3.7.1"]}} -->
+<!-- EXECUTION:{"execution":{"role":"implementation","tier":"standard","skill":"demonlord-specialist","parallel_group":"impl-core","depends_on":["T-3.7.1"]}} -->
 - **T-3.7.4**: ...
 ```
 

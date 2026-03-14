@@ -3,8 +3,8 @@ Tests that will need to be done when system is in an alpha development stage
 
 ** TEST LIST **
 
-1. In the dashboard, run `/party frontend-specialist backend-specialist`; verify response includes Party Mode round/state details without entering an LLM chatter loop.
-2. Run `/focus backend-specialist`, then `/continue discuss API boundaries`; verify persisted state updates in responses (focus changes and round increments).
+1. In the dashboard, run `/party demonlord-specialist demonlord-tooling-specialist`; verify response includes Party Mode round/state details without entering an LLM chatter loop.
+2. Run `/focus demonlord-tooling-specialist`, then `/continue discuss API boundaries`; verify persisted state updates in responses (focus changes and round increments).
 3. Run `/export`; verify transcript is written to `_bmad-output/party-mode/party-mode-transcript-<session_id>.md` and includes `Metadata` plus numbered `Timeline` sections.
 4. Run `/export ../../escape.md` (or another path-traversal attempt) and verify an explicit validation error is returned with no Party Mode state corruption.
 5. In the dashboard, open a triage/root session and run `/pipeline advance implementation`; verify response includes `awaiting_approval` transition state and no implementation child session is spawned yet.
@@ -21,7 +21,7 @@ Tests that will need to be done when system is in an alpha development stage
 16. In the dashboard, create a dummy triage session (e.g., "Hello World task"), then run `/pipeline status` and verify stage/transition details appear with deterministic state output.
 17. Advance the pipeline through `/pipeline advance implementation` then `/pipeline approve`, and confirm a child implementation session appears with worktree metadata in status output.
 18. Move to review (`/pipeline advance review` + approval if prompted), let review go idle, and verify terminal completion messaging is emitted once (no duplicate loop behavior).
-19. Run Party Mode controls (`/party`, `/continue`, `/focus backend-specialist`, `/export`) and confirm state updates plus transcript export behavior in the session output.
+19. Run Party Mode controls (`/party`, `/continue`, `/focus demonlord-specialist`, `/export`) and confirm state updates plus transcript export behavior in the session output.
 20. In the dashboard, start an implementation flow for a task that includes a task ref (for example `T-3.7.2`) and run `/pipeline status`; confirm routing now shows execution target agent/role/tier and task ref.
 21. Trigger a flow where the task description has no `T-...` reference; confirm orchestration continues via legacy fallback and emits a warning event (not a hard failure).
 22. Temporarily set an unresolved tier pool in `demonlord.config.json` (for example a tier with only nonexistent agent IDs), advance pipeline to implementation, and verify it enters blocked state with explicit reason.

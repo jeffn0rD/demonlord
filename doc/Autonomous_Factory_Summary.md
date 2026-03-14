@@ -36,7 +36,7 @@ The factory operates on an event-driven orchestration state machine (implemented
 
 ### 2. Orchestration & Spawning (`/implement`)
 *   The Orchestrator reads the plan.
-*   It invokes the `matchmaker.ts` tool, passing the task requirements to find the exact Minion Skill (e.g., `frontend-specialist`) matching the job.
+*   It invokes the `matchmaker.ts` tool, passing the task requirements to find the exact Minion Skill (e.g., `demonlord-tooling-specialist`) matching the job.
 *   V1 routing is tasklist-explicit: each runnable task provides `execution.role` and `execution.tier` metadata, and orchestrator resolves concrete agent IDs from config-defined role/tier pools.
 *   For ambiguous/spec-heavy requests, it runs a spec-first pass and requires a marker artifact (`_bmad-output/spec-handoff-<taskID>.md`) with scope/constraints before coding begins.
 *   A bash script (`spawn_worktree.sh`) generates an isolated sibling directory.
@@ -69,7 +69,7 @@ The factory operates on an event-driven orchestration state machine (implemented
   ├── opencode.jsonc       # Defines MCP servers, native Agent definitions, and Permission Matrix
   ├── commands/            # Custom UI commands (/triage, /implement)
   ├── skills/              # Agent skill profiles (the "Keys" for the matchmaker)
-  │   └── frontend-specialist/
+  │   └── demonlord-specialist/
   │       └── SKILL.md
   ├── plugins/
   │   ├── communication.ts # Discord Webhooks & Bot for 2-way comms

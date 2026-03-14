@@ -9,7 +9,7 @@ Use this skill for orchestration flow changes, pipeline transition logic, and de
 
 ## Primary Responsibilities
 
-- Maintain deterministic, idempotent stage transitions (`triage -> implementation -> review`).
+- Maintain deterministic, idempotent stage transitions (`triage -> implementation -> review -> repair -> review`).
 - Implement and harden orchestration controls (`/pipeline`, approval gating, stop/off/on behavior).
 - Maintain state snapshot and command queue consistency for shell fallback (`pipelinectl`).
 - Ensure worktree spawn/approval behavior is explicit and auditable.
@@ -19,10 +19,18 @@ Use this skill for orchestration flow changes, pipeline transition logic, and de
 - `.opencode/plugins/orchestrator.ts`
 - `.opencode/plugins/communication.ts`
 - `.opencode/tools/matchmaker.ts`
+- `.opencode/tools/cycle_runner.ts`
+- `.opencode/tools/party_mode.ts`
 - `agents/tools/spawn_worktree.sh`
 - `agents/tools/pipelinectl.sh`
 - `_bmad-output/orchestration-state.json` (schema contract)
 - `_bmad-output/orchestration-commands.ndjson` (queue contract)
+
+## Context Budget Rules
+
+- Begin with active orchestration component(s), then follow direct state/queue dependencies only.
+- Use doc section landmarks before reading detailed prose.
+- Prefer state contract files and tests over full-spec sweeps.
 
 ## Targeted Spec Navigation Hints
 
@@ -42,6 +50,8 @@ Use this skill for orchestration flow changes, pipeline transition logic, and de
 ## Routing Hints
 
 - Keywords: orchestrator, pipeline, transition, idle, session.error, noReply, approval, worktree, spawn, queue, snapshot, pipelinectl, dedupe, state machine.
+- De-prioritize Discord transport/authz specifics (`discord-specialist`).
+- De-prioritize pure config policy edits (`config-guardian`).
 
 ## Boundaries
 

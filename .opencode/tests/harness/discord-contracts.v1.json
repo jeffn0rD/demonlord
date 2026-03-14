@@ -164,7 +164,7 @@
         "token": "token-add-agent-1",
         "session_id": "ses-200",
         "args": {
-          "agents": "backend-specialist"
+          "agents": "demonlord-specialist"
         },
         "user": {
           "id": "user-200",

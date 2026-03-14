@@ -48,6 +48,12 @@ Use this skill when requirements are ambiguous, conflicting, or spread across mu
 - `Configuration Schema Rules \(CRITICAL\)|singular keys|known-good` in `AGENTS.md`
 - `_Plan\.md|_Tasklist\.md|<!-- PHASE:|<!-- SUBPHASE:|<!-- TASK:` in `agents/`
 
+## Context Budget Rules
+
+- Use section-targeted search first; avoid full-document ingestion unless conflicts remain unresolved.
+- Prioritize codename-specific plan/tasklist files over generic docs.
+- Stop reading when scope, constraints, and acceptance criteria are unambiguous.
+
 ## Routing Hints
 
 - Keywords: spec, requirement, acceptance, scope, constraints, conflict, codename, plan, tasklist, architecture, section, source-of-truth.
