@@ -11,7 +11,7 @@
     "pipelinectl": "bash ../agents/tools/pipelinectl.sh"
   },
   "dependencies": {
-    "@opencode-ai/plugin": "1.2.25",
+    "@opencode-ai/plugin": "0.0.0-dev-202603130005",
     "discord.js": "^14.22.1",
     "jsonc-parser": "^3.3.1"
   },
