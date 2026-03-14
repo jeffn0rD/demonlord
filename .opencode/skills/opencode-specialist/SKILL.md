@@ -11,7 +11,7 @@ Use this skill for OpenCode-native command and tooling work, especially when imp
 
 - Build and maintain command definitions in `.opencode/commands/`.
 - Integrate command behavior with deterministic tool interfaces in `.opencode/tools/`.
-- Harden machine-readable command contracts for automation (`/implement`, `/creview`, `/repair`, `/cycle`).
+- Harden machine-readable command contracts for automation (`/implement`, `/creview`, `/mreview`, `/repair`, `/cycle`).
 - Preserve session isolation and low-context orchestration patterns for long-running loops.
 
 ## Primary Files
@@ -43,7 +43,7 @@ Use this skill for OpenCode-native command and tooling work, especially when imp
 
 ## Routing Hints
 
-- Keywords: opencode, command, slash command, tool schema, deterministic output, cycle loop, implement, creview, repair, session automation, machine-readable marker, noReply.
+- Keywords: opencode, command, slash command, tool schema, deterministic output, cycle loop, implement, creview, mreview, repair, session automation, machine-readable marker, noReply.
 - De-prioritize isolated custom tool implementation with no command-contract impact (`demonlord-tooling-specialist`).
 - De-prioritize runtime recovery/runbook triage (`demonlord-ops-specialist`).
 

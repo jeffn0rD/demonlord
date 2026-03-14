@@ -99,6 +99,21 @@ Monitor Discord notifications for:
 - **Implementation completion**: Review code changes and approve for merge
 - **Error notifications**: Address any issues that require human intervention
 
+For strict, single-file standards review in the CLI, use:
+
+```text
+/mreview <file-or-pattern> [hint-or-error]
+```
+
+Examples:
+
+```text
+/mreview .opencode/tools/matchmaker.ts
+/mreview matchmaker.ts "TypeError: cannot read properties of undefined"
+```
+
+`/mreview` resolves one file deterministically, applies DRY/KISS/SOLID gate checks, and emits a required `CYCLE_MREVIEW_RESULT` marker for automation.
+
 In manual mode, use local pipeline controls in the CLI:
 - **`/pipeline status [session]`**: View parent/child stage tree plus execution order (`seq`) and overlap windows by `parallel_group`
 - **`/pipeline advance <triage|implementation|review> [session]`**: Perform explicit transition

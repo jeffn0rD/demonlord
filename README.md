@@ -211,6 +211,8 @@ Dispatch behavior is deterministic: tasks enter a FIFO queue by `stage` + `paral
 ### Commands
 - **`/triage`**: Analyze GitHub issues and generate implementation plans
 - **`/implement`**: Execute the next available subphase from the tasklist
+- **`/mreview <file> [hint]`**: Run strict DRY/KISS/SOLID module review for one file with deterministic gate output
+- **`/creview <codename> <subphase>`**: Run subphase code review against plan/tasklist/spec evidence
 - **`/pipeline status [session]`**: Inspect pipeline tree, stage, routing, worktree, execution order, and overlap windows
 - **`/pipeline advance <triage|implementation|review> [session]`**: Trigger explicit stage transition
 - **`/pipeline stop [session]`**: Stop a specific pipeline
