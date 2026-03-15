@@ -211,8 +211,10 @@ Dispatch behavior is deterministic: tasks enter a FIFO queue by `stage` + `paral
 ### Commands
 - **`/triage`**: Analyze GitHub issues and generate implementation plans
 - **`/implement`**: Execute the next available subphase from the tasklist
+- **`/run-review <review> <p1..p5> [hint] [phase] [dry-run]`**: Deterministic pre-hook review runner route that executes review commands and persists versioned review artifacts
 - **`/mreview <file> [hint]`**: Run strict DRY/KISS/SOLID module review for one file with deterministic gate output
 - **`/creview <codename> <subphase>`**: Run subphase code review against plan/tasklist/spec evidence
+- **`/phreview <codename> <phase> [hint]`**: Run final phase-closeout review using persisted review artifacts and spec alignment checks
 - **`/pipeline status [session]`**: Inspect pipeline tree, stage, routing, worktree, execution order, and overlap windows
 - **`/pipeline advance <triage|implementation|review> [session]`**: Trigger explicit stage transition
 - **`/pipeline stop [session]`**: Stop a specific pipeline
@@ -220,6 +222,10 @@ Dispatch behavior is deterministic: tasks enter a FIFO queue by `stage` + `paral
 - **`pipelinectl status [session]`**: Shell fallback with session tree, execution order, and overlap windows
 - **`pipelinectl off|on|advance|approve|stop`**: Shell fallback control commands via queue handoff
 - **`/worktrees`**: (Future) List and manage active worktrees
+
+Review artifacts are persisted under `_bmad-output/cycle-state/reviews/` using deterministic round-versioned JSON filenames (for example, `beelzebub-phase-1-subphase-1-4-round-1.json`).
+
+With orchestrator enabled, `/run-review` is intercepted in plugin `command.execute.before` and routed through the shared review executor (no agent-instruction dependency). Direct `/creview`, `/mreview`, and `/phreview` command contracts remain available.
 
 ### Subphase Commit Provenance Policy
 

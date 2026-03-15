@@ -105,14 +105,25 @@ For strict, single-file standards review in the CLI, use:
 /mreview <file-or-pattern> [hint-or-error]
 ```
 
+For deterministic review execution with persisted artifacts, use:
+
+```text
+/run-review <creview|mreview|phreview|future-review> [p1] [p2] [p3] [p4] [p5] [hint] [phase] [dry-run]
+```
+
 Examples:
 
 ```text
 /mreview .opencode/tools/matchmaker.ts
 /mreview matchmaker.ts "TypeError: cannot read properties of undefined"
+/run-review creview beelzebub 1.4
+/run-review mreview .opencode/tools/cycle_runner.ts "Review marker parsing edge case" PHASE-1
+/run-review phreview beelzebub 1 "Phase closeout gate" dry-run
 ```
 
 `/mreview` resolves one file deterministically, applies DRY/KISS/SOLID gate checks, and emits a required `CYCLE_MREVIEW_RESULT` marker for automation.
+`/run-review` is intercepted by the orchestrator plugin pre-hook (`command.execute.before`) and routed through the shared deterministic review executor, which persists JSON artifacts to `_bmad-output/cycle-state/reviews/` and returns command + marker summaries.
+Direct `/creview`, `/mreview`, and `/phreview` remain callable for explicit/manual review flows.
 
 In manual mode, use local pipeline controls in the CLI:
 - **`/pipeline status [session]`**: View parent/child stage tree plus execution order (`seq`) and overlap windows by `parallel_group`
@@ -299,7 +310,7 @@ Discord integration is configured in `demonlord.config.json`:
 - **`orchestration.parallelism.max_parallel_by_role`**: Per-role caps
 - **`orchestration.parallelism.max_parallel_by_tier`**: Per-tier caps
 - **`orchestration.execution_graph.enabled|path|verbosity`**: Concise NDJSON execution graph output controls
-- **`orchestration.pipeline_command_short_circuit`**: `/pipeline` pre-hook short-circuit strategy (`no_reply` default, `prehook_error` fallback)
+- **`orchestration.pipeline_command_short_circuit`**: control-command pre-hook short-circuit strategy for `/pipeline` and `/run-review` (`no_reply` default, `prehook_error` fallback)
 - **`discord.enabled`**: Enable/disable Discord integration
 - **`discord.personas`**: Agent-specific Discord persona settings
 - **`discord.authorization.required`**: Require authorization checks for inbound Discord-originated commands
@@ -343,7 +354,7 @@ When execution graph logging is enabled, events are written to `_bmad-output/exe
 - **Solution**: Check Git permissions and available disk space
 - **Check**: Verify worktree directory path in `demonlord.config.json`
 
-**`/pipeline` commands show reasoning text before output**
+**`/pipeline` or `/run-review` commands show reasoning text before output**
 - **Solution**: Apply the local OpenCode command-hook patch in `doc/opencode_command_noReply_patch.md`
 - **Check**: Confirm `orchestration.pipeline_command_short_circuit` is `no_reply` for patched builds, or switch to `prehook_error` to force a controlled pre-hook stop on unpatched cores
 

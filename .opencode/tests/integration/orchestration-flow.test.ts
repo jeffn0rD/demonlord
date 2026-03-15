@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "fs/promises";
 import { tmpdir } from "os";
 import { join, resolve } from "path";
 import type { Event, Session } from "@opencode-ai/sdk";
@@ -308,6 +308,105 @@ describe("orchestrator integration flow", () => {
       assert.equal(events.filter((entry) => entry.type === "error_ignored").length, 1);
       assert.equal(events.filter((entry) => entry.type === "error").length, 0);
       assert.equal(client.prompts.filter((entry) => entry.text.includes("Recovery attempt")).length, 0);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("command.execute.before intercepts /run-review, bypasses reasoning turn, and persists review artifacts", async () => {
+    const root = await mkdtemp(join(tmpdir(), "orchestrator-run-review-prehook-"));
+
+    try {
+      await writeConfig(root, {
+        enabled: true,
+        mode: "manual",
+        require_approval_before_spawn: true,
+        ignore_aborted_messages: true,
+        verbose_events: false,
+      });
+
+      const client = createMockClient(root);
+      const plugin = await createPlugin(client, root);
+
+      const output: { parts: unknown[]; noReply?: boolean } = {
+        parts: [{ type: "text", text: "placeholder" }],
+      };
+
+      await emitCommandBefore(
+        plugin,
+        {
+          command: "run-review",
+          sessionID: "ses-run-review",
+          arguments: 'creview beelzebub 1.5 "focus deterministic routing"',
+        },
+        output,
+      );
+
+      assert.equal(output.noReply, true);
+      assert.deepEqual(output.parts, []);
+      assert.equal(client.commands.some((entry) => entry.command === "run-review"), false);
+      assert.equal(client.commands.filter((entry) => entry.command === "creview").length, 1);
+
+      const reviewDirectory = resolve(root, "_bmad-output", "cycle-state", "reviews");
+      const artifacts = await readdir(reviewDirectory);
+      const artifactName = artifacts.find((entry) => entry.startsWith("beelzebub-phase-1-subphase-1-5-round-"));
+      assert.equal(typeof artifactName, "string");
+
+      const artifactRaw = await readFile(resolve(reviewDirectory, artifactName as string), "utf-8");
+      const artifact = JSON.parse(artifactRaw) as {
+        review_type: string;
+        marker_found: boolean;
+        review_status: string;
+      };
+      assert.equal(artifact.review_type, "creview");
+      assert.equal(artifact.marker_found, true);
+      assert.equal(artifact.review_status, "pass");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("direct /creview, /mreview, and /phreview remain callable and are not prehook-blocked", async () => {
+    const root = await mkdtemp(join(tmpdir(), "orchestrator-direct-review-commands-"));
+
+    try {
+      await writeConfig(root, {
+        enabled: true,
+        mode: "manual",
+        require_approval_before_spawn: true,
+        ignore_aborted_messages: true,
+        verbose_events: false,
+      });
+
+      const client = createMockClient(root);
+      const plugin = await createPlugin(client, root);
+
+      const commands: Array<{ command: string; arguments: string }> = [
+        { command: "creview", arguments: "beelzebub 1.5" },
+        { command: "mreview", arguments: "README.md" },
+        { command: "phreview", arguments: "beelzebub 1" },
+      ];
+
+      for (const candidate of commands) {
+        const output: { parts: unknown[]; noReply?: boolean } = {
+          parts: [{ type: "text", text: "placeholder" }],
+        };
+        await emitCommandBefore(
+          plugin,
+          {
+            command: candidate.command,
+            sessionID: "ses-direct-review",
+            arguments: candidate.arguments,
+          },
+          output,
+        );
+
+        assert.equal(output.noReply, undefined);
+        assert.deepEqual(output.parts, [{ type: "text", text: "placeholder" }]);
+      }
+
+      assert.equal(client.commands.length, 0);
+      assert.equal(client.prompts.length, 0);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -1405,6 +1504,8 @@ describe("orchestrator integration flow", () => {
 interface MockClient {
   prompts: Array<{ sessionID: string; text: string }>;
   creates: Array<{ parentID?: string; title?: string }>;
+  commands: Array<{ sessionID: string; command: string; arguments: string; agent?: string }>;
+  deletes: string[];
   session: {
     prompt(input: {
       path: { id: string };
@@ -1415,6 +1516,15 @@ interface MockClient {
       body: { parentID?: string; title?: string };
       query: { directory: string };
     }): Promise<{ data: Session }>;
+    command(input: {
+      path: { id: string };
+      body: { command: string; arguments: string; agent?: string };
+      query: { directory: string };
+    }): Promise<{ data: { parts: Array<{ type: string; text?: string }> } }>;
+    delete(input: {
+      path: { id: string };
+      query: { directory: string };
+    }): Promise<{ data: {} }>;
     get(input: { path: { id: string } }): Promise<{ data: Session | null }>;
   };
 }
@@ -1423,10 +1533,14 @@ function createMockClient(worktree: string): MockClient {
   const sessions = new Map<string, Session>();
   const prompts: Array<{ sessionID: string; text: string }> = [];
   const creates: Array<{ parentID?: string; title?: string }> = [];
+  const commands: Array<{ sessionID: string; command: string; arguments: string; agent?: string }> = [];
+  const deletes: string[] = [];
 
   return {
     prompts,
     creates,
+    commands,
+    deletes,
     session: {
       async prompt(input) {
         const text = input.body.parts
@@ -1442,6 +1556,29 @@ function createMockClient(worktree: string): MockClient {
         sessions.set(id, created);
         return { data: created };
       },
+      async command(input) {
+        commands.push({
+          sessionID: input.path.id,
+          command: input.body.command,
+          arguments: input.body.arguments,
+          agent: input.body.agent,
+        });
+        return {
+          data: {
+            parts: [
+              {
+                type: "text",
+                text: markerForCommand(input.body.command, input.body.arguments),
+              },
+            ],
+          },
+        };
+      },
+      async delete(input) {
+        deletes.push(input.path.id);
+        sessions.delete(input.path.id);
+        return { data: {} };
+      },
       async get(input) {
         return {
           data: sessions.get(input.path.id) ?? null,
@@ -1449,6 +1586,24 @@ function createMockClient(worktree: string): MockClient {
       },
     },
   };
+}
+
+function markerForCommand(command: string, argumentString: string): string {
+  const normalized = command.trim().replace(/^\//, "").toLowerCase();
+  const markerName =
+    normalized === "creview"
+      ? "CYCLE_CREVIEW_RESULT"
+      : normalized === "mreview"
+        ? "CYCLE_MREVIEW_RESULT"
+        : normalized === "phreview"
+          ? "CYCLE_PHREVIEW_RESULT"
+          : `CYCLE_${normalized.toUpperCase().replace(/-/g, "_")}_RESULT`;
+  const payload = {
+    status: "pass",
+    command: normalized,
+    arguments: argumentString,
+  };
+  return `<!-- ${markerName}\n${JSON.stringify(payload)}\n-->`;
 }
 
 async function createPlugin(client: MockClient, root: string): Promise<Awaited<ReturnType<typeof OrchestratorPlugin>>> {

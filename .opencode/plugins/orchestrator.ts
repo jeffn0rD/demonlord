@@ -6,6 +6,7 @@ import { delimiter, dirname, resolve } from "path";
 import { promisify } from "util";
 import { parse as parseJsoncDocument, printParseErrorCode, type ParseError } from "jsonc-parser";
 import { loadSkillDefinitions, resolveTaskRoute, type RouteResult } from "../tools/matchmaker.ts";
+import { executeRunReview, parseRunReviewCommandArguments } from "../tools/run_review.ts";
 
 type PipelineStage = "triage" | "implementation" | "review";
 type TransitionState = "idle" | "awaiting_approval" | "in_progress" | "blocked" | "completed" | "stopped";
@@ -419,11 +420,9 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
   return {
     "command.execute.before": async (input, output) => {
       const commandName = normalizeCommandName(input.command);
-      if (commandName !== "pipeline") {
+      if (commandName !== "pipeline" && commandName !== "run-review") {
         return;
       }
-
-      await processQueuedCommands();
 
       const commandInput: PipelineCommandInput = {
         name: commandName,
@@ -432,7 +431,7 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
       };
 
       rememberPreHandledCommand(preHandledCommands, commandInput);
-      await handlePipelineCommand(commandInput);
+      await handleControlCommand(commandInput);
 
       output.parts = [];
       applyPipelineCommandShortCircuit(output, settings.pipelineCommandShortCircuit);
@@ -498,7 +497,7 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
           return;
         }
 
-        await handlePipelineCommand(commandInput);
+        await handleControlCommand(commandInput);
         return;
       }
 
@@ -937,6 +936,155 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
     }
 
     return true;
+  }
+
+  async function handleControlCommand(commandInput: PipelineCommandInput): Promise<void> {
+    const commandName = normalizeCommandName(commandInput.name);
+    if (commandName === "pipeline") {
+      await processQueuedCommands();
+      await handlePipelineCommand(commandInput);
+      return;
+    }
+
+    if (commandName === "run-review") {
+      await handleRunReviewCommand(commandInput);
+    }
+  }
+
+  async function handleRunReviewCommand(commandInput: PipelineCommandInput): Promise<void> {
+    const parsed = parseRunReviewCommandArguments(commandInput.arguments);
+    if (!parsed.ok) {
+      await promptSession(
+        commandInput.sessionID,
+        [
+          parsed.error,
+          "Usage: /run-review <creview|mreview|phreview|future-review> [p1] [p2] [p3] [p4] [p5] [hint] [phase] [dry-run]",
+        ].join("\n"),
+        true,
+      );
+      return;
+    }
+
+    const result = await executeRunReview(
+      parsed.args,
+      {
+        directory: worktree,
+        worktree,
+      },
+      createPluginReviewRuntime(),
+    );
+
+    await promptSession(commandInput.sessionID, formatRunReviewResult(result), true);
+  }
+
+  function createPluginReviewRuntime(): {
+    runCommand(input: {
+      title: string;
+      command: string;
+      arguments: string;
+      agent: "reviewer";
+      model?: string;
+    }): Promise<{ sessionID: string; outputText: string }>;
+  } {
+    return {
+      async runCommand(input): Promise<{ sessionID: string; outputText: string }> {
+        let sessionID: string | null = null;
+        try {
+          const created = await client.session.create({
+            body: {
+              title: input.title,
+            },
+            query: {
+              directory: worktree,
+            },
+          });
+
+          const createdSession = created.data as { id?: unknown } | undefined;
+          if (!createdSession || typeof createdSession.id !== "string" || createdSession.id.trim().length === 0) {
+            throw new Error("Failed to create review execution session.");
+          }
+
+          sessionID = createdSession.id;
+          const commandResponse = await client.session.command({
+            path: { id: sessionID },
+            body: {
+              command: input.command,
+              arguments: input.arguments,
+              agent: input.agent,
+              model: input.model,
+            },
+            query: {
+              directory: worktree,
+            },
+          });
+
+          return {
+            sessionID,
+            outputText: collectTextParts(commandResponse.data),
+          };
+        } finally {
+          const maybeDelete = (client.session as {
+            delete?: (input: {
+              path: { id: string };
+              query: { directory: string };
+            }) => Promise<unknown>;
+          }).delete;
+
+          if (sessionID && typeof maybeDelete === "function") {
+            await maybeDelete({
+                path: { id: sessionID },
+                query: {
+                  directory: worktree,
+                },
+              })
+              .catch(() => undefined);
+          }
+        }
+      },
+    };
+  }
+
+  function formatRunReviewResult(result: {
+    ok: boolean;
+    command: string;
+    review: string;
+    argument_string: string;
+    marker_name?: string;
+    marker_found: boolean;
+    marker_error?: string;
+    review_status?: string | null;
+    artifact_path?: string;
+    round?: number;
+    phase?: string | null;
+    dry_run: boolean;
+    output_excerpt?: string;
+    error?: string;
+  }): string {
+    const commandText = result.argument_string.length > 0
+      ? `/${result.command} ${result.argument_string}`
+      : `/${result.command}`;
+    const lines = [
+      `run-review command: ${commandText}`,
+      `status: ${result.ok ? "ok" : "failed"}`,
+      `marker: ${result.marker_name ?? "(none)"}`,
+      `marker_found: ${result.marker_found ? "yes" : "no"}`,
+      `marker_status: ${result.review_status ?? "unknown"}`,
+      `phase: ${result.phase ?? "unknown"}`,
+      `artifact: ${result.artifact_path ?? "(none)"}${typeof result.round === "number" ? ` (round ${result.round})` : ""}`,
+      `mode: ${result.dry_run ? "dry-run" : "execute"}`,
+    ];
+
+    if (result.output_excerpt) {
+      lines.push(`output_excerpt: ${result.output_excerpt.slice(0, 240).replace(/\s+/g, " ")}`);
+    }
+
+    if (!result.ok && result.error) {
+      lines.push(`error: ${result.error}`);
+    } else if (result.marker_error) {
+      lines.push(`marker_error: ${result.marker_error}`);
+    }
+
+    return lines.join("\n");
   }
 
   async function handlePipelineCommand(commandInput: PipelineCommandInput): Promise<void> {
@@ -4191,6 +4339,31 @@ function tokenizeCommandArguments(input: string): string[] {
     .trim()
     .split(/\s+/)
     .filter((token) => token.length > 0);
+}
+
+function collectTextParts(payload: unknown): string {
+  if (!payload || typeof payload !== "object") {
+    return "";
+  }
+
+  const candidate = payload as { parts?: unknown };
+  if (!Array.isArray(candidate.parts)) {
+    return "";
+  }
+
+  const textParts: string[] = [];
+  for (const part of candidate.parts) {
+    if (!part || typeof part !== "object") {
+      continue;
+    }
+
+    const typed = part as { type?: unknown; text?: unknown };
+    if (typed.type === "text" && typeof typed.text === "string") {
+      textParts.push(typed.text);
+    }
+  }
+
+  return textParts.join("\n").trim();
 }
 
 function normalizeStage(value: string | undefined): PipelineStage | null {

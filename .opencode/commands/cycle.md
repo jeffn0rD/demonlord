@@ -16,6 +16,7 @@ Inputs:
 Execution contract:
 1. Call the `cycle_runner` tool exactly once with parsed arguments, including `run_skill_selfcheck`.
 2. Do not manually run `/implement`, `/creview`, or `/repair` yourself.
+   - Integration note: cycle runner review execution is expected to migrate to the shared `/run-review` path in later orchestration refactors.
 3. Return a concise summary of the tool result (status, processed subphases, stop reason if any, state path).
 4. Treat `ok=false` or `status=failed` as hard failure; surface `failure_reason` verbatim.
 5. Treat `status=partial` as in-progress; surface `remaining_subphases` and suggest resume command.

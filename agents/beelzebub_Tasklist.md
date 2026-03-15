@@ -24,6 +24,7 @@ Execution policy for this codename:
 <!-- PHASE:1 -->
 **Goal:** Complete deterministic Discord outbound + inbound command-center functionality with safety and reliability guarantees.  
 **Plan reference:** `/agents/beelzebub_Plan.md` `<!-- PHASE:1 -->`
+**Phase closeout gate:** [ ] PHASE-1 closed by /phreview
 
 ### SUBPHASE-1.1: Contract-First Discord/Test Harness
 <!-- SUBPHASE:1.1 -->
@@ -135,6 +136,46 @@ Execution policy for this codename:
 - [x] **T-1.4.6** (Refs #123): Add deterministic tests for retry exhaustion, startup validation failure, redaction, and error surfacing. Touch points: `.opencode/tests/plugins/`, `.opencode/tests/integration/`
 <!-- TASK:T-1.4.7 -->
 - [x] **T-1.4.7** (Refs #123): Implement inbound command authorization (allowed user IDs, role IDs, optional channel ID) with deterministic deny responses and tests. Touch points: `.opencode/plugins/communication.ts`, `demonlord.config.json`, `.opencode/templates/demonlord.config.default.json`, `.opencode/tests/plugins/`, `.opencode/tests/integration/`
+
+### SUBPHASE-1.5: Unified Review Runner + Phase Closeout Gate
+<!-- SUBPHASE:1.5 -->
+**Plan reference:** `/agents/beelzebub_Plan.md` `<!-- PHASE:1 -->` + `<!-- SUBPHASE:1.5 -->`  
+**Entry criteria:**
+- SUBPHASE-1.4 complete.
+- Existing `/creview` and `/mreview` command contracts remain unchanged.
+**Exit criteria / QA checklist:**
+- [x] `/run-review` deterministically executes review commands and persists machine-readable artifacts under `_bmad-output/cycle-state/reviews/`.
+- [x] Artifact naming is deterministic and versioned (`round-<n>`), including `creview`, `mreview`, and `phreview` outputs.
+- [x] Module review artifacts include phase attribution using explicit phase override or deterministic tasklist/artifact fallback.
+- [x] `/run-review` supports optional extra hint text and `dry-run` preview mode.
+- [x] `/phreview` validates entire phase scope from persisted review artifacts, enforces fail-fast gate rules, and marks phase closeout state in tasklist on pass.
+- [x] Docs and tests are updated for the new review-runner contract.
+**Proposed PR title:** `feat: add deterministic run-review tooling and phase closeout gate`  
+**Proposed commit message:** `feat: add run-review artifact persistence and phreview phase-closeout workflow (Refs #123)`
+
+**Tasks:**
+<!-- TASK:T-1.5.1 -->
+- [x] **T-1.5.1** (Refs #123): Implement `.opencode/tools/run_review.ts` to execute any `*review` command via SDK, parse cycle marker output, persist versioned review artifacts, and return structured summaries. Touch points: `.opencode/tools/run_review.ts`
+<!-- TASK:T-1.5.2 -->
+- [x] **T-1.5.2** (Refs #123): Add `/run-review` command contract with positional review parameters, optional hint, optional phase override, and `dry-run` behavior routed through the new tool. Touch points: `.opencode/commands/run-review.md`
+<!-- TASK:T-1.5.3 -->
+- [x] **T-1.5.3** (Refs #123): Add `/phreview` command contract for phase-scoped gate review using persisted artifacts, fail-fast criteria, and deterministic `CYCLE_PHREVIEW_RESULT` output marker. Touch points: `.opencode/commands/phreview.md`
+<!-- TASK:T-1.5.4 -->
+- [x] **T-1.5.4** (Refs #123): Add deterministic tool tests for marker parsing, artifact round versioning, module phase inference fallback, and dry-run non-mutation behavior. Touch points: `.opencode/tests/tools/run_review.test.ts`
+<!-- TASK:T-1.5.5 -->
+- [x] **T-1.5.5** (Refs #123): Update user/operator docs with `/run-review` and `/phreview` usage plus persisted review artifact conventions. Touch points: `README.md`, `USAGE.md`, `doc/engineering_spec.md`, `doc/engineering_reference.md`
+<!-- TASK:T-1.5.6 -->
+- [x] **T-1.5.6** (Refs #123): Scan forward tasklist phases and add integration notes where review execution should route through `/run-review` (especially future cycle/orchestrator refactors removing REST dependence). Touch points: `/agents/beelzebub_Tasklist.md`, `.opencode/commands/cycle.md`, `doc/engineering_spec.md`
+<!-- TASK:T-1.5.7 -->
+- [x] **T-1.5.7** (Refs #123): Add deterministic `/run-review` command interception in plugin pre-hook (`command.execute.before`) so execution does not depend on agent prompt interpretation. Route through the shared review executor and short-circuit LLM reply path. Touch points: `.opencode/plugins/orchestrator.ts`, `.opencode/tools/run_review.ts`
+<!-- TASK:T-1.5.8 -->
+- [x] **T-1.5.8** (Refs #123): Update `/run-review` command contract docs to state plugin-handled deterministic control-plane routing (no agent-instruction dependency) while preserving existing direct review command contracts. Touch points: `.opencode/commands/run-review.md`
+<!-- TASK:T-1.5.9 -->
+- [x] **T-1.5.9** (Refs #123): Add integration coverage proving `/run-review` is pre-hook handled, bypasses agent reasoning turn, and persists deterministic review artifacts. Touch points: `.opencode/tests/integration/orchestration-flow.test.ts`, `.opencode/tests/tools/run_review.test.ts`
+<!-- TASK:T-1.5.10 -->
+- [x] **T-1.5.10** (Refs #123): Add compatibility tests confirming direct `/creview`, `/mreview`, and `/phreview` remain callable and are not blocked by the deterministic `/run-review` routing path. Touch points: `.opencode/tests/integration/orchestration-flow.test.ts`, `.opencode/tests/integration/`
+<!-- TASK:T-1.5.11 -->
+- [x] **T-1.5.11** (Refs #123): Update docs again with routing guidance for deterministic `/run-review`, retained direct `/creview` `/mreview` `/phreview` usage, and artifact persistence expectations. Touch points: `README.md`, `USAGE.md`, `doc/engineering_spec.md`, `doc/engineering_reference.md`
 
 ---
 
@@ -309,11 +350,11 @@ Execution policy for this codename:
 
 **Tasks:**
 <!-- TASK:T-4.2.1 -->
-- **T-4.2.1** (Refs #123): Wire cycle loop transitions into orchestrator stage handling using existing manual-gate controls and task traversal metadata. Touch points: `.opencode/plugins/orchestrator.ts`
+- **T-4.2.1** (Refs #123): Wire cycle loop transitions into orchestrator stage handling using existing manual-gate controls and task traversal metadata, routing review execution through the shared `/run-review` path. Touch points: `.opencode/plugins/orchestrator.ts`, `.opencode/tools/run_review.ts`, `.opencode/commands/run-review.md`
 <!-- TASK:T-4.2.2 -->
 - **T-4.2.2** (Refs #123): Enforce strict loop stop conditions (max repair rounds, malformed review marker/artifact, blocked implementation). Touch points: `.opencode/plugins/orchestrator.ts`
 <!-- TASK:T-4.2.3 -->
-- **T-4.2.3** (Refs #123): Add deterministic tests for pass path, fail-repair-pass path, and round-exhaustion failure path. Touch points: `.opencode/tests/plugins/orchestrator.test.ts`
+- **T-4.2.3** (Refs #123): Add deterministic tests for pass path, fail-repair-pass path, and round-exhaustion failure path, including review artifact persistence through `/run-review`. Touch points: `.opencode/tests/plugins/orchestrator.test.ts`, `.opencode/tests/tools/run_review.test.ts`
 
 ### SUBPHASE-4.3: Migration, Compatibility, and Verification
 <!-- SUBPHASE:4.3 -->

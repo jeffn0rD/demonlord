@@ -27,6 +27,8 @@ The Event-Driven Pipeline The software factory operates through event-driven orc
    - Spec-handoff continuity: once handoff validates, orchestrator resumes using the pre-resolved execution target (`taskRef`, `role`, `tier`, `agentID`, `skill`) for implementation spawn.
 3. Deterministic Gates (The "Black Box"): This is a critical quality intercept. Agents are stripped of native git commands and must call a TypeScript custom tool, submit_implementation(). This tool programmatically runs lints and tests; if they fail, the function intercepts the stack trace and feeds it back to the agent for auto-correction.
 4. Review: Upon `session.idle` event, a plugin triggers the Reviewer Agent to analyze the output before posting a Discord notification for human-in-the-loop approval via slash commands (`/approve`, `/party`, `/continue`, `/halt`, `/focus`, `/add-agent`, `/export`) with fail-closed user/role/channel allowlist authorization.
+   - Deterministic review runner contract: `/run-review` is intercepted in orchestrator `command.execute.before`, executes `*review` commands (`creview`, `mreview`, `phreview`, future review commands) through the shared review executor, parses cycle markers, and persists round-versioned artifacts to `_bmad-output/cycle-state/reviews/` for auditability and phase-closeout gates.
+   - Compatibility contract: direct `/creview`, `/mreview`, and `/phreview` command contracts remain callable and are not blocked by `/run-review` interception.
 
 V1 role/tier families and compatibility:
 
@@ -112,6 +114,8 @@ Context Awareness Every tool receives a context object, ensuring environmental i
 
 * context.directory: Identifies the session’s current working directory.
 * context.worktree: Provides the root of the active git worktree.
+
+Review tooling convention: review commands should emit deterministic `CYCLE_*_RESULT` markers, and automation should route through `run_review.ts` so marker payloads are persisted as JSON artifacts before downstream orchestration decisions.
 
 Cross-Language Execution Patterns While definitions are TypeScript, the logic can be in any language. The Bun.$ utility facilitates this by invoking external scripts (e.g., Python) and handling the asynchronous output.
 
