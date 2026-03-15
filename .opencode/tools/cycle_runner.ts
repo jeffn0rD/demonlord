@@ -11,6 +11,7 @@ const EVENT_ARTIFACT_DIRECTORY = ["_bmad-output", "cycle-state", "events"] as co
 const SKILLS_TEST_COMMAND = ["npm", "--prefix", ".opencode", "run", "skills:test"] as const;
 const SKILLS_TEST_TIMEOUT_MS = 180000;
 const MESSAGE_POLL_ATTEMPTS = 5;
+const DEFAULT_IMPLEMENT_RECOVERY_RETRY_LIMIT = 3;
 
 const DEFAULT_AGENT_MODEL_BY_COMMAND: Record<CommandAgent, string> = {
   orchestrator: "openrouter/xiaomi/mimo-v2-flash",
@@ -139,6 +140,10 @@ interface SkillSelfCheckSummary {
 interface SkillSelfCheckExecution {
   status: SkillSelfCheckStatus;
   note?: string;
+}
+
+interface CycleRunnerSettings {
+  implementRecoveryRetryLimit: number;
 }
 
 interface SpawnCommandResult {
@@ -271,6 +276,8 @@ export async function runCycle(
   const statePath = resolve(worktreeRoot, ...STATE_DIRECTORY, `${codename}-phase-${phase}.json`);
   const eventPath = resolve(worktreeRoot, ...EVENT_ARTIFACT_DIRECTORY, `${codename}-phase-${phase}.ndjson`);
   const maxRepairRounds = args.max_repair_rounds ?? 2;
+  const settings = await loadCycleRunnerSettings(worktreeRoot);
+  const implementRecoveryRetryLimit = settings.implementRecoveryRetryLimit;
   const maxSubphases = args.max_subphases;
   const subphaseLimit = typeof maxSubphases === "number" ? maxSubphases : Number.POSITIVE_INFINITY;
   const shouldResume = args.resume ?? true;
@@ -415,8 +422,46 @@ export async function runCycle(
 
     const latestImplementStep = findLatestStep(entry, "implement");
     if (latestImplementStep?.status !== "ok") {
+      const consecutiveImplementFailures = countConsecutiveUnsuccessfulSteps(entry, "implement", "ok");
+      if (consecutiveImplementFailures >= implementRecoveryRetryLimit) {
+        entry.status = "failed";
+        state.status = "failed";
+        state.failureReason = [
+          `SUBPHASE-${subphase.id} exceeded implement recovery retry limit=${implementRecoveryRetryLimit}.`,
+          `Latest implement status: ${latestImplementStep?.status ?? "unknown"}.`,
+          "Inspect cycle-state history for partial writes or missing cycle markers before resuming.",
+        ].join(" ");
+        state.updatedAt = new Date().toISOString();
+        await persistState(statePath, state);
+        await appendCycleEvent(eventPath, {
+          at: new Date().toISOString(),
+          codename,
+          phase,
+          subphase: subphase.id,
+          event: "state_update",
+          status: "failed",
+          note: state.failureReason,
+        });
+        return buildFailureResult(state, statePath, trackedSubphases, processedSubphases, dryRun, maxRepairRounds, skillSelfCheck);
+      }
+
       let implementRun: RuntimeCommandResult;
       const implementModel = resolveModelForAgent("minion");
+      const implementArguments = `${codename} ${subphase.id}`;
+      const startedImplementStep: CycleStepEvent = {
+        at: new Date().toISOString(),
+        action: "implement",
+        sessionID: "pending",
+        command: "implement",
+        arguments: implementArguments,
+        markerFound: false,
+        status: "started",
+        note: "Command started; awaiting completion marker.",
+      };
+      recordStep(entry, startedImplementStep);
+      state.updatedAt = new Date().toISOString();
+      await persistState(statePath, state);
+
       await appendCycleEvent(eventPath, {
         at: new Date().toISOString(),
         codename,
@@ -425,7 +470,7 @@ export async function runCycle(
         event: "command_start",
         command: "implement",
         agent: "minion",
-        arguments: `${codename} ${subphase.id}`,
+        arguments: implementArguments,
         model: implementModel,
       });
 
@@ -433,11 +478,21 @@ export async function runCycle(
         implementRun = await runtime.runCommand({
           title: buildSessionTitle("implement", codename, subphase.id),
           command: "implement",
-          arguments: `${codename} ${subphase.id}`,
+          arguments: implementArguments,
           agent: "minion",
           model: implementModel,
         });
       } catch (error) {
+        finalizeLatestPendingStep(entry, "implement", {
+          at: new Date().toISOString(),
+          action: "implement",
+          sessionID: "runtime-error",
+          command: "implement",
+          arguments: implementArguments,
+          markerFound: false,
+          status: "failed",
+          note: `Runtime execution failed: ${formatUnknownError(error)}`,
+        });
         entry.status = "failed";
         state.status = "failed";
         state.failureReason = buildRuntimeFailureReason("implement", subphase.id, error);
@@ -469,23 +524,24 @@ export async function runCycle(
         event: "command_result",
         command: "implement",
         agent: "minion",
-        arguments: `${codename} ${subphase.id}`,
+        arguments: implementArguments,
         model: implementModel,
         sessionID: implementRun.sessionID,
         status: implementStatus ?? "invalid",
         note: detectInfrastructureIssue(implementRun.outputText) ?? implementMarker.error,
       });
 
-      recordStep(entry, {
+      const finalizedImplementStep: CycleStepEvent = {
         at: new Date().toISOString(),
         action: "implement",
         sessionID: implementRun.sessionID,
         command: "implement",
-        arguments: `${codename} ${subphase.id}`,
+        arguments: implementArguments,
         markerFound: implementMarker.markerFound,
         status: implementStatus ?? "invalid",
         note: implementMarker.error,
-      });
+      };
+      finalizeLatestPendingStep(entry, "implement", finalizedImplementStep);
       state.updatedAt = new Date().toISOString();
       await persistState(statePath, state);
 
@@ -1467,6 +1523,28 @@ function recordStep(state: SubphaseState, event: CycleStepEvent): void {
   state.history.push(event);
 }
 
+function finalizeLatestPendingStep(
+  state: SubphaseState,
+  action: CycleStepEvent["action"],
+  event: CycleStepEvent,
+): void {
+  for (let index = state.history.length - 1; index >= 0; index -= 1) {
+    const candidate = state.history[index];
+    if (candidate?.action !== action) {
+      continue;
+    }
+
+    if (isPendingStepStatus(candidate.status)) {
+      state.history[index] = event;
+      return;
+    }
+
+    break;
+  }
+
+  recordStep(state, event);
+}
+
 function findLatestStep(state: SubphaseState, action: CycleStepEvent["action"]): CycleStepEvent | null {
   for (let index = state.history.length - 1; index >= 0; index -= 1) {
     const candidate = state.history[index];
@@ -1476,6 +1554,73 @@ function findLatestStep(state: SubphaseState, action: CycleStepEvent["action"]):
   }
 
   return null;
+}
+
+function countConsecutiveUnsuccessfulSteps(
+  state: SubphaseState,
+  action: CycleStepEvent["action"],
+  successStatus: string,
+): number {
+  const normalizedSuccessStatus = successStatus.trim().toLowerCase();
+  let attempts = 0;
+  for (let index = state.history.length - 1; index >= 0; index -= 1) {
+    const candidate = state.history[index];
+    if (candidate?.action !== action) {
+      continue;
+    }
+
+    const normalizedStatus = candidate.status.trim().toLowerCase();
+    if (normalizedStatus === normalizedSuccessStatus) {
+      break;
+    }
+
+    attempts += 1;
+  }
+
+  return attempts;
+}
+
+function isPendingStepStatus(status: string): boolean {
+  const normalized = status.trim().toLowerCase();
+  return normalized === "started" || normalized === "pending" || normalized === "in_progress" || normalized === "running";
+}
+
+async function loadCycleRunnerSettings(worktreeRoot: string): Promise<CycleRunnerSettings> {
+  const fallback: CycleRunnerSettings = {
+    implementRecoveryRetryLimit: DEFAULT_IMPLEMENT_RECOVERY_RETRY_LIMIT,
+  };
+
+  const configPath = resolve(worktreeRoot, "demonlord.config.json");
+  try {
+    const raw = await readFile(configPath, "utf-8");
+    const parsed = JSON.parse(raw) as {
+      orchestration?: {
+        cycle_runner?: {
+          implement_recovery_retry_limit?: unknown;
+        };
+      };
+    };
+
+    const configuredLimit = parsed.orchestration?.cycle_runner?.implement_recovery_retry_limit;
+    return {
+      implementRecoveryRetryLimit: parseImplementRecoveryRetryLimit(configuredLimit, fallback.implementRecoveryRetryLimit),
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+function parseImplementRecoveryRetryLimit(candidate: unknown, fallback: number): number {
+  if (typeof candidate !== "number" || !Number.isFinite(candidate)) {
+    return fallback;
+  }
+
+  const normalized = Math.trunc(candidate);
+  if (normalized < 1 || normalized > 10) {
+    return fallback;
+  }
+
+  return normalized;
 }
 
 function markerFailureHint(marker: string, parsed: ParsedMarker<unknown>): string {

@@ -328,6 +328,7 @@ Discord integration is configured in `demonlord.config.json`:
 - **`orchestration.parallelism.max_parallel_by_tier`**: Per-tier caps
 - **`orchestration.execution_graph.enabled|path|verbosity`**: Concise NDJSON execution graph output controls
 - **`orchestration.pipeline_command_short_circuit`**: control-command pre-hook short-circuit strategy for `/pipeline` and `/run-review` (`no_reply` default, `prehook_error` fallback)
+- **`orchestration.cycle_runner.implement_recovery_retry_limit`**: Fail-fast cap for consecutive non-`ok` implement attempts on resume (default: `3`; set to `1` to stop on first failed/partial resume)
 - **`discord.enabled`**: Enable/disable Discord integration
 - **`discord.personas`**: Agent-specific Discord persona settings
 - **`discord.authorization.required`**: Require authorization checks for inbound Discord-originated commands

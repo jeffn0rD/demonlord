@@ -21,6 +21,7 @@ Execution contract:
 4. Treat `ok=false` or `status=failed` as hard failure; surface `failure_reason` verbatim.
 5. Treat `status=partial` as in-progress; surface `remaining_subphases` and suggest resume command.
 6. Include `skill_selfcheck` status from the tool result when present.
+7. Respect `orchestration.cycle_runner.implement_recovery_retry_limit` from `demonlord.config.json` for fail-fast resume behavior.
 
 Parsing rules:
 - If `$3` is missing or not a positive integer, use `2`.

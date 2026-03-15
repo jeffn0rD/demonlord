@@ -209,6 +209,9 @@ Active orchestration schema extensions for deterministic tasklist-explicit multi
       "enabled": true,
       "path": "_bmad-output/execution-graph.ndjson",
       "verbosity": "concise"
+    },
+    "cycle_runner": {
+      "implement_recovery_retry_limit": 1
     }
   }
 }
@@ -217,6 +220,8 @@ Active orchestration schema extensions for deterministic tasklist-explicit multi
 Routing behavior is deterministic: orchestrator reads `EXECUTION` metadata from tasklists, resolves role/tier against `agent_pools`, then falls back in order (`default_tier` -> legacy singleton) before blocking with explicit reason logs.
 
 Dispatch behavior is deterministic: tasks enter a FIFO queue by `stage` + `parallel_group` + tasklist order, enforce `depends_on`, and honor `parallelism` caps (`total`, `by_role`, `by_tier`) before spawn.
+
+Cycle resume hardening is configurable: `orchestration.cycle_runner.implement_recovery_retry_limit` controls how many consecutive non-`ok` implement attempts are tolerated before cycle runner fails fast (default fallback is `3`; `1` is the strictest runaway guard).
 
 ## Usage
 

@@ -362,7 +362,10 @@ Config Schema Contract (migration-safe)
       "path": "_bmad-output/execution-graph.ndjson",
       "verbosity": "concise"
     },
-    "pipeline_command_short_circuit": "no_reply"
+    "pipeline_command_short_circuit": "no_reply",
+    "cycle_runner": {
+      "implement_recovery_retry_limit": 1
+    }
   }
 }
 ```
@@ -374,6 +377,7 @@ Default and backward-compatibility behavior:
 * If `parallelism` is absent, effective limits MUST default to `1` for total/role/tier (single-flight behavior).
 * If `execution_graph` is absent, runtime MUST default to enabled concise logging at `_bmad-output/execution-graph.ndjson`.
 * If `pipeline_command_short_circuit` is absent or invalid, runtime MUST default to `no_reply`.
+* If `cycle_runner.implement_recovery_retry_limit` is absent/invalid, cycle runner MUST default to `3` (bounded runaway protection).
 * Orchestrator MUST continue to treat tasklist metadata as the sole V1 tier source and MUST NOT derive tier from heuristic complexity signals.
 
 Pipeline command short-circuit strategy (`orchestration.pipeline_command_short_circuit`):

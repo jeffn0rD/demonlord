@@ -450,6 +450,256 @@ describe("cycle_runner tool", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  test("resume recovers from partial implement step without marker", async () => {
+    const root = await mkdtemp(join(tmpdir(), "cycle-runner-resume-partial-implement-"));
+    await mkdir(resolve(root, "agents"), { recursive: true });
+    await writeFile(resolve(root, "agents", "alpha_Tasklist.md"), buildTasklistFixture(), "utf-8");
+
+    const statePath = resolve(root, "_bmad-output", "cycle-state", "alpha-phase-1.json");
+    await mkdir(resolve(root, "_bmad-output", "cycle-state"), { recursive: true });
+    await writeFile(
+      statePath,
+      `${JSON.stringify(
+        {
+          version: 1,
+          codename: "alpha",
+          phase: "1",
+          tasklistPath: resolve(root, "agents", "alpha_Tasklist.md"),
+          maxRepairRounds: 2,
+          status: "running",
+          startedAt: "2026-03-15T00:00:00.000Z",
+          updatedAt: "2026-03-15T00:00:00.000Z",
+          currentSubphase: "1.2",
+          subphases: {
+            "1.2": {
+              status: "in_progress",
+              repairRounds: 0,
+              taskRefs: ["T-1.2.1", "T-1.2.2"],
+              history: [
+                {
+                  at: "2026-03-15T00:00:00.000Z",
+                  action: "implement",
+                  sessionID: "pending",
+                  command: "implement",
+                  arguments: "alpha 1.2",
+                  markerFound: false,
+                  status: "started",
+                  note: "Command started; awaiting completion marker.",
+                },
+              ],
+            },
+          },
+        },
+        null,
+        2,
+      )}\n`,
+      "utf-8",
+    );
+
+    const runtime = createMockRuntime([
+      marker("CYCLE_IMPLEMENT_RESULT", { status: "ok", subphase: "1.2" }),
+      marker("CYCLE_CREVIEW_RESULT", { status: "pass", target: "1.2" }),
+    ]);
+
+    try {
+      const result = await runCycle(
+        {
+          codename: "alpha",
+          phase: "1",
+          max_repair_rounds: 2,
+          resume: true,
+        },
+        { directory: root, worktree: root },
+        runtime,
+      );
+
+      assert.equal(result.ok, true);
+      assert.equal(result.status, "completed");
+      assert.deepEqual(runtime.invocations.map((item) => item.command), ["implement", "creview"]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("resume fails when implement recovery retry limit is exceeded", async () => {
+    const root = await mkdtemp(join(tmpdir(), "cycle-runner-resume-implement-retry-limit-"));
+    await mkdir(resolve(root, "agents"), { recursive: true });
+    await writeFile(resolve(root, "agents", "alpha_Tasklist.md"), buildTasklistFixture(), "utf-8");
+
+    const statePath = resolve(root, "_bmad-output", "cycle-state", "alpha-phase-1.json");
+    await mkdir(resolve(root, "_bmad-output", "cycle-state"), { recursive: true });
+    await writeFile(
+      statePath,
+      `${JSON.stringify(
+        {
+          version: 1,
+          codename: "alpha",
+          phase: "1",
+          tasklistPath: resolve(root, "agents", "alpha_Tasklist.md"),
+          maxRepairRounds: 2,
+          status: "running",
+          startedAt: "2026-03-15T00:00:00.000Z",
+          updatedAt: "2026-03-15T00:00:00.000Z",
+          currentSubphase: "1.2",
+          subphases: {
+            "1.2": {
+              status: "in_progress",
+              repairRounds: 0,
+              taskRefs: ["T-1.2.1", "T-1.2.2"],
+              history: [
+                {
+                  at: "2026-03-15T00:00:00.000Z",
+                  action: "implement",
+                  sessionID: "session-1",
+                  command: "implement",
+                  arguments: "alpha 1.2",
+                  markerFound: false,
+                  status: "invalid",
+                  note: "CYCLE_IMPLEMENT_RESULT marker not found.",
+                },
+                {
+                  at: "2026-03-15T00:01:00.000Z",
+                  action: "implement",
+                  sessionID: "session-2",
+                  command: "implement",
+                  arguments: "alpha 1.2",
+                  markerFound: false,
+                  status: "invalid",
+                  note: "CYCLE_IMPLEMENT_RESULT marker not found.",
+                },
+                {
+                  at: "2026-03-15T00:02:00.000Z",
+                  action: "implement",
+                  sessionID: "pending",
+                  command: "implement",
+                  arguments: "alpha 1.2",
+                  markerFound: false,
+                  status: "started",
+                  note: "Command started; awaiting completion marker.",
+                },
+              ],
+            },
+          },
+        },
+        null,
+        2,
+      )}\n`,
+      "utf-8",
+    );
+
+    const runtime = createMockRuntime([
+      marker("CYCLE_IMPLEMENT_RESULT", { status: "ok", subphase: "1.2" }),
+      marker("CYCLE_CREVIEW_RESULT", { status: "pass", target: "1.2" }),
+    ]);
+
+    try {
+      const result = await runCycle(
+        {
+          codename: "alpha",
+          phase: "1",
+          max_repair_rounds: 2,
+          resume: true,
+        },
+        { directory: root, worktree: root },
+        runtime,
+      );
+
+      assert.equal(result.ok, false);
+      assert.equal(result.status, "failed");
+      assert.match(result.failure_reason ?? "", /implement recovery retry limit=3/i);
+      assert.equal(runtime.invocations.length, 0);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("reads implement recovery retry limit from demonlord config", async () => {
+    const root = await mkdtemp(join(tmpdir(), "cycle-runner-config-implement-retry-"));
+    await mkdir(resolve(root, "agents"), { recursive: true });
+    await writeFile(resolve(root, "agents", "alpha_Tasklist.md"), buildTasklistFixture(), "utf-8");
+    await writeFile(
+      resolve(root, "demonlord.config.json"),
+      `${JSON.stringify(
+        {
+          orchestration: {
+            cycle_runner: {
+              implement_recovery_retry_limit: 1,
+            },
+          },
+        },
+        null,
+        2,
+      )}\n`,
+      "utf-8",
+    );
+
+    const statePath = resolve(root, "_bmad-output", "cycle-state", "alpha-phase-1.json");
+    await mkdir(resolve(root, "_bmad-output", "cycle-state"), { recursive: true });
+    await writeFile(
+      statePath,
+      `${JSON.stringify(
+        {
+          version: 1,
+          codename: "alpha",
+          phase: "1",
+          tasklistPath: resolve(root, "agents", "alpha_Tasklist.md"),
+          maxRepairRounds: 2,
+          status: "running",
+          startedAt: "2026-03-15T00:00:00.000Z",
+          updatedAt: "2026-03-15T00:00:00.000Z",
+          currentSubphase: "1.2",
+          subphases: {
+            "1.2": {
+              status: "in_progress",
+              repairRounds: 0,
+              taskRefs: ["T-1.2.1", "T-1.2.2"],
+              history: [
+                {
+                  at: "2026-03-15T00:00:00.000Z",
+                  action: "implement",
+                  sessionID: "session-1",
+                  command: "implement",
+                  arguments: "alpha 1.2",
+                  markerFound: false,
+                  status: "invalid",
+                  note: "CYCLE_IMPLEMENT_RESULT marker not found.",
+                },
+              ],
+            },
+          },
+        },
+        null,
+        2,
+      )}\n`,
+      "utf-8",
+    );
+
+    const runtime = createMockRuntime([
+      marker("CYCLE_IMPLEMENT_RESULT", { status: "ok", subphase: "1.2" }),
+      marker("CYCLE_CREVIEW_RESULT", { status: "pass", target: "1.2" }),
+    ]);
+
+    try {
+      const result = await runCycle(
+        {
+          codename: "alpha",
+          phase: "1",
+          max_repair_rounds: 2,
+          resume: true,
+        },
+        { directory: root, worktree: root },
+        runtime,
+      );
+
+      assert.equal(result.ok, false);
+      assert.equal(result.status, "failed");
+      assert.match(result.failure_reason ?? "", /implement recovery retry limit=1/i);
+      assert.equal(runtime.invocations.length, 0);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
 
 async function prepareWorkspace(codename: string): Promise<string> {

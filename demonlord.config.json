@@ -14,7 +14,7 @@
     "require_approval_before_spawn": true,
     "ignore_aborted_messages": true,
     "verbose_events": true,
-    "pipeline_command_short_circuit": "no_reply",
+    "pipeline_command_short_circuit": "prehook_error",
     "agent_pools": {
       "planning": {
         "lite": ["planner-lite", "planner"],
@@ -53,6 +53,9 @@
       "enabled": true,
       "path": "_bmad-output/execution-graph.ndjson",
       "verbosity": "concise"
+    },
+    "cycle_runner": {
+      "implement_recovery_retry_limit": 1
     }
   },
   "discord": {

@@ -52,6 +52,9 @@
       "enabled": true,
       "path": "_bmad-output/execution-graph.ndjson",
       "verbosity": "concise"
+    },
+    "cycle_runner": {
+      "implement_recovery_retry_limit": 1
     }
   },
   "discord": {
