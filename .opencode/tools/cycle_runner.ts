@@ -10,6 +10,7 @@ const REVIEW_ARTIFACT_DIRECTORY = ["_bmad-output", "cycle-state", "reviews"] as 
 const EVENT_ARTIFACT_DIRECTORY = ["_bmad-output", "cycle-state", "events"] as const;
 const SKILLS_TEST_COMMAND = ["npm", "--prefix", ".opencode", "run", "skills:test"] as const;
 const SKILLS_TEST_TIMEOUT_MS = 180000;
+const MESSAGE_POLL_ATTEMPTS = 5;
 
 const DEFAULT_AGENT_MODEL_BY_COMMAND: Record<CommandAgent, string> = {
   orchestrator: "openrouter/xiaomi/mimo-v2-flash",
@@ -412,90 +413,103 @@ export async function runCycle(
       note: "Beginning subphase execution.",
     });
 
-    let implementRun: RuntimeCommandResult;
-    const implementModel = resolveModelForAgent("minion");
-    await appendCycleEvent(eventPath, {
-      at: new Date().toISOString(),
-      codename,
-      phase,
-      subphase: subphase.id,
-      event: "command_start",
-      command: "implement",
-      agent: "minion",
-      arguments: `${codename} ${subphase.id}`,
-      model: implementModel,
-    });
-
-    try {
-      implementRun = await runtime.runCommand({
-        title: buildSessionTitle("implement", codename, subphase.id),
-        command: "implement",
-        arguments: `${codename} ${subphase.id}`,
-        agent: "minion",
-        model: implementModel,
-      });
-    } catch (error) {
-      entry.status = "failed";
-      state.status = "failed";
-      state.failureReason = buildRuntimeFailureReason("implement", subphase.id, error);
-      state.updatedAt = new Date().toISOString();
-      await persistState(statePath, state);
+    const latestImplementStep = findLatestStep(entry, "implement");
+    if (latestImplementStep?.status !== "ok") {
+      let implementRun: RuntimeCommandResult;
+      const implementModel = resolveModelForAgent("minion");
       await appendCycleEvent(eventPath, {
         at: new Date().toISOString(),
         codename,
         phase,
         subphase: subphase.id,
-        event: "command_error",
+        event: "command_start",
         command: "implement",
         agent: "minion",
         arguments: `${codename} ${subphase.id}`,
         model: implementModel,
-        status: "failed",
-        note: formatUnknownError(error),
       });
-      return buildFailureResult(state, statePath, trackedSubphases, processedSubphases, dryRun, maxRepairRounds, skillSelfCheck);
-    }
 
-    const implementMarker = parseImplementMarker(implementRun.outputText);
-    const implementStatus = normalizeImplementStatus(implementMarker.payload?.status);
-    await appendCycleEvent(eventPath, {
-      at: new Date().toISOString(),
-      codename,
-      phase,
-      subphase: subphase.id,
-      event: "command_result",
-      command: "implement",
-      agent: "minion",
-      arguments: `${codename} ${subphase.id}`,
-      model: implementModel,
-      sessionID: implementRun.sessionID,
-      status: implementStatus ?? "invalid",
-      note: detectInfrastructureIssue(implementRun.outputText) ?? implementMarker.error,
-    });
+      try {
+        implementRun = await runtime.runCommand({
+          title: buildSessionTitle("implement", codename, subphase.id),
+          command: "implement",
+          arguments: `${codename} ${subphase.id}`,
+          agent: "minion",
+          model: implementModel,
+        });
+      } catch (error) {
+        entry.status = "failed";
+        state.status = "failed";
+        state.failureReason = buildRuntimeFailureReason("implement", subphase.id, error);
+        state.updatedAt = new Date().toISOString();
+        await persistState(statePath, state);
+        await appendCycleEvent(eventPath, {
+          at: new Date().toISOString(),
+          codename,
+          phase,
+          subphase: subphase.id,
+          event: "command_error",
+          command: "implement",
+          agent: "minion",
+          arguments: `${codename} ${subphase.id}`,
+          model: implementModel,
+          status: "failed",
+          note: formatUnknownError(error),
+        });
+        return buildFailureResult(state, statePath, trackedSubphases, processedSubphases, dryRun, maxRepairRounds, skillSelfCheck);
+      }
 
-    recordStep(entry, {
-      at: new Date().toISOString(),
-      action: "implement",
-      sessionID: implementRun.sessionID,
-      command: "implement",
-      arguments: `${codename} ${subphase.id}`,
-      markerFound: implementMarker.markerFound,
-      status: implementStatus ?? "invalid",
-      note: implementMarker.error,
-    });
-    state.updatedAt = new Date().toISOString();
-    await persistState(statePath, state);
+      const implementMarker = parseImplementMarker(implementRun.outputText);
+      const implementStatus = normalizeImplementStatus(implementMarker.payload?.status);
+      await appendCycleEvent(eventPath, {
+        at: new Date().toISOString(),
+        codename,
+        phase,
+        subphase: subphase.id,
+        event: "command_result",
+        command: "implement",
+        agent: "minion",
+        arguments: `${codename} ${subphase.id}`,
+        model: implementModel,
+        sessionID: implementRun.sessionID,
+        status: implementStatus ?? "invalid",
+        note: detectInfrastructureIssue(implementRun.outputText) ?? implementMarker.error,
+      });
 
-    if (implementStatus !== "ok") {
-      entry.status = "failed";
-      state.status = "failed";
-      const infraHint = detectInfrastructureIssue(implementRun.outputText);
-      state.failureReason = infraHint
-        ? `Implementation failed for SUBPHASE-${subphase.id}. Infrastructure signal: ${infraHint}. ${markerFailureHint("CYCLE_IMPLEMENT_RESULT", implementMarker)}`
-        : `Implementation failed for SUBPHASE-${subphase.id}. ${markerFailureHint("CYCLE_IMPLEMENT_RESULT", implementMarker)}`;
+      recordStep(entry, {
+        at: new Date().toISOString(),
+        action: "implement",
+        sessionID: implementRun.sessionID,
+        command: "implement",
+        arguments: `${codename} ${subphase.id}`,
+        markerFound: implementMarker.markerFound,
+        status: implementStatus ?? "invalid",
+        note: implementMarker.error,
+      });
       state.updatedAt = new Date().toISOString();
       await persistState(statePath, state);
-      return buildFailureResult(state, statePath, trackedSubphases, processedSubphases, dryRun, maxRepairRounds, skillSelfCheck);
+
+      if (implementStatus !== "ok") {
+        entry.status = "failed";
+        state.status = "failed";
+        const infraHint = detectInfrastructureIssue(implementRun.outputText);
+        state.failureReason = infraHint
+          ? `Implementation failed for SUBPHASE-${subphase.id}. Infrastructure signal: ${infraHint}. ${markerFailureHint("CYCLE_IMPLEMENT_RESULT", implementMarker)}`
+          : `Implementation failed for SUBPHASE-${subphase.id}. ${markerFailureHint("CYCLE_IMPLEMENT_RESULT", implementMarker)}`;
+        state.updatedAt = new Date().toISOString();
+        await persistState(statePath, state);
+        return buildFailureResult(state, statePath, trackedSubphases, processedSubphases, dryRun, maxRepairRounds, skillSelfCheck);
+      }
+    } else {
+      await appendCycleEvent(eventPath, {
+        at: new Date().toISOString(),
+        codename,
+        phase,
+        subphase: subphase.id,
+        event: "state_update",
+        status: "in_progress",
+        note: "Resuming subphase from review stage; prior implement command already succeeded.",
+      });
     }
 
     while (true) {
@@ -777,6 +791,16 @@ function createSdkRuntime(context: CycleRunnerContext): CycleRuntime {
     baseUrl: DEFAULT_SERVER_URL,
     directory: context.directory,
   });
+  const sessionApi = client.session as {
+    messages?: (input: {
+      path: { id: string };
+      query: { directory: string };
+    }) => Promise<{ data: unknown }>;
+    delete?: (input: {
+      path: { id: string };
+      query: { directory: string };
+    }) => Promise<unknown>;
+  };
 
   return {
     async runCommand(input: RuntimeCommandInput): Promise<RuntimeCommandResult> {
@@ -811,13 +835,57 @@ function createSdkRuntime(context: CycleRunnerContext): CycleRuntime {
           },
         });
 
+        const commandOutput = collectTextParts(commandResponse.data);
+        if (containsCycleMarker(commandOutput)) {
+          return {
+            sessionID,
+            outputText: commandOutput,
+          };
+        }
+
+        if (typeof sessionApi.messages !== "function") {
+          return {
+            sessionID,
+            outputText: commandOutput,
+          };
+        }
+
+        let latestMessageOutput = "";
+        for (let attempt = 1; attempt <= MESSAGE_POLL_ATTEMPTS; attempt += 1) {
+          const messageResponse = await sessionApi.messages({
+            path: { id: sessionID },
+            query: {
+              directory: context.worktree,
+            },
+          });
+
+          const candidateOutput = collectLatestMessageText(messageResponse.data);
+          if (candidateOutput.length > 0) {
+            latestMessageOutput = candidateOutput;
+            const mergedOutput = [commandOutput, latestMessageOutput].filter((value) => value.length > 0).join("\n").trim();
+            if (containsCycleMarker(mergedOutput)) {
+              return {
+                sessionID,
+                outputText: mergedOutput,
+              };
+            }
+          }
+
+          if (attempt < MESSAGE_POLL_ATTEMPTS) {
+            await delay(attempt * 100);
+          }
+        }
+
         return {
           sessionID,
-          outputText: collectTextParts(commandResponse.data),
+          outputText:
+            latestMessageOutput.length > 0
+              ? [commandOutput, latestMessageOutput].filter((value) => value.length > 0).join("\n").trim()
+              : commandOutput,
         };
       } finally {
-        if (sessionID) {
-          await client.session
+        if (sessionID && typeof sessionApi.delete === "function") {
+          await sessionApi
             .delete({
               path: { id: sessionID },
               query: {
@@ -854,6 +922,31 @@ function collectTextParts(payload: unknown): string {
   }
 
   return textParts.join("\n").trim();
+}
+
+function collectLatestMessageText(payload: unknown): string {
+  if (!Array.isArray(payload)) {
+    return "";
+  }
+
+  for (let index = payload.length - 1; index >= 0; index -= 1) {
+    const text = collectTextParts(payload[index]);
+    if (text.length > 0) {
+      return text;
+    }
+  }
+
+  return "";
+}
+
+function containsCycleMarker(text: string): boolean {
+  return /<!--\s*CYCLE_[A-Z0-9_]+_RESULT[\s\S]*?-->/i.test(text);
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolvePromise) => {
+    setTimeout(resolvePromise, ms);
+  });
 }
 
 function sanitizeCodename(value: string): string {
@@ -1372,6 +1465,17 @@ function collectTrackedPendingSubphases(parsedSubphases: ParsedSubphase[], state
 
 function recordStep(state: SubphaseState, event: CycleStepEvent): void {
   state.history.push(event);
+}
+
+function findLatestStep(state: SubphaseState, action: CycleStepEvent["action"]): CycleStepEvent | null {
+  for (let index = state.history.length - 1; index >= 0; index -= 1) {
+    const candidate = state.history[index];
+    if (candidate?.action === action) {
+      return candidate;
+    }
+  }
+
+  return null;
 }
 
 function markerFailureHint(marker: string, parsed: ParsedMarker<unknown>): string {
