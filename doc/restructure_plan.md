@@ -1,52 +1,73 @@
 # Demonlord Restructure Plan
 
-## Immediate goals
+## Current reset direction
 
-1. Preserve the current pre-refactor tree on a dedicated snapshot branch.
-2. Re-establish a central `opencode-dev` operator environment outside the Demonlord repo.
-3. Keep Demonlord as the source/product repository.
-4. Add a tracked fixture plus resettable sandbox for low-cost live testing.
+The repository is now being regrouped around a simpler V1 reboot.
 
-## Snapshot status
+The working assumptions are:
 
-The pre-refactor working tree was preserved on branch:
+1. this repository is the Demonlord product/source repository
+2. it exists to define installable assets for a target OpenCode repo
+3. `opencode-dev` is the operator's separate central environment
+4. the near-term goal is a bounded-session manual-first loop, not broad autonomous execution
+
+## Preserved snapshot
+
+The pre-reboot state was preserved on:
 
 - `snapshot/pre-refactor-20260315`
 
-Push that branch to origin from a shell that permits git push:
-
-```bash
-git push -u origin snapshot/pre-refactor-20260315
-```
+That branch remains the forensic/archive reference point while `dev` becomes the reboot branch.
 
 ## Target operating model
 
 - `opencode-dev/`: central operator cockpit
-- `demonlord/`: product/source repo
+- `demonlord/`: install-source product repo
 - `test-sandbox/`: disposable live test target
 
-## First implementation steps
+## V1 product direction
 
-1. Create and version `opencode-dev/` separately.
-2. Inventory reusable commands, tools, and skills from your other repo workflow.
-3. Move only reusable operator assets into `opencode-dev/`.
-4. Leave Demonlord-specific assets in this repository.
-5. Use the fixture and sandbox scripts in this repo for install verification.
+The V1 loop is:
 
-## Current fixture loop
+`/plan -> /implement -> /creview -> /repair -> /phreview`
 
-Create a sandbox from the tracked fixture:
+This loop must be proven manually first, with each step bounded enough to run in a fresh session. Only after that should a thin plugin be added to create those sessions automatically.
+
+## Install-source direction
+
+Near-term:
+
+- this repository still contains source assets in the current layout
+- the installer materializes `.opencode` into the target repository
+- the hello-app fixture and resettable sandbox prove the install path cheaply
+
+Later:
+
+- the source repository may move to a more explicit payload-oriented layout for install assets
+- that layout change should happen after the command and session contracts are stable
+
+## Current proving loop
+
+Reset the sandbox from the tracked fixture:
 
 ```bash
 ./scripts/reset-test-sandbox.sh --force
 ```
 
-Run the smoke test loop:
+Run the smoke-test installer loop:
 
 ```bash
 ./scripts/smoke-test-sandbox.sh
 ```
 
-## Next cleanup direction
+## Immediate next execution path
 
-After `opencode-dev/` exists and your reusable operator assets are copied there, the next cleanup step in this repo should be to thin any repo-local `.opencode` content down to Demonlord-specific pieces only.
+Use `agents/V1_Reboot_Tasklist.md` as the active work queue on `dev`.
+Use `doc/v1_reboot_plan.md` as the complete execution roadmap.
+
+Highest-priority next steps:
+
+1. retire broken `/cycle` and `/run-review` paths from the active workflow
+2. define `/plan` as the planning entrypoint
+3. simplify the direct command loop around `/implement`, `/creview`, `/repair`, and `/phreview`
+4. define explicit agent/model-tier configuration for V1

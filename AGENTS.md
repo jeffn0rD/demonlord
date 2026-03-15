@@ -1,71 +1,43 @@
-# Agent Guidelines for Demonlord (Autonomous Software Factory)
+# Agent Guidelines for Demonlord V1
 
-This repository houses "Demonlord," a template and framework for an Autonomous Software Factory built on top of OpenCode. It uses specialized agent personas, isolated Git Worktrees, and deterministic TypeScript gates to automate software delivery.
+This repository is the source for an installable Demonlord payload. It is not the operator's personal OpenCode cockpit.
 
-## Core Documentation References
+## Global Concepts
 
-Before implementing any feature or modifying the system architecture, agents **MUST** review the following documents to ensure compliance with the factory's design:
+- Keep Demonlord focused on the V1 loop: `/plan -> /implement -> /creview -> /repair -> /phreview`
+- Prefer direct visible commands over hidden orchestration or meta-runners.
+- Design every workflow step so it can work in a fresh bounded session.
+- Use explicit repo state, tasklists, and machine-readable markers for handoff instead of relying on long chat context.
+- Keep the system manual-first. Thin automation may be added later only on top of proven direct commands.
 
-1. **/agents/*_Plan.md**: The high-level phased plan and architectural decisions.
-2. **/agents/*_Tasklist.md**: The atomic, executable tasks. Follow this strictly when using the `/implement` command.
-3. **/doc/engineering_spec.md**: The technical specification for the factory, detailing the Matchmaker tool, deterministic gates, and Worktree logic.
-4. **/doc/engineering_reference.md**: The OpenCode-specific API reference (Plugins, MCP, Custom Tools, Permissions).
-5. **/agents/Autonomous_Factory_Summary.md**: A high-level blueprint of the technology stack and workflow.
+## Scope Discipline
 
-## OpenCode Specific Constraints
+- Favor the smallest change that moves the bounded-session V1 loop forward.
+- Do not reintroduce deferred features unless the task explicitly requires them.
+- Deferred by default: Discord operations, parallel pipeline fleets, long-horizon autonomous execution, and mandatory review-artifact infrastructure.
 
-This project heavily utilizes OpenCode's native features. Agents must adhere to the following when writing tools or configurations:
+## OpenCode Rules
 
-*   **Custom Tools**: Must be written in TypeScript/JavaScript inside `.opencode/tools/` using the `@opencode-ai/plugin` package and Zod schemas (`tool.schema`).
-*   **Plugins**: Event-driven hooks (e.g., Discord integrations) belong in `.opencode/plugins/`.
-*   **Agent Skills**: Must be defined in `.opencode/skills/<name>/SKILL.md` using strict uppercase file naming and valid YAML frontmatter with **required** `name` and `description` fields.
-*   **Configuration**: Core native definitions (Agents, MCP, Permissions) go in `.opencode/opencode.jsonc`. Non-OpenCode specific factory settings (like Discord personas) go in `demonlord.config.json`.
+- Custom tools belong in `.opencode/tools/` and should be written in TypeScript/JavaScript.
+- Plugins belong in `.opencode/plugins/`.
+- Skills belong in `.opencode/skills/<name>/SKILL.md` with valid frontmatter.
+- Core OpenCode config belongs in `.opencode/opencode.jsonc`.
+- Non-OpenCode product settings belong in `demonlord.config.json`.
 
-## Configuration Schema Rules (CRITICAL)
+## Configuration Guardrails
 
-**Singular vs Plural Keys**: OpenCode uses **SINGULAR** keys in `opencode.jsonc`:
-- `agent` (NOT `agents`)
-- `permission` (NOT `permissions`)  
-- `command` (NOT `commands`)
-- `mcp` (NOT `mcps`)
-- `plugin` (array, NOT `plugins`)
+- OpenCode config uses singular keys: `agent`, `permission`, `command`, `mcp`.
+- Every agent in `opencode.jsonc` must include a `description`.
+- If config edits break startup, restore from `.opencode/opencode.jsonc.known-good`.
 
-**Required Agent Fields**: All agents defined in `opencode.jsonc` MUST have a `description` field.
+## Code and Validation
 
-**Recovery**: If OpenCode fails to start due to config errors, restore from `.opencode/opencode.jsonc.known-good`.
+- Write deterministic, idempotent code.
+- Add tests for new tools/plugins and meaningful logic changes.
+- Keep the install/source boundary clear: this repo defines what gets installed into a target repo.
+- Use the fixture and sandbox scripts when validating install behavior.
 
-**Validation**: Before modifying `opencode.jsonc`, verify syntax against the schema at `https://opencode.ai/config.json`.
+## Git
 
-## Code Style Guidelines
-
-### General Principles
--   Write deterministic, idempotent code. Avoid stochastic or probabilistic logic outside of explicit LLM routing steps.
--   Write tests for all new custom tools and plugins.
-
-### TypeScript / JavaScript Conventions
--   Use TypeScript for all plugin and tool definitions.
--   Use `bun` APIs (`Bun.$`) for executing shell commands within TypeScript files.
--   Use `const` by default, `let` only when reassignment needed.
--   Avoid `any` type - use specific types or `unknown`.
-
-### File Organization
-```
-/demonlord.config.json     # Factory specific settings
-/.opencode/
-  ├── opencode.jsonc       # Core OpenCode configuration
-  ├── skills/              # Specialized agent skills
-  ├── plugins/             # Event-driven extensions
-  └── tools/               # Custom typescript tools
-/agents/
-  ├── tools/               # bash/shell utilities (e.g. worktree spawners)
-  ├── plans/               # Output from the Triage process
-  └── completed/           # Finished job transcripts
-/doc/                      # Engineering reference and specs
-```
-
-## Git Conventions
-
--   All commits generated by tools (like `submit_implementation.ts`) must follow Conventional Commits: `feat:`, `fix:`, `docs:`, `chore:`.
--   The primary system restricts manual `git push` via bash to enforce deterministic quality gates.
-
-*Note: This repository is a framework template designed to be injected into other projects. Keep dependencies lightweight and ensure a smooth bootstrap process (`npm install` in `.opencode`).*
+- Use conventional commit prefixes such as `feat:`, `fix:`, `docs:`, `test:`, and `chore:`.
+- Do not push automatically unless explicitly requested.
