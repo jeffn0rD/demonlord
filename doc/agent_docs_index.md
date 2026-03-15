@@ -86,7 +86,7 @@ Do not edit manually. Run `npm run skills:maintain` from `.opencode`.
 - Description: Implements and hardens OpenCode command/tool workflows, session automation loops, and deterministic command contracts.
 - Skill file: `.opencode/skills/opencode-specialist/SKILL.md`
 - Reference paths: `.opencode/commands/*.md`, `.opencode/plugins/orchestrator.ts`, `.opencode/tests/tools/*.test.ts`, `.opencode/tools/*.ts`, `AGENTS.md`, `doc/engineering_reference.md`, `doc/engineering_spec.md`
-- Routing keywords: opencode, command, slash command, tool schema, deterministic output, cycle loop, implement, creview, repair, session automation, machine-readable marker, noReply.
+- Routing keywords: opencode, command, slash command, tool schema, deterministic output, cycle loop, implement, creview, mreview, repair, session automation, machine-readable marker, noReply.
 - Landmarks:
   - `doc/engineering_reference.md`:
   - `doc/engineering_spec.md`:

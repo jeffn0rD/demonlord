@@ -7,7 +7,10 @@ import CommunicationPlugin from "../../plugins/communication.ts";
 import { withNoLiveNetwork } from "../harness/discord-harness.ts";
 
 process.env.DISCORD_BOT_TOKEN ??= "test-bot-token";
+process.env.DISCORD_WEBHOOK_PLANNER ??= "https://discord.example/planner";
 process.env.DISCORD_WEBHOOK_ORCHESTRATOR ??= "https://discord.example/orchestrator";
+process.env.DISCORD_WEBHOOK_MINION ??= "https://discord.example/minion";
+process.env.DISCORD_WEBHOOK_REVIEWER ??= "https://discord.example/reviewer";
 process.env.DISCORD_ALLOWED_USER_IDS ??= "user-allow-default";
 
 interface MockCommandCall {
@@ -46,6 +49,13 @@ describe("communication plugin deterministic network-free behavior", () => {
           enabled: true,
           mode: "manual",
         },
+      });
+
+      await writeOrchestrationState(root, {
+        sessionID: "ses-root",
+        stage: "implementation",
+        transition: "idle",
+        directory: "/tmp/worktrees/ses-root",
       });
 
       const client = createMockClient();
@@ -92,6 +102,13 @@ describe("communication plugin deterministic network-free behavior", () => {
         },
       });
 
+      await writeOrchestrationState(root, {
+        sessionID: "ses-dup",
+        stage: "implementation",
+        transition: "idle",
+        directory: "/tmp/worktrees/ses-dup",
+      });
+
       const client = createMockClient();
       const plugin = await createPlugin(client, root);
 
@@ -123,6 +140,7 @@ describe("communication plugin deterministic network-free behavior", () => {
       });
 
       assert.equal(client.commands.length, 1);
+      assert.equal(client.prompts.length, 0);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -368,6 +386,63 @@ describe("communication plugin deterministic network-free behavior", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  test("adds deterministic context warning when orchestration state is malformed", async () => {
+    const root = await mkdtemp(join(tmpdir(), "communication-outbound-state-warning-"));
+
+    try {
+      await writeConfig(root, {
+        orchestration: {
+          enabled: true,
+          mode: "manual",
+        },
+        discord: {
+          enabled: true,
+          personas: {
+            orchestrator: {
+              name: "Orchestrator Bot",
+            },
+          },
+        },
+      });
+
+      const bmadRoot = resolve(root, "_bmad-output");
+      await mkdir(bmadRoot, { recursive: true });
+      await writeFile(resolve(bmadRoot, "orchestration-state.json"), "{\n  invalid\n", "utf-8");
+
+      const client = createMockClient();
+      const plugin = await createPlugin(client, root);
+      const eventHook = plugin.event;
+      assert.ok(eventHook, "communication plugin must expose event hook");
+
+      await withEnv({ DISCORD_WEBHOOK_ORCHESTRATOR: "https://discord.example/orchestrator" }, async () => {
+        const sentBodies: string[] = [];
+
+        await withMockFetch(
+          async (_url, init) => {
+            sentBodies.push(typeof init?.body === "string" ? init.body : "");
+            return createMockResponse(204);
+          },
+          async () => {
+            await eventHook?.({
+              event: {
+                type: "session.idle",
+                properties: {
+                  sessionID: "ses-malformed-state",
+                },
+              } as never,
+            });
+          },
+        );
+
+        const webhookPayload = JSON.parse(sentBodies[0] ?? "{}") as { content?: string };
+        const envelope = JSON.parse(webhookPayload.content ?? "{}") as { payload?: { context_warning?: string } };
+        assert.match(envelope.payload?.context_warning ?? "", /invalid JSON/i);
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
 
 function createMockClient(): MockClient {
@@ -516,6 +591,13 @@ describe("communication session targeting unit tests", () => {
         },
       });
 
+      await writeOrchestrationState(root, {
+        sessionID: "ses-inbound-retry",
+        stage: "implementation",
+        transition: "idle",
+        directory: "/tmp/worktrees/ses-inbound-retry",
+      });
+
       // Create multi-session state
       await writeMultiSessionOrchestrationState(root, ["ses-a", "ses-b"]);
 
@@ -542,6 +624,94 @@ describe("communication session targeting unit tests", () => {
       assert.deepEqual(output.parts, []);
       assert.equal(client.commands.length, 1);
       assert.equal(client.commands[0]?.sessionID, "ses-b");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("fails closed when orchestration state is missing and explicit session_id is provided", async () => {
+    const root = await mkdtemp(join(tmpdir(), "communication-session-missing-state-"));
+
+    try {
+      await writeConfig(root, {
+        orchestration: {
+          enabled: true,
+          mode: "manual",
+        },
+      });
+
+      const client = createMockClient();
+      const plugin = await createPlugin(client, root);
+
+      const commandBefore = plugin["command.execute.before"];
+      assert.ok(commandBefore, "communication plugin must expose command.execute.before hook");
+
+      const output: { parts: unknown[]; noReply?: boolean } = {
+        parts: [{ type: "text", text: "placeholder" }],
+      };
+
+      await commandBefore(
+        {
+          command: "approve",
+          sessionID: "ses-caller",
+          arguments: "ses-any",
+        } as Parameters<typeof commandBefore>[0],
+        output as Parameters<typeof commandBefore>[1],
+      );
+
+      assert.equal(output.noReply, true);
+      assert.deepEqual(output.parts, []);
+      assert.equal(client.commands.length, 0);
+      assert.equal(client.prompts.length, 1);
+      assert.match(client.prompts[0]?.text ?? "", /Unable to load orchestration state/i);
+      assert.match(client.prompts[0]?.text ?? "", /state file is missing/i);
+      assert.match(client.prompts[0]?.text ?? "", /cannot validate explicit session_id 'ses-any'/i);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("fails closed when orchestration state is malformed and explicit session_id is provided", async () => {
+    const root = await mkdtemp(join(tmpdir(), "communication-session-malformed-state-"));
+
+    try {
+      await writeConfig(root, {
+        orchestration: {
+          enabled: true,
+          mode: "manual",
+        },
+      });
+
+      const bmadRoot = resolve(root, "_bmad-output");
+      await mkdir(bmadRoot, { recursive: true });
+      await writeFile(resolve(bmadRoot, "orchestration-state.json"), "{\n  invalid\n", "utf-8");
+
+      const client = createMockClient();
+      const plugin = await createPlugin(client, root);
+
+      const commandBefore = plugin["command.execute.before"];
+      assert.ok(commandBefore, "communication plugin must expose command.execute.before hook");
+
+      const output: { parts: unknown[]; noReply?: boolean } = {
+        parts: [{ type: "text", text: "placeholder" }],
+      };
+
+      await commandBefore(
+        {
+          command: "approve",
+          sessionID: "ses-caller",
+          arguments: "ses-any",
+        } as Parameters<typeof commandBefore>[0],
+        output as Parameters<typeof commandBefore>[1],
+      );
+
+      assert.equal(output.noReply, true);
+      assert.deepEqual(output.parts, []);
+      assert.equal(client.commands.length, 0);
+      assert.equal(client.prompts.length, 1);
+      assert.match(client.prompts[0]?.text ?? "", /Unable to load orchestration state/i);
+      assert.match(client.prompts[0]?.text ?? "", /invalid JSON/i);
+      assert.match(client.prompts[0]?.text ?? "", /cannot validate explicit session_id 'ses-any'/i);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -724,12 +894,52 @@ describe("communication session targeting unit tests", () => {
             sessionID: "ses-caller",
             session_id: "ses-b",
             arguments: "",
+            metadata: {
+              source: "other",
+            },
           },
         } as never,
       });
 
       assert.equal(client.commands.length, 1);
       assert.equal(client.commands[0]?.sessionID, "ses-b");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("fails closed for command.executed payloads missing identity context when source is unknown", async () => {
+    const root = await mkdtemp(join(tmpdir(), "communication-event-missing-context-unknown-source-"));
+
+    try {
+      await writeConfig(root, {
+        orchestration: {
+          enabled: true,
+          mode: "manual",
+        },
+      });
+
+      await writeMultiSessionOrchestrationState(root, ["ses-a"]);
+
+      const client = createMockClient();
+      const plugin = await createPlugin(client, root);
+      const eventHook = plugin.event;
+      assert.ok(eventHook, "communication plugin must expose event hook");
+
+      await eventHook?.({
+        event: {
+          type: "command.executed",
+          properties: {
+            name: "approve",
+            sessionID: "ses-a",
+            arguments: "",
+          },
+        } as never,
+      });
+
+      assert.equal(client.commands.length, 0);
+      assert.equal(client.prompts.length, 1);
+      assert.match(client.prompts[0]?.text ?? "", /missing Discord identity context/i);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -911,6 +1121,7 @@ describe("communication session targeting unit tests", () => {
       );
 
       assert.equal(output.noReply, undefined);
+      assert.deepEqual(output.parts, [{ type: "text", text: "placeholder" }]);
       assert.equal(client.commands.length, 0);
       assert.equal(client.prompts.length, 0);
     } finally {
@@ -995,7 +1206,10 @@ describe("communication session targeting unit tests", () => {
           withEnv(
             {
               DISCORD_BOT_TOKEN: "",
+              DISCORD_WEBHOOK_PLANNER: "",
               DISCORD_WEBHOOK_ORCHESTRATOR: "",
+              DISCORD_WEBHOOK_MINION: "",
+              DISCORD_WEBHOOK_REVIEWER: "",
               DISCORD_ALLOWED_USER_IDS: "",
               DISCORD_ALLOWED_ROLE_IDS: "",
             },
@@ -1006,7 +1220,7 @@ describe("communication session targeting unit tests", () => {
               } as Parameters<typeof CommunicationPlugin>[0]);
             },
           ),
-        /startup validation failed/i,
+        /startup validation failed.*DISCORD_WEBHOOK_PLANNER.*DISCORD_WEBHOOK_REVIEWER/i,
       );
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -1157,6 +1371,177 @@ describe("communication session targeting unit tests", () => {
     }
   });
 
+  test("dedupes unauthorized feedback across prehook and command.executed ingress", async () => {
+    const root = await mkdtemp(join(tmpdir(), "communication-inbound-authz-dedupe-"));
+
+    try {
+      await writeConfig(root, {
+        orchestration: {
+          enabled: true,
+          mode: "manual",
+        },
+        discord: {
+          enabled: true,
+          authorization: {
+            required: true,
+            allowed_user_ids: ["user-allow"],
+            allowed_role_ids: ["role-allow"],
+            allowed_channel_id: "channel-ops",
+          },
+        },
+      });
+
+      const client = createMockClient();
+      const plugin = await createPlugin(client, root);
+      const commandBefore = plugin["command.execute.before"];
+      const eventHook = plugin.event;
+      assert.ok(commandBefore, "communication plugin must expose command.execute.before hook");
+      assert.ok(eventHook, "communication plugin must expose event hook");
+
+      const output: { parts: unknown[]; noReply?: boolean } = {
+        parts: [{ type: "text", text: "placeholder" }],
+      };
+
+      await commandBefore(
+        {
+          command: "approve",
+          sessionID: "ses-authz",
+          arguments: "--interaction-token tok-authz-dupe",
+          metadata: {
+            user: { id: "user-deny", role_ids: ["role-deny"] },
+            channel: { id: "channel-other" },
+          },
+        } as Parameters<typeof commandBefore>[0],
+        output as Parameters<typeof commandBefore>[1],
+      );
+
+      await eventHook?.({
+        event: {
+          type: "command.executed",
+          properties: {
+            name: "approve",
+            sessionID: "ses-authz",
+            arguments: "--interaction-token tok-authz-dupe",
+            metadata: {
+              user: { id: "user-deny", role_ids: ["role-deny"] },
+              channel: { id: "channel-other" },
+            },
+          },
+        } as never,
+      });
+
+      assert.equal(output.noReply, true);
+      assert.deepEqual(output.parts, []);
+      assert.equal(client.commands.length, 0);
+      assert.equal(client.prompts.length, 1);
+      assert.match(client.prompts[0]?.text ?? "", /command denied/i);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("dedupes session-resolution failure feedback across prehook and command.executed ingress", async () => {
+    const root = await mkdtemp(join(tmpdir(), "communication-resolution-dedupe-"));
+
+    try {
+      await writeConfig(root, {
+        orchestration: {
+          enabled: true,
+          mode: "manual",
+        },
+      });
+
+      const client = createMockClient();
+      const plugin = await createPlugin(client, root);
+      const commandBefore = plugin["command.execute.before"];
+      const eventHook = plugin.event;
+      assert.ok(commandBefore, "communication plugin must expose command.execute.before hook");
+      assert.ok(eventHook, "communication plugin must expose event hook");
+
+      const output: { parts: unknown[]; noReply?: boolean } = {
+        parts: [{ type: "text", text: "placeholder" }],
+      };
+
+      await commandBefore(
+        {
+          command: "approve",
+          sessionID: "ses-resolve",
+          arguments: "ses-target",
+        } as Parameters<typeof commandBefore>[0],
+        output as Parameters<typeof commandBefore>[1],
+      );
+
+      await eventHook?.({
+        event: {
+          type: "command.executed",
+          properties: {
+            name: "approve",
+            sessionID: "ses-resolve",
+            arguments: "ses-target",
+          },
+        } as never,
+      });
+
+      assert.equal(output.noReply, true);
+      assert.deepEqual(output.parts, []);
+      assert.equal(client.commands.length, 0);
+      assert.equal(client.prompts.length, 1);
+      assert.match(client.prompts[0]?.text ?? "", /Session resolution failed/i);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("fails closed for Discord-sourced inbound commands missing identity context", async () => {
+    const root = await mkdtemp(join(tmpdir(), "communication-inbound-authz-missing-context-"));
+
+    try {
+      await writeConfig(root, {
+        orchestration: {
+          enabled: true,
+          mode: "manual",
+        },
+        discord: {
+          enabled: true,
+          authorization: {
+            required: true,
+            allowed_user_ids: ["user-allow"],
+            allowed_role_ids: ["role-allow"],
+          },
+        },
+      });
+
+      const client = createMockClient();
+      const plugin = await createPlugin(client, root);
+      const commandBefore = plugin["command.execute.before"];
+      assert.ok(commandBefore, "communication plugin must expose command.execute.before hook");
+
+      const output: { parts: unknown[]; noReply?: boolean } = {
+        parts: [{ type: "text", text: "placeholder" }],
+      };
+
+      await commandBefore(
+        {
+          command: "approve",
+          sessionID: "ses-authz",
+          arguments: "",
+          metadata: {
+            source: "discord",
+          },
+        } as Parameters<typeof commandBefore>[0],
+        output as Parameters<typeof commandBefore>[1],
+      );
+
+      assert.equal(output.noReply, true);
+      assert.deepEqual(output.parts, []);
+      assert.equal(client.commands.length, 0);
+      assert.equal(client.prompts.length, 1);
+      assert.match(client.prompts[0]?.text ?? "", /missing Discord identity context/i);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test("retries inbound command handling errors and surfaces terminal failure", async () => {
     const root = await mkdtemp(join(tmpdir(), "communication-inbound-retry-failure-"));
 
@@ -1166,6 +1551,13 @@ describe("communication session targeting unit tests", () => {
           enabled: true,
           mode: "manual",
         },
+      });
+
+      await writeOrchestrationState(root, {
+        sessionID: "ses-inbound-retry",
+        stage: "implementation",
+        transition: "idle",
+        directory: "/tmp/worktrees/ses-inbound-retry",
       });
 
       const commands: MockCommandCall[] = [];

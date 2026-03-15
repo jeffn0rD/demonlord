@@ -9,7 +9,10 @@ import CommunicationPlugin from "../../plugins/communication.ts";
 const INTEGRATION_DIR = dirname(fileURLToPath(import.meta.url));
 
 process.env.DISCORD_BOT_TOKEN ??= "test-bot-token";
+process.env.DISCORD_WEBHOOK_PLANNER ??= "https://discord.example/planner";
 process.env.DISCORD_WEBHOOK_ORCHESTRATOR ??= "https://discord.example/orchestrator";
+process.env.DISCORD_WEBHOOK_MINION ??= "https://discord.example/minion";
+process.env.DISCORD_WEBHOOK_REVIEWER ??= "https://discord.example/reviewer";
 process.env.DISCORD_ALLOWED_USER_IDS ??= "user-allow-default";
 
 describe("communication outbound integration", () => {
@@ -505,6 +508,46 @@ describe("communication session targeting integration", () => {
     }
   });
 
+  test("fails closed when orchestration state is missing with explicit session_id", async () => {
+    const root = await mkdtemp(join(tmpdir(), "communication-session-missing-state-int-"));
+
+    try {
+      await writeConfig(root);
+
+      const client = createMockClient();
+      const plugin = await CommunicationPlugin({
+        client: client as unknown as Parameters<typeof CommunicationPlugin>[0]["client"],
+        worktree: root,
+      } as Parameters<typeof CommunicationPlugin>[0]);
+
+      const commandBefore = plugin["command.execute.before"];
+      assert.ok(commandBefore, "communication plugin must expose command.execute.before hook");
+
+      const output: { parts: unknown[]; noReply?: boolean } = {
+        parts: [{ type: "text", text: "placeholder" }],
+      };
+
+      await commandBefore(
+        {
+          command: "approve",
+          sessionID: "ses-caller",
+          arguments: "ses-any",
+        } as Parameters<typeof commandBefore>[0],
+        output as Parameters<typeof commandBefore>[1],
+      );
+
+      assert.equal(output.noReply, true);
+      assert.deepEqual(output.parts, []);
+      assert.equal(client.commands.length, 0);
+      assert.equal(client.prompts.length, 1);
+      assert.match(client.prompts[0]?.text ?? "", /Unable to load orchestration state/i);
+      assert.match(client.prompts[0]?.text ?? "", /state file is missing/i);
+      assert.match(client.prompts[0]?.text ?? "", /cannot validate explicit session_id 'ses-any'/i);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test("fails closed when explicit session_id is invalid", async () => {
     const root = await mkdtemp(join(tmpdir(), "communication-session-auto-"));
 
@@ -689,6 +732,59 @@ describe("communication session targeting integration", () => {
     }
   });
 
+  test("dedupes command.executed replay after prehook handling without extra feedback", async () => {
+    const root = await mkdtemp(join(tmpdir(), "communication-prehook-event-dedupe-int-"));
+
+    try {
+      await writeConfig(root);
+      await writeMultiSessionOrchestrationState(root, ["ses-a"]);
+
+      const client = createMockClient();
+      const plugin = await CommunicationPlugin({
+        client: client as unknown as Parameters<typeof CommunicationPlugin>[0]["client"],
+        worktree: root,
+      } as Parameters<typeof CommunicationPlugin>[0]);
+
+      const commandBefore = plugin["command.execute.before"];
+      const eventHook = plugin.event;
+      assert.ok(commandBefore, "communication plugin must expose command.execute.before hook");
+      assert.ok(eventHook, "communication plugin must expose event hook");
+
+      const output: { parts: unknown[]; noReply?: boolean } = {
+        parts: [{ type: "text", text: "placeholder" }],
+      };
+
+      await commandBefore(
+        {
+          command: "approve",
+          sessionID: "ses-a",
+          arguments: "ses-a",
+        } as Parameters<typeof commandBefore>[0],
+        output as Parameters<typeof commandBefore>[1],
+      );
+
+      await eventHook?.({
+        event: {
+          type: "command.executed",
+          properties: {
+            name: "approve",
+            sessionID: "ses-a",
+            session_id: "ses-a",
+            arguments: "",
+            metadata: {
+              source: "other",
+            },
+          },
+        } as never,
+      });
+
+      assert.equal(client.commands.length, 1);
+      assert.equal(client.prompts.length, 0);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test("returns deterministic migration guidance for unsupported legacy command", async () => {
     const root = await mkdtemp(join(tmpdir(), "communication-legacy-int-"));
 
@@ -800,6 +896,245 @@ describe("communication session targeting integration", () => {
     }
   });
 
+  test("dedupes unauthorized feedback across prehook and command.executed ingress", async () => {
+    const root = await mkdtemp(join(tmpdir(), "communication-authz-dedupe-int-"));
+
+    try {
+      await writeFile(
+        resolve(root, "demonlord.config.json"),
+        `${JSON.stringify(
+          {
+            orchestration: {
+              enabled: true,
+              mode: "manual",
+            },
+            discord: {
+              enabled: true,
+              authorization: {
+                required: true,
+                allowed_user_ids: ["user-allow"],
+                allowed_role_ids: ["role-allow"],
+                allowed_channel_id: "channel-ops",
+              },
+            },
+          },
+          null,
+          2,
+        )}\n`,
+        "utf-8",
+      );
+
+      await writeMultiSessionOrchestrationState(root, ["ses-a"]);
+
+      const client = createMockClient();
+      const plugin = await CommunicationPlugin({
+        client: client as unknown as Parameters<typeof CommunicationPlugin>[0]["client"],
+        worktree: root,
+      } as Parameters<typeof CommunicationPlugin>[0]);
+
+      const commandBefore = plugin["command.execute.before"];
+      const eventHook = plugin.event;
+      assert.ok(commandBefore, "communication plugin must expose command.execute.before hook");
+      assert.ok(eventHook, "communication plugin must expose event hook");
+
+      const output: { parts: unknown[]; noReply?: boolean } = {
+        parts: [{ type: "text", text: "placeholder" }],
+      };
+
+      await commandBefore(
+        {
+          command: "approve",
+          sessionID: "ses-a",
+          arguments: "--interaction-token tok-authz-dupe-int",
+          metadata: {
+            user: {
+              id: "user-deny",
+              role_ids: ["role-deny"],
+            },
+            channel: {
+              id: "channel-other",
+            },
+          },
+        } as Parameters<typeof commandBefore>[0],
+        output as Parameters<typeof commandBefore>[1],
+      );
+
+      await eventHook?.({
+        event: {
+          type: "command.executed",
+          properties: {
+            name: "approve",
+            sessionID: "ses-a",
+            arguments: "--interaction-token tok-authz-dupe-int",
+            metadata: {
+              user: {
+                id: "user-deny",
+                role_ids: ["role-deny"],
+              },
+              channel: {
+                id: "channel-other",
+              },
+            },
+          },
+        } as never,
+      });
+
+      assert.equal(output.noReply, true);
+      assert.deepEqual(output.parts, []);
+      assert.equal(client.commands.length, 0);
+      assert.equal(client.prompts.length, 1);
+      assert.match(client.prompts[0]?.text ?? "", /command denied/i);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("dedupes session-resolution failure feedback across prehook and command.executed ingress", async () => {
+    const root = await mkdtemp(join(tmpdir(), "communication-resolution-dedupe-int-"));
+
+    try {
+      await writeConfig(root);
+
+      const client = createMockClient();
+      const plugin = await CommunicationPlugin({
+        client: client as unknown as Parameters<typeof CommunicationPlugin>[0]["client"],
+        worktree: root,
+      } as Parameters<typeof CommunicationPlugin>[0]);
+
+      const commandBefore = plugin["command.execute.before"];
+      const eventHook = plugin.event;
+      assert.ok(commandBefore, "communication plugin must expose command.execute.before hook");
+      assert.ok(eventHook, "communication plugin must expose event hook");
+
+      const output: { parts: unknown[]; noReply?: boolean } = {
+        parts: [{ type: "text", text: "placeholder" }],
+      };
+
+      await commandBefore(
+        {
+          command: "approve",
+          sessionID: "ses-resolve",
+          arguments: "ses-target",
+        } as Parameters<typeof commandBefore>[0],
+        output as Parameters<typeof commandBefore>[1],
+      );
+
+      await eventHook?.({
+        event: {
+          type: "command.executed",
+          properties: {
+            name: "approve",
+            sessionID: "ses-resolve",
+            arguments: "ses-target",
+          },
+        } as never,
+      });
+
+      assert.equal(output.noReply, true);
+      assert.deepEqual(output.parts, []);
+      assert.equal(client.commands.length, 0);
+      assert.equal(client.prompts.length, 1);
+      assert.match(client.prompts[0]?.text ?? "", /Session resolution failed/i);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("fails closed for Discord command.executed payloads missing identity context", async () => {
+    const root = await mkdtemp(join(tmpdir(), "communication-authz-missing-context-int-"));
+
+    try {
+      await writeFile(
+        resolve(root, "demonlord.config.json"),
+        `${JSON.stringify(
+          {
+            orchestration: {
+              enabled: true,
+              mode: "manual",
+            },
+            discord: {
+              enabled: true,
+              authorization: {
+                required: true,
+                allowed_user_ids: ["user-allow"],
+                allowed_role_ids: ["role-allow"],
+              },
+            },
+          },
+          null,
+          2,
+        )}\n`,
+        "utf-8",
+      );
+
+      await writeMultiSessionOrchestrationState(root, ["ses-a"]);
+
+      const client = createMockClient();
+      const plugin = await CommunicationPlugin({
+        client: client as unknown as Parameters<typeof CommunicationPlugin>[0]["client"],
+        worktree: root,
+      } as Parameters<typeof CommunicationPlugin>[0]);
+
+      const eventHook = plugin.event;
+      assert.ok(eventHook, "communication plugin must expose event hook");
+
+      await eventHook?.({
+        event: {
+          type: "command.executed",
+          properties: {
+            name: "approve",
+            sessionID: "ses-a",
+            arguments: "",
+            metadata: {
+              source: "discord",
+            },
+          },
+        } as never,
+      });
+
+      assert.equal(client.commands.length, 0);
+      assert.equal(client.prompts.length, 1);
+      assert.match(client.prompts[0]?.text ?? "", /missing Discord identity context/i);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("fails closed for command.executed payloads missing identity context when source is unknown", async () => {
+    const root = await mkdtemp(join(tmpdir(), "communication-authz-missing-context-unknown-int-"));
+
+    try {
+      await writeConfig(root);
+      await writeMultiSessionOrchestrationState(root, ["ses-a"]);
+
+      const client = createMockClient();
+      const plugin = await CommunicationPlugin({
+        client: client as unknown as Parameters<typeof CommunicationPlugin>[0]["client"],
+        worktree: root,
+      } as Parameters<typeof CommunicationPlugin>[0]);
+
+      const eventHook = plugin.event;
+      assert.ok(eventHook, "communication plugin must expose event hook");
+
+      await eventHook?.({
+        event: {
+          type: "command.executed",
+          properties: {
+            name: "approve",
+            sessionID: "ses-a",
+            arguments: "",
+          },
+        } as never,
+      });
+
+      assert.equal(client.commands.length, 0);
+      assert.equal(client.prompts.length, 1);
+      assert.match(client.prompts[0]?.text ?? "", /missing Discord identity context/i);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test("applies session targeting parity on command.executed ingress", async () => {
     const root = await mkdtemp(join(tmpdir(), "communication-session-target-event-parity-int-"));
 
@@ -823,6 +1158,9 @@ describe("communication session targeting integration", () => {
             name: "approve",
             sessionID: "ses-caller",
             arguments: "",
+            metadata: {
+              source: "other",
+            },
           },
         } as never,
       });
@@ -839,6 +1177,9 @@ describe("communication session targeting integration", () => {
             sessionID: "ses-caller",
             session_id: "ses-b",
             arguments: "",
+            metadata: {
+              source: "other",
+            },
           },
         } as never,
       });

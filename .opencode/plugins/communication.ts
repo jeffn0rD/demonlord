@@ -84,6 +84,7 @@ interface DiscordTransportResult {
 }
 
 interface InboundAuthorizationContext {
+  source: "discord" | "other" | "unknown";
   hasDiscordSignal: boolean;
   userID?: string;
   roleIDs: string[];
@@ -141,6 +142,7 @@ const OUTBOUND_ALLOWLIST = new Set<OutboundEventName>([
 
 const OUTBOUND_DEDUPE_TTL_MS = 10 * 60 * 1000;
 const INBOUND_DEDUPE_TTL_MS = 10 * 60 * 1000;
+const PREHANDLED_DEDUPE_TTL_MS = 30_000;
 const RETRY_MAX_ATTEMPTS = 3;
 const RETRY_BACKOFF_MS = [0, 250, 1000] as const;
 const MASKED_SECRET = "[REDACTED]";
@@ -158,6 +160,7 @@ const partyCommandActions: Record<PartyCommandName, PartyModeAction> = {
 const CommunicationPlugin: Plugin = async ({ client, worktree }) => {
   const settings = await loadSettings(worktree);
   const preHandledCommands = new Map<string, number>();
+  const preHandledFailures = new Map<string, number>();
   const inboundDedupes = new Map<string, number>();
   const outboundDedupes = new Map<string, number>();
 
@@ -169,11 +172,11 @@ const CommunicationPlugin: Plugin = async ({ client, worktree }) => {
 
   return {
     "command.execute.before": async (input, output) => {
-      output.parts = [];
       const handled = await handleInboundCommand(input, "prehook");
       if (!handled) {
         return;
       }
+      output.parts = [];
       setNoReplyIfSupported(output);
     },
     event: async ({ event }: { event: Event }) => {
@@ -326,9 +329,17 @@ const CommunicationPlugin: Plugin = async ({ client, worktree }) => {
       readInteractionTokenFromSource(source),
       source,
     );
+    const failureDedupeKey = buildFailureDedupKey(commandName, readFeedbackSessionID(source), parsed);
+    if (ingress === "event" && wasPreHandledFailure(preHandledFailures, failureDedupeKey)) {
+      return true;
+    }
+
     const authContext = buildInboundAuthorizationContext(source, parsed.interactionToken);
-    const authz = authorizeInboundCommand(settings.discord.authorization, authContext);
+    const authz = authorizeInboundCommand(settings.discord.authorization, authContext, ingress);
     if (!authz.ok) {
+      if (ingress === "prehook") {
+        rememberPreHandledFailure(preHandledFailures, failureDedupeKey);
+      }
       const feedbackSessionID = readFeedbackSessionID(source);
       if (feedbackSessionID) {
         await sendFeedback(feedbackSessionID, authz.reason);
@@ -338,6 +349,9 @@ const CommunicationPlugin: Plugin = async ({ client, worktree }) => {
 
     const sessionResolution = await resolveSessionTarget(worktree, parsed.explicitSessionID);
     if (!sessionResolution.ok) {
+      if (ingress === "prehook") {
+        rememberPreHandledFailure(preHandledFailures, failureDedupeKey);
+      }
       const feedbackSessionID = readFeedbackSessionID(source);
       if (feedbackSessionID) {
         await sendFeedback(feedbackSessionID, `Session resolution failed: ${sessionResolution.reason}`);
@@ -363,6 +377,7 @@ const CommunicationPlugin: Plugin = async ({ client, worktree }) => {
 
     if (ingress === "prehook") {
       rememberPreHandledCommand(preHandledCommands, commandInput);
+      rememberPreHandledFailure(preHandledFailures, failureDedupeKey);
     }
 
     const result = await executeInboundCommand(commandInput);
@@ -427,23 +442,49 @@ function buildCommandDedupKey(commandInput: ApproveCommandInput): string {
   return `${normalizeCommandName(commandInput.name)}:${commandInput.sessionID}:${commandInput.arguments.trim()}`;
 }
 
+function buildFailureDedupKey(
+  commandName: string,
+  feedbackSessionID: string | undefined,
+  parsed: ParsedInboundCommandArguments,
+): string {
+  const sessionID = normalizeOptionalToken(feedbackSessionID) ?? "(missing-session)";
+  const explicitSessionID = normalizeOptionalToken(parsed.explicitSessionID) ?? "";
+  const interactionToken = normalizeOptionalToken(parsed.interactionToken) ?? "";
+  return `${normalizeCommandName(commandName)}:${sessionID}:${explicitSessionID}:${parsed.arguments.trim()}:token:${interactionToken}`;
+}
+
 function buildOutboundDedupeKey(notification: OutboundNotification): string {
   return `${notification.event}:${stableSerialize(notification.payload)}`;
 }
 
 function rememberPreHandledCommand(cache: Map<string, number>, commandInput: ApproveCommandInput): void {
-  const now = Date.now();
-  cache.set(buildCommandDedupKey(commandInput), now + 30_000);
+  rememberPreHandledKey(cache, buildCommandDedupKey(commandInput));
+}
 
-  for (const [key, expiresAt] of cache) {
+function rememberPreHandledFailure(cache: Map<string, number>, dedupeKey: string): void {
+  rememberPreHandledKey(cache, dedupeKey);
+}
+
+function rememberPreHandledKey(cache: Map<string, number>, key: string): void {
+  const now = Date.now();
+  cache.set(key, now + PREHANDLED_DEDUPE_TTL_MS);
+
+  for (const [cacheKey, expiresAt] of cache) {
     if (expiresAt <= now) {
-      cache.delete(key);
+      cache.delete(cacheKey);
     }
   }
 }
 
 function wasPreHandledCommand(cache: Map<string, number>, commandInput: ApproveCommandInput): boolean {
-  const key = buildCommandDedupKey(commandInput);
+  return wasPreHandledKey(cache, buildCommandDedupKey(commandInput));
+}
+
+function wasPreHandledFailure(cache: Map<string, number>, dedupeKey: string): boolean {
+  return wasPreHandledKey(cache, dedupeKey);
+}
+
+function wasPreHandledKey(cache: Map<string, number>, key: string): boolean {
   const expiresAt = cache.get(key);
   const now = Date.now();
 
@@ -700,6 +741,30 @@ function normalizeOptionalToken(value: string | undefined): string | undefined {
   return normalized ? normalized : undefined;
 }
 
+function readInboundSource(source: unknown): "discord" | "other" | "unknown" {
+  const record = typeof source === "object" && source ? source as Record<string, unknown> : undefined;
+  const metadata = readRecord(record, "metadata");
+
+  const rawSource =
+    readString(record, "source") ||
+    readString(record, "origin") ||
+    readString(record, "transport") ||
+    readString(metadata, "source") ||
+    readString(metadata, "origin") ||
+    readString(metadata, "transport");
+
+  const normalized = normalizeOptionalToken(rawSource)?.toLowerCase();
+  if (normalized === "discord") {
+    return "discord";
+  }
+
+  if (normalized) {
+    return "other";
+  }
+
+  return "unknown";
+}
+
 function buildInboundAuthorizationContext(source: unknown, interactionToken?: string): InboundAuthorizationContext {
   const record = typeof source === "object" && source ? source as Record<string, unknown> : undefined;
   const metadata = readRecord(record, "metadata");
@@ -736,6 +801,7 @@ function buildInboundAuthorizationContext(source: unknown, interactionToken?: st
   );
 
   return {
+    source: readInboundSource(source),
     hasDiscordSignal,
     roleIDs,
     ...(userID ? { userID } : {}),
@@ -746,8 +812,27 @@ function buildInboundAuthorizationContext(source: unknown, interactionToken?: st
 function authorizeInboundCommand(
   settings: DiscordAuthorizationSettings,
   context: InboundAuthorizationContext,
+  ingress: "prehook" | "event",
 ): { ok: true } | { ok: false; reason: string } {
-  if (!settings.required || !context.hasDiscordSignal) {
+  if (!settings.required) {
+    return { ok: true };
+  }
+
+  if (ingress === "event" && context.source !== "other" && !context.hasDiscordSignal) {
+    return {
+      ok: false,
+      reason: "Discord command denied: missing Discord identity context for an authorization-required command.",
+    };
+  }
+
+  if (context.source === "discord" && !context.hasDiscordSignal) {
+    return {
+      ok: false,
+      reason: "Discord command denied: missing Discord identity context for an authorization-required command.",
+    };
+  }
+
+  if (!context.hasDiscordSignal) {
     return { ok: true };
   }
 
@@ -995,8 +1080,13 @@ function validateDiscordStartupConfiguration(settings: CommunicationSettings): v
   if (!normalizeOptionalToken(process.env.DISCORD_BOT_TOKEN)) {
     missing.push("DISCORD_BOT_TOKEN");
   }
-  if (!normalizeOptionalToken(process.env.DISCORD_WEBHOOK_ORCHESTRATOR)) {
-    missing.push("DISCORD_WEBHOOK_ORCHESTRATOR");
+  const requiredWebhookKeys = Object.keys(settings.discord.personas)
+    .map((personaKey) => toWebhookEnvKey(personaKey))
+    .sort();
+  for (const webhookKey of requiredWebhookKeys) {
+    if (!normalizeOptionalToken(process.env[webhookKey])) {
+      missing.push(webhookKey);
+    }
   }
   if (
     settings.discord.authorization.required &&
@@ -1032,10 +1122,10 @@ async function mapOutboundNotification(
       return { kind: "ignored" };
     }
 
-    const context = await loadOrchestrationContext(worktree, sessionID);
-    const metadata = buildMetadata(context, sessionID, worktree);
+    const contextResult = await loadOrchestrationContext(worktree, sessionID);
+    const metadata = buildMetadata(contextResult.context, sessionID, worktree, contextResult.loadError);
 
-    if (context?.transition === "awaiting_approval") {
+    if (contextResult.context?.transition === "awaiting_approval") {
       return {
         kind: "mapped",
         notification: createNotification(settings, metadata.persona, {
@@ -1044,13 +1134,13 @@ async function mapOutboundNotification(
           payload: {
             ...metadata,
             status: "awaiting_approval",
-            stage: context.stage,
+            stage: contextResult.context.stage,
           },
         }),
       };
     }
 
-    if (context?.transition === "completed") {
+    if (contextResult.context?.transition === "completed") {
       return {
         kind: "mapped",
         notification: createNotification(settings, metadata.persona, {
@@ -1086,13 +1176,13 @@ async function mapOutboundNotification(
       return { kind: "ignored" };
     }
 
-    const context = await loadOrchestrationContext(worktree, sessionID);
-    const metadata = buildMetadata(context, sessionID, worktree);
+    const contextResult = await loadOrchestrationContext(worktree, sessionID);
+    const metadata = buildMetadata(contextResult.context, sessionID, worktree, contextResult.loadError);
     const error = readRecord(properties, "error");
     const errorCode = readString(error, "code") || "UNKNOWN";
     const errorMessage = readString(readRecord(error, "data"), "message") || "unknown error";
 
-    if (context?.transition === "blocked" || context?.transition === "stopped") {
+    if (contextResult.context?.transition === "blocked" || contextResult.context?.transition === "stopped") {
       return {
         kind: "mapped",
         notification: createNotification(settings, metadata.persona, {
@@ -1149,8 +1239,8 @@ async function mapOutboundNotification(
       };
     }
 
-    const context = await loadOrchestrationContext(worktree, sessionID);
-    const metadata = buildMetadata(context, sessionID, worktree);
+    const contextResult = await loadOrchestrationContext(worktree, sessionID);
+    const metadata = buildMetadata(contextResult.context, sessionID, worktree, contextResult.loadError);
 
     return {
       kind: "mapped",
@@ -1158,13 +1248,17 @@ async function mapOutboundNotification(
         event: "pipeline.transition",
         sessionID,
         payload: {
-          ...metadata,
-          command_action: action,
-          from_stage: context?.pendingFrom ?? context?.stage ?? metadata.stage,
-          to_stage: context?.pendingTo ?? normalizePipelineStage(targetStage) ?? context?.stage ?? metadata.stage,
-        },
-      }),
-    };
+            ...metadata,
+            command_action: action,
+            from_stage: contextResult.context?.pendingFrom ?? contextResult.context?.stage ?? metadata.stage,
+            to_stage:
+              contextResult.context?.pendingTo ??
+              normalizePipelineStage(targetStage) ??
+              contextResult.context?.stage ??
+              metadata.stage,
+          },
+        }),
+      };
   }
 
   return { kind: "ignored" };
@@ -1199,6 +1293,7 @@ function buildMetadata(
   context: OrchestrationContext | undefined,
   sessionID: string,
   fallbackWorktree: string,
+  contextWarning?: string,
 ): {
   session_id: string;
   root_session_id: string;
@@ -1206,6 +1301,7 @@ function buildMetadata(
   transition: string;
   worktree: string;
   persona: string;
+  context_warning?: string;
 } {
   const stage = context?.stage ?? "unknown";
   return {
@@ -1215,10 +1311,14 @@ function buildMetadata(
     transition: context?.transition ?? "unknown",
     worktree: context?.worktree ?? fallbackWorktree,
     persona: resolvePersonaKey(stage),
+    ...(contextWarning ? { context_warning: contextWarning } : {}),
   };
 }
 
-async function loadOrchestrationContext(worktree: string, sessionID: string): Promise<OrchestrationContext | undefined> {
+async function loadOrchestrationContext(
+  worktree: string,
+  sessionID: string,
+): Promise<{ context?: OrchestrationContext; loadError?: string }> {
   const statePath = resolve(worktree, "_bmad-output", "orchestration-state.json");
 
   try {
@@ -1250,16 +1350,33 @@ async function loadOrchestrationContext(worktree: string, sessionID: string): Pr
       worktree;
 
     return {
-      rootSessionID,
-      stage,
-      transition,
-      worktree: resolvedWorktree,
-      pendingFrom: readString(pending, "from"),
-      pendingTo: readString(pending, "to"),
+      context: {
+        rootSessionID,
+        stage,
+        transition,
+        worktree: resolvedWorktree,
+        pendingFrom: readString(pending, "from"),
+        pendingTo: readString(pending, "to"),
+      },
     };
-  } catch {
-    return undefined;
+  } catch (error) {
+    return {
+      loadError: `orchestration-state unavailable: ${describeOrchestrationStateLoadError(error)}`,
+    };
   }
+}
+
+function describeOrchestrationStateLoadError(error: unknown): string {
+  const readError = error as NodeJS.ErrnoException;
+  if (readError.code === "ENOENT") {
+    return "state file is missing.";
+  }
+
+  if (error instanceof SyntaxError) {
+    return "state file contains invalid JSON.";
+  }
+
+  return formatError(error);
 }
 
 async function resolveSessionTarget(
@@ -1289,20 +1406,20 @@ async function resolveSessionTarget(
         }
       }
     }
-  } catch {
-    // If we can't load the state, fall back to using the explicit session_id if provided
+  } catch (error) {
+    const loadError = describeOrchestrationStateLoadError(error);
     if (explicitSessionID && explicitSessionID.trim().length > 0) {
       return {
-        ok: true,
-        sessionID: explicitSessionID,
-        candidates: [explicitSessionID],
-        reason: "Orchestration state not available, using provided session_id.",
+        ok: false,
+        reason:
+          `Unable to load orchestration state (${loadError}) and cannot validate explicit session_id '${explicitSessionID}'.`,
+        candidates: [],
       };
     }
-    // If no explicit session_id is provided and no state is available, we can't resolve
+
     return {
       ok: false,
-      reason: "Unable to load orchestration state and no explicit session_id provided.",
+      reason: `Unable to load orchestration state (${loadError}) and no explicit session_id provided.`,
       candidates: [],
     };
   }
@@ -1373,11 +1490,6 @@ function resolveWebhookURL(personaKey: string): string | undefined {
   const personaSpecific = process.env[toWebhookEnvKey(personaKey)];
   if (personaSpecific && personaSpecific.trim().length > 0) {
     return personaSpecific.trim();
-  }
-
-  const fallback = process.env.DISCORD_WEBHOOK_ORCHESTRATOR;
-  if (fallback && fallback.trim().length > 0) {
-    return fallback.trim();
   }
 
   return undefined;
