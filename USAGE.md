@@ -21,6 +21,23 @@ Useful flags:
 - `--skip-bootstrap` (copy/update assets only)
 - `--rollback` (restore from `.demonlord-install-backup/latest`)
 
+Managed-asset policy:
+- Preserve unmanaged paths outside installer-managed assets.
+- Backup existing managed assets before replacement.
+- Replace managed assets from source only after backup success.
+- Manifest guarantees: `.demonlord-install-backup/latest/manifest.txt` (snapshotted assets) and `.demonlord-install-backup/latest/policy-manifest.txt` (policy decisions).
+
+Deterministic installer exit codes:
+- `2` usage error
+- `10` preflight failure
+- `20` source validation failure
+- `30` backup failure
+- `40` apply failure without rollback
+- `41` apply failure with successful automatic rollback
+- `42` apply failure with rollback failure
+- `50` bootstrap failure after sync
+- `60` rollback command failure
+
 Deterministic sync note: local template installs intentionally skip transient `.opencode` entries (for example `node_modules`, `.cache`, and temp editor files) so copied assets match clean-source behavior.
 
 ### 1) Inject Demonlord Assets
@@ -369,6 +386,10 @@ When execution graph logging is enabled, events are written to `_bmad-output/exe
 **Installer partially applied assets**
 - **Solution**: Run `./scripts/install-demonlord.sh --rollback`, fix root cause, rerun installer
 - **Check**: Confirm `.demonlord-install-backup/latest/manifest.txt` exists before rollback
+
+**Installer exits with `E41` or `E42`**
+- **Meaning**: `E41` = apply failure with successful automatic rollback; `E42` = apply failure and rollback failure
+- **Check**: Inspect permission errors in stderr, then rerun with fixed permissions (or run `--rollback` explicitly for `E42`)
 
 **Offline/proxy dependency install failures**
 - **Solution**: Export `HTTPS_PROXY`/`HTTP_PROXY` and optional `NPM_CONFIG_REGISTRY`, then rerun `./scripts/bootstrap.sh`

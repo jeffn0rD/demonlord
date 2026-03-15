@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "fs/promises";
+import { access, chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "fs/promises";
 import { tmpdir } from "os";
 import { dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
@@ -65,7 +65,8 @@ describe("installer/bootstrap regression", () => {
       ]);
 
       assert.notEqual(dryRunResult.code, 0);
-      assert.match(dryRunResult.stderr, /Unable to reach remote source/);
+      assert.match(dryRunResult.stderr, /Error \[E20\]/);
+      assert.match(dryRunResult.stderr, /unable to reach remote source/i);
     } finally {
       await rm(targetRoot, { recursive: true, force: true });
     }
@@ -94,7 +95,8 @@ describe("installer/bootstrap regression", () => {
       ]);
 
       assert.notEqual(dryRunResult.code, 0);
-      assert.match(dryRunResult.stderr, /Source preflight failed/);
+      assert.match(dryRunResult.stderr, /Error \[E20\]/);
+      assert.match(dryRunResult.stderr, /preflight failed/i);
       assert.match(dryRunResult.stderr, /doc/);
       assert.match(dryRunResult.stderr, /\.env\.example/);
     } finally {
@@ -143,14 +145,110 @@ describe("installer/bootstrap regression", () => {
 
       assert.notEqual(dryRunResult.code, 0);
       assert.match(dryRunResult.stdout, /validated remote source reachability/);
-      assert.match(dryRunResult.stderr, /Source preflight failed/);
+      assert.match(dryRunResult.stderr, /Error \[E20\]/);
+      assert.match(dryRunResult.stderr, /preflight failed/i);
       assert.match(dryRunResult.stderr, /\.opencode/);
     } finally {
       await rm(remoteParent, { recursive: true, force: true });
       await rm(targetRoot, { recursive: true, force: true });
     }
   });
+
+  test("fails with deterministic preflight code when target is not writable", async () => {
+    const sourceRoot = await mkdtemp(join(tmpdir(), "installer-perms-source-"));
+    const targetRoot = await mkdtemp(join(tmpdir(), "installer-perms-target-"));
+
+    try {
+      await createInstallerSourceFixture(sourceRoot);
+
+      const initResult = await runCommand("git", ["init", "-q", targetRoot]);
+      assert.equal(initResult.code, 0, initResult.stderr);
+
+      await chmod(targetRoot, 0o555);
+
+      const installResult = await runCommand("bash", [
+        INSTALLER_PATH,
+        "--source",
+        sourceRoot,
+        "--target",
+        targetRoot,
+        "--skip-bootstrap",
+      ]);
+
+      assert.equal(installResult.code, 10);
+      assert.match(installResult.stderr, /Error \[E10\]/);
+      assert.match(installResult.stderr, /not writable/i);
+    } finally {
+      await chmod(targetRoot, 0o755).catch(() => undefined);
+      await rm(sourceRoot, { recursive: true, force: true });
+      await rm(targetRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("partial apply failure triggers deterministic rollback and preserves prior managed assets", async () => {
+    const sourceRoot = await mkdtemp(join(tmpdir(), "installer-partial-source-"));
+    const targetRoot = await mkdtemp(join(tmpdir(), "installer-partial-target-"));
+
+    try {
+      await createInstallerSourceFixture(sourceRoot);
+      await seedManagedTargetFixture(targetRoot);
+
+      const initResult = await runCommand("git", ["init", "-q", targetRoot]);
+      assert.equal(initResult.code, 0, initResult.stderr);
+
+      await chmod(join(sourceRoot, "doc"), 0o000);
+
+      const installResult = await runCommand("bash", [
+        INSTALLER_PATH,
+        "--source",
+        sourceRoot,
+        "--target",
+        targetRoot,
+        "--skip-bootstrap",
+      ]);
+
+      assert.equal(installResult.code, 41);
+      assert.match(installResult.stderr, /Error \[E41\]/);
+      assert.match(installResult.stderr, /automatic rollback restored previous managed assets/i);
+
+      const restoredKeep = await readFile(join(targetRoot, ".opencode", "keep.txt"), "utf-8");
+      const restoredAgent = await readFile(join(targetRoot, "agents", "existing.txt"), "utf-8");
+      const restoredDoc = await readFile(join(targetRoot, "doc", "original.md"), "utf-8");
+      const restoredConfig = await readFile(join(targetRoot, "demonlord.config.json"), "utf-8");
+
+      assert.equal(restoredKeep, "target-keep\n");
+      assert.equal(restoredAgent, "target-agent\n");
+      assert.equal(restoredDoc, "target-doc\n");
+      assert.equal(restoredConfig, "{\"target\":true}\n");
+
+      const policyManifest = await readFile(
+        join(targetRoot, ".demonlord-install-backup", "latest", "policy-manifest.txt"),
+        "utf-8",
+      );
+      assert.match(policyManifest, /\.opencode\|backup\|replace/);
+      assert.match(policyManifest, /scripts\/bootstrap\.sh\|backup\|replace/);
+    } finally {
+      await chmod(join(sourceRoot, "doc"), 0o755).catch(() => undefined);
+      await rm(sourceRoot, { recursive: true, force: true });
+      await rm(targetRoot, { recursive: true, force: true });
+    }
+  });
 });
+
+async function seedManagedTargetFixture(targetRoot: string): Promise<void> {
+  await mkdir(join(targetRoot, ".opencode"), { recursive: true });
+  await mkdir(join(targetRoot, "agents"), { recursive: true });
+  await mkdir(join(targetRoot, "doc"), { recursive: true });
+  await mkdir(join(targetRoot, "scripts"), { recursive: true });
+
+  await writeFile(join(targetRoot, ".opencode", "keep.txt"), "target-keep\n");
+  await writeFile(join(targetRoot, "agents", "existing.txt"), "target-agent\n");
+  await writeFile(join(targetRoot, "doc", "original.md"), "target-doc\n");
+  await writeFile(join(targetRoot, "scripts", "bootstrap.sh"), "#!/usr/bin/env bash\nexit 0\n");
+  await writeFile(join(targetRoot, "scripts", "install-demonlord.sh"), "#!/usr/bin/env bash\nexit 0\n");
+  await writeFile(join(targetRoot, "demonlord.config.json"), "{\"target\":true}\n");
+  await writeFile(join(targetRoot, ".env.example"), "TARGET=1\n");
+}
 
 async function createInstallerSourceFixture(sourceRoot: string): Promise<void> {
   await mkdir(join(sourceRoot, ".opencode", "node_modules", "artifact"), { recursive: true });

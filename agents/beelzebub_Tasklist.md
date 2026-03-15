@@ -211,21 +211,21 @@ Execution policy for this codename:
 **Entry criteria:**
 - SUBPHASE-2.1 complete.
 **Exit criteria / QA checklist:**
-- [ ] Preserve/backup/replace policy is explicit and documented.
-- [ ] Partial apply failures trigger rollback-aware behavior.
-- [ ] Exit code mapping is deterministic and actionable.
+- [x] Preserve/backup/replace policy is explicit and documented.
+- [x] Partial apply failures trigger rollback-aware behavior.
+- [x] Exit code mapping is deterministic and actionable.
 **Proposed PR title:** `feat: make installer apply transactional and rollback-aware`  
 **Proposed commit message:** `feat: add deterministic installer apply rollback semantics and explicit exit codes (Refs #123)`
 
 **Tasks:**
 <!-- TASK:T-2.2.1 -->
-- **T-2.2.1** (Refs #123): Define and implement explicit managed-asset policy (preserve/backup/replace) with manifest guarantees. Touch points: `scripts/install-demonlord.sh`
+- [x] **T-2.2.1** (Refs #123): Define and implement explicit managed-asset policy (preserve/backup/replace) with manifest guarantees. Touch points: `scripts/install-demonlord.sh`
 <!-- TASK:T-2.2.2 -->
-- **T-2.2.2** (Refs #123): Add rollback-aware apply flow for partial failure conditions with deterministic recovery output. Touch points: `scripts/install-demonlord.sh`
+- [x] **T-2.2.2** (Refs #123): Add rollback-aware apply flow for partial failure conditions with deterministic recovery output. Touch points: `scripts/install-demonlord.sh`
 <!-- TASK:T-2.2.3 -->
-- **T-2.2.3** (Refs #123): Introduce deterministic exit code taxonomy and standardized actionable error messages. Touch points: `scripts/install-demonlord.sh`, `README.md`, `USAGE.md`
+- [x] **T-2.2.3** (Refs #123): Introduce deterministic exit code taxonomy and standardized actionable error messages. Touch points: `scripts/install-demonlord.sh`, `README.md`, `USAGE.md`
 <!-- TASK:T-2.2.4 -->
-- **T-2.2.4** (Refs #123): Add focused tests for permission denied and partial failure + rollback behavior (full matrix remains SUBPHASE-2.4). Touch points: `.opencode/tests/integration/installer-bootstrap.test.ts`
+- [x] **T-2.2.4** (Refs #123): Add focused tests for permission denied and partial failure + rollback behavior (full matrix remains SUBPHASE-2.4). Touch points: `.opencode/tests/integration/installer-bootstrap.test.ts`
 
 ### SUBPHASE-2.3: Source Modes + Post-Install Verification
 <!-- SUBPHASE:2.3 -->

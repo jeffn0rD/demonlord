@@ -36,6 +36,18 @@ Preflight and recovery options:
 - `--skip-bootstrap`: inject assets only
 - `--rollback`: restore managed paths from `.demonlord-install-backup/latest`
 
+Managed-asset apply policy is explicit and deterministic:
+- Preserve unmanaged paths outside the installer-managed set.
+- Backup existing managed assets to `.demonlord-install-backup/latest` before replacement.
+- Replace managed assets from source only after backup succeeds.
+- Persist policy + backup manifests in `.demonlord-install-backup/latest/policy-manifest.txt` and `.demonlord-install-backup/latest/manifest.txt`.
+
+Installer exit codes are deterministic for automation:
+- `2` usage error, `10` preflight failure, `20` source validation failure
+- `30` backup failure
+- `40` apply failure without rollback, `41` apply failure with successful automatic rollback, `42` apply failure with rollback failure
+- `50` bootstrap failure after sync, `60` rollback command failure
+
 Installer sync is deterministic for managed assets: local-source installs skip transient entries inside `.opencode` (for example `node_modules`, `.cache`, and editor temp files) so reruns stay reproducible across machines.
 
 ### Inject Demonlord Into Your Repository
@@ -311,6 +323,8 @@ This ensures that all code meets your quality standards before being committed.
 - **`pipelinectl: command not found`**: run `./scripts/bootstrap.sh`, then restart shell and confirm `~/.local/bin` is on `PATH`
 - **Queued shell command rejected as stale**: rerun `pipelinectl status` and retry with fresh state
 - **Installer fails midway**: run `./scripts/install-demonlord.sh --rollback`, resolve the error, then rerun installer
+- **Installer exits with `E41`**: partial apply failed but automatic rollback restored prior managed assets; fix the root cause and rerun
+- **Installer exits with `E42`**: partial apply failed and rollback also failed; correct permissions and run `./scripts/install-demonlord.sh --rollback`
 - **Offline/proxy npm install issues**: rerun bootstrap with configured proxy env (`HTTPS_PROXY`, `HTTP_PROXY`, optional `NPM_CONFIG_REGISTRY`) or run `./scripts/install-demonlord.sh --skip-bootstrap` and bootstrap later
 - **Bootstrap takes too long**: Check network connectivity and npm registry access
 - **Discord command denied**: verify `discord.authorization` allowlists and optional channel gate match the caller context
