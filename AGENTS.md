@@ -6,8 +6,8 @@ This repository houses "Demonlord," a template and framework for an Autonomous S
 
 Before implementing any feature or modifying the system architecture, agents **MUST** review the following documents to ensure compliance with the factory's design:
 
-1. **/agents/minion_Plan.md**: The high-level phased plan and architectural decisions.
-2. **/agents/minion_Tasklist.md**: The atomic, executable tasks. Follow this strictly when using the `/implement` command.
+1. **/agents/*_Plan.md**: The high-level phased plan and architectural decisions.
+2. **/agents/*_Tasklist.md**: The atomic, executable tasks. Follow this strictly when using the `/implement` command.
 3. **/doc/engineering_spec.md**: The technical specification for the factory, detailing the Matchmaker tool, deterministic gates, and Worktree logic.
 4. **/doc/engineering_reference.md**: The OpenCode-specific API reference (Plugins, MCP, Custom Tools, Permissions).
 5. **/agents/Autonomous_Factory_Summary.md**: A high-level blueprint of the technology stack and workflow.

@@ -366,6 +366,60 @@ describe("orchestrator integration flow", () => {
     }
   });
 
+  test("run-review prehook persists artifacts when marker is only available via session.messages fallback", async () => {
+    const root = await mkdtemp(join(tmpdir(), "orchestrator-run-review-message-fallback-"));
+
+    try {
+      await writeConfig(root, {
+        enabled: true,
+        mode: "manual",
+        require_approval_before_spawn: true,
+        ignore_aborted_messages: true,
+        verbose_events: false,
+      });
+
+      const client = createMockClient(root, { runReviewMarkerInMessages: true });
+      const plugin = await createPlugin(client, root);
+
+      const output: { parts: unknown[]; noReply?: boolean } = {
+        parts: [{ type: "text", text: "placeholder" }],
+      };
+
+      await emitCommandBefore(
+        plugin,
+        {
+          command: "run-review",
+          sessionID: "ses-run-review-fallback",
+          arguments: 'creview beelzebub 1.5 "focus deterministic routing"',
+        },
+        output,
+      );
+
+      assert.equal(output.noReply, true);
+      assert.deepEqual(output.parts, []);
+      assert.equal(client.commands.some((entry) => entry.command === "run-review"), false);
+      assert.equal(client.commands.filter((entry) => entry.command === "creview").length, 1);
+      assert.equal(client.messagePolls.length > 0, true);
+
+      const reviewDirectory = resolve(root, "_bmad-output", "cycle-state", "reviews");
+      const artifacts = await readdir(reviewDirectory);
+      const artifactName = artifacts.find((entry) => entry.startsWith("beelzebub-phase-1-subphase-1-5-round-"));
+      assert.equal(typeof artifactName, "string");
+
+      const artifactRaw = await readFile(resolve(reviewDirectory, artifactName as string), "utf-8");
+      const artifact = JSON.parse(artifactRaw) as {
+        review_type: string;
+        marker_found: boolean;
+        review_status: string;
+      };
+      assert.equal(artifact.review_type, "creview");
+      assert.equal(artifact.marker_found, true);
+      assert.equal(artifact.review_status, "pass");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test("direct /creview, /mreview, and /phreview remain callable and are not prehook-blocked", async () => {
     const root = await mkdtemp(join(tmpdir(), "orchestrator-direct-review-commands-"));
 
@@ -1506,6 +1560,7 @@ interface MockClient {
   creates: Array<{ parentID?: string; title?: string }>;
   commands: Array<{ sessionID: string; command: string; arguments: string; agent?: string }>;
   deletes: string[];
+  messagePolls: Array<{ sessionID: string }>;
   session: {
     prompt(input: {
       path: { id: string };
@@ -1521,6 +1576,10 @@ interface MockClient {
       body: { command: string; arguments: string; agent?: string };
       query: { directory: string };
     }): Promise<{ data: { parts: Array<{ type: string; text?: string }> } }>;
+    messages(input: {
+      path: { id: string };
+      query: { directory: string };
+    }): Promise<{ data: Array<{ parts: Array<{ type: string; text?: string }> }> }>;
     delete(input: {
       path: { id: string };
       query: { directory: string };
@@ -1529,62 +1588,98 @@ interface MockClient {
   };
 }
 
-function createMockClient(worktree: string): MockClient {
+interface MockClientOptions {
+  runReviewMarkerInMessages?: boolean;
+}
+
+function createMockClient(worktree: string, options: MockClientOptions = {}): MockClient {
   const sessions = new Map<string, Session>();
   const prompts: Array<{ sessionID: string; text: string }> = [];
   const creates: Array<{ parentID?: string; title?: string }> = [];
   const commands: Array<{ sessionID: string; command: string; arguments: string; agent?: string }> = [];
   const deletes: string[] = [];
+  const messagePolls: Array<{ sessionID: string }> = [];
+  const messagePayloadBySession = new Map<string, Array<{ parts: Array<{ type: string; text?: string }> }>>();
+
+  const sessionApi: MockClient["session"] & { _client: { worktree: string } } = {
+    _client: { worktree },
+    async prompt(input) {
+      const text = input.body.parts
+        .map((part) => (part.type === "text" && typeof part.text === "string" ? part.text : ""))
+        .join("\n");
+      prompts.push({ sessionID: input.path.id, text });
+      return { data: {} };
+    },
+    async create(input) {
+      creates.push({ parentID: input.body.parentID, title: input.body.title });
+      const id = `ses-child-${creates.length}`;
+      const created = buildSession(id, input.query.directory, input.body.title ?? id, input.body.parentID);
+      sessions.set(id, created);
+      return { data: created };
+    },
+    async command(input) {
+      commands.push({
+        sessionID: input.path.id,
+        command: input.body.command,
+        arguments: input.body.arguments,
+        agent: input.body.agent,
+      });
+
+      const markerOutput = markerForCommand(input.body.command, input.body.arguments);
+      const normalizedCommand = input.body.command.trim().replace(/^\//, "").toLowerCase();
+      if (options.runReviewMarkerInMessages === true && normalizedCommand === "creview") {
+        messagePayloadBySession.set(input.path.id, [{ parts: [{ type: "text", text: markerOutput }] }]);
+        return {
+          data: {
+            parts: [],
+          },
+        };
+      }
+
+      return {
+        data: {
+          parts: [
+            {
+              type: "text",
+              text: markerOutput,
+            },
+          ],
+        },
+      };
+    },
+    async messages(
+      this: { _client?: { worktree: string } },
+      input,
+    ) {
+      if (!this || !this._client) {
+        throw new TypeError("undefined is not an object (evaluating 'this._client')");
+      }
+
+      messagePolls.push({ sessionID: input.path.id });
+      return {
+        data: messagePayloadBySession.get(input.path.id) ?? [],
+      };
+    },
+    async delete(input) {
+      deletes.push(input.path.id);
+      sessions.delete(input.path.id);
+      messagePayloadBySession.delete(input.path.id);
+      return { data: {} };
+    },
+    async get(input) {
+      return {
+        data: sessions.get(input.path.id) ?? null,
+      };
+    },
+  };
 
   return {
     prompts,
     creates,
     commands,
     deletes,
-    session: {
-      async prompt(input) {
-        const text = input.body.parts
-          .map((part) => (part.type === "text" && typeof part.text === "string" ? part.text : ""))
-          .join("\n");
-        prompts.push({ sessionID: input.path.id, text });
-        return { data: {} };
-      },
-      async create(input) {
-        creates.push({ parentID: input.body.parentID, title: input.body.title });
-        const id = `ses-child-${creates.length}`;
-        const created = buildSession(id, input.query.directory, input.body.title ?? id, input.body.parentID);
-        sessions.set(id, created);
-        return { data: created };
-      },
-      async command(input) {
-        commands.push({
-          sessionID: input.path.id,
-          command: input.body.command,
-          arguments: input.body.arguments,
-          agent: input.body.agent,
-        });
-        return {
-          data: {
-            parts: [
-              {
-                type: "text",
-                text: markerForCommand(input.body.command, input.body.arguments),
-              },
-            ],
-          },
-        };
-      },
-      async delete(input) {
-        deletes.push(input.path.id);
-        sessions.delete(input.path.id);
-        return { data: {} };
-      },
-      async get(input) {
-        return {
-          data: sessions.get(input.path.id) ?? null,
-        };
-      },
-    },
+    messagePolls,
+    session: sessionApi,
   };
 }
 

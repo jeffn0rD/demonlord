@@ -132,6 +132,63 @@ describe("run_review tool", () => {
     }
   });
 
+  test("uses final expected marker occurrence when output contains duplicates", async () => {
+    const root = await mkdtemp(join(tmpdir(), "run-review-marker-duplicate-"));
+    const runtime = createMockRuntime([
+      [
+        marker("CYCLE_CREVIEW_RESULT", { status: "fail", codename: "alpha", target: "1.2" }),
+        marker("CYCLE_CREVIEW_RESULT", { status: "pass", codename: "alpha", target: "1.2" }),
+      ].join("\n"),
+    ]);
+
+    try {
+      const result = await executeRunReview(
+        {
+          review: "creview",
+          parameter_1: "alpha",
+          parameter_2: "1.2",
+        },
+        { directory: root, worktree: root },
+        runtime,
+      );
+
+      assert.equal(result.ok, true);
+      assert.equal(result.review_status, "pass");
+      assert.equal(result.marker_error, undefined);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("fails when marker status is not in allowed enum", async () => {
+    const root = await mkdtemp(join(tmpdir(), "run-review-marker-status-"));
+    const runtime = createMockRuntime([
+      marker("CYCLE_CREVIEW_RESULT", { status: "ok", codename: "alpha", target: "1.2" }),
+    ]);
+
+    try {
+      const result = await executeRunReview(
+        {
+          review: "creview",
+          parameter_1: "alpha",
+          parameter_2: "1.2",
+        },
+        { directory: root, worktree: root },
+        runtime,
+      );
+
+      assert.equal(result.ok, false);
+      assert.equal(result.code, "INVALID_INPUT");
+      assert.equal(result.review_status, null);
+      assert.match(
+        result.marker_error ?? "",
+        /missing a valid status \(expected one of: pass, pass-with-followups, fail\)/,
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test("allocates unique artifact rounds under concurrent executions", async () => {
     const root = await mkdtemp(join(tmpdir(), "run-review-round-concurrency-"));
     const runtimeA = createMockRuntime([

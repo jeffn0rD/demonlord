@@ -6,6 +6,7 @@ import { dirname, relative, resolve } from "path";
 const DEFAULT_SERVER_URL = process.env.OPENCODE_SERVER_URL ?? "http://127.0.0.1:4096";
 const REVIEW_ARTIFACT_DIRECTORY = ["_bmad-output", "cycle-state", "reviews"] as const;
 const REVIEW_NAME_PATTERN = /^[a-z][a-z0-9-]*$/;
+const MESSAGE_POLL_ATTEMPTS = 5;
 
 export interface RunReviewArgs {
   review: string;
@@ -67,6 +68,8 @@ interface MarkerPayload {
   };
   [key: string]: unknown;
 }
+
+type ReviewStatus = "pass" | "pass-with-followups" | "fail";
 
 interface ResolvedScope {
   review: string;
@@ -267,7 +270,10 @@ export async function executeRunReview(
   }
 
   const parsedMarker = parseReviewMarker(runResult.outputText, expectedMarker, review);
-  const reviewStatus = normalizeStatus(parsedMarker.payload?.status) ?? normalizeStatus(parsedMarker.payload?.verdict?.status);
+  const reviewStatus = normalizeReviewStatus(parsedMarker.payload?.status)
+    ?? normalizeReviewStatus(parsedMarker.payload?.verdict?.status);
+  const markerError = parsedMarker.error
+    ?? deriveMarkerStatusError(parsedMarker.markerFound, reviewStatus, expectedMarker);
   const artifactPayload = {
     review_type: review,
     codename: scope.codename,
@@ -278,7 +284,7 @@ export async function executeRunReview(
     marker_name: parsedMarker.markerName,
     marker: parsedMarker.payload,
     marker_found: parsedMarker.markerFound,
-    marker_error: parsedMarker.error,
+    marker_error: markerError,
     command: review,
     argument_list: argumentList,
     argument_string: argumentString,
@@ -316,7 +322,7 @@ export async function executeRunReview(
 
   const relativeArtifactPath = relative(worktreeRoot, persistedArtifact.path).replace(/\\/g, "/");
 
-  const markerValid = parsedMarker.markerFound && !parsedMarker.error;
+  const markerValid = parsedMarker.markerFound && !markerError;
 
   return {
     ok: markerValid,
@@ -333,13 +339,13 @@ export async function executeRunReview(
     expected_marker: expectedMarker,
     marker_name: parsedMarker.markerName,
     marker_found: parsedMarker.markerFound,
-    marker_error: parsedMarker.error,
+    marker_error: markerError,
     review_status: reviewStatus,
     artifact_path: relativeArtifactPath,
     output_excerpt: runResult.outputText.slice(0, 1200),
     session_id: runResult.sessionID,
     round: persistedArtifact.round,
-    error: markerValid ? undefined : parsedMarker.error,
+    error: markerValid ? undefined : markerError,
     code: markerValid ? undefined : "INVALID_INPUT",
   };
 }
@@ -421,6 +427,16 @@ function createSdkRuntime(context: RunReviewContext): ReviewRuntime {
     baseUrl: DEFAULT_SERVER_URL,
     directory: context.directory,
   });
+  const sessionApi = client.session as {
+    messages?: (input: {
+      path: { id: string };
+      query: { directory: string };
+    }) => Promise<{ data: unknown }>;
+    delete?: (input: {
+      path: { id: string };
+      query: { directory: string };
+    }) => Promise<unknown>;
+  };
 
   return {
     async runCommand(input: RuntimeCommandInput): Promise<RuntimeCommandResult> {
@@ -455,13 +471,57 @@ function createSdkRuntime(context: RunReviewContext): ReviewRuntime {
           },
         });
 
+        const commandOutput = collectTextParts(commandResponse.data);
+        if (containsCycleMarker(commandOutput)) {
+          return {
+            sessionID,
+            outputText: commandOutput,
+          };
+        }
+
+        if (typeof sessionApi.messages !== "function") {
+          return {
+            sessionID,
+            outputText: commandOutput,
+          };
+        }
+
+        let latestMessageOutput = "";
+        for (let attempt = 1; attempt <= MESSAGE_POLL_ATTEMPTS; attempt += 1) {
+          const messageResponse = await sessionApi.messages({
+            path: { id: sessionID },
+            query: {
+              directory: context.worktree,
+            },
+          });
+
+          const candidateOutput = collectLatestMessageText(messageResponse.data);
+          if (candidateOutput.length > 0) {
+            latestMessageOutput = candidateOutput;
+            const mergedOutput = [commandOutput, latestMessageOutput].filter((value) => value.length > 0).join("\n").trim();
+            if (containsCycleMarker(mergedOutput)) {
+              return {
+                sessionID,
+                outputText: mergedOutput,
+              };
+            }
+          }
+
+          if (attempt < MESSAGE_POLL_ATTEMPTS) {
+            await delay(attempt * 100);
+          }
+        }
+
         return {
           sessionID,
-          outputText: collectTextParts(commandResponse.data),
+          outputText:
+            latestMessageOutput.length > 0
+              ? [commandOutput, latestMessageOutput].filter((value) => value.length > 0).join("\n").trim()
+              : commandOutput,
         };
       } finally {
-        if (sessionID) {
-          await client.session
+        if (sessionID && typeof sessionApi.delete === "function") {
+          await sessionApi
             .delete({
               path: { id: sessionID },
               query: {
@@ -855,8 +915,10 @@ function parseAnyCycleMarker(rawOutput: string): ParsedMarker<MarkerPayload> | n
 }
 
 function parseMarkerComment<T>(rawOutput: string, marker: string): ParsedMarker<T> {
-  const regex = new RegExp(`<!--\\s*${marker}\\s*([\\s\\S]*?)-->`, "i");
-  const match = rawOutput.match(regex);
+  const escapedMarker = escapeRegExp(marker);
+  const regex = new RegExp(`<!--\\s*${escapedMarker}\\s*([\\s\\S]*?)-->`, "ig");
+  const matches = [...rawOutput.matchAll(regex)];
+  const match = matches[matches.length - 1];
   if (!match || !match[1]) {
     return {
       markerFound: false,
@@ -902,6 +964,31 @@ function collectTextParts(payload: unknown): string {
   }
 
   return textParts.join("\n").trim();
+}
+
+function collectLatestMessageText(payload: unknown): string {
+  if (!Array.isArray(payload)) {
+    return "";
+  }
+
+  for (let index = payload.length - 1; index >= 0; index -= 1) {
+    const text = collectTextParts(payload[index]);
+    if (text.length > 0) {
+      return text;
+    }
+  }
+
+  return "";
+}
+
+function containsCycleMarker(text: string): boolean {
+  return /<!--\s*CYCLE_[A-Z0-9_]+_RESULT[\s\S]*?-->/i.test(text);
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolvePromise) => {
+    setTimeout(resolvePromise, ms);
+  });
 }
 
 function collectArgumentList(args: RunReviewArgs, hint: string | null): string[] {
@@ -1150,6 +1237,31 @@ function normalizeStatus(value: unknown): string | null {
 
   const normalized = value.trim().toLowerCase();
   return normalized.length > 0 ? normalized : null;
+}
+
+function normalizeReviewStatus(value: unknown): ReviewStatus | null {
+  const normalized = normalizeStatus(value);
+  if (normalized === "pass" || normalized === "pass-with-followups" || normalized === "fail") {
+    return normalized;
+  }
+
+  return null;
+}
+
+function deriveMarkerStatusError(
+  markerFound: boolean,
+  reviewStatus: ReviewStatus | null,
+  expectedMarker: string,
+): string | undefined {
+  if (!markerFound || reviewStatus !== null) {
+    return undefined;
+  }
+
+  return `${expectedMarker} marker is missing a valid status (expected one of: pass, pass-with-followups, fail).`;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function formatUnknownError(error: unknown): string {

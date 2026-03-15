@@ -310,6 +310,7 @@ interface PipelineControlQueueCommand {
 type StageTransitionOutcome = "spawned" | "queued" | "blocked";
 
 const execFileAsync = promisify(execFile);
+const MESSAGE_POLL_ATTEMPTS = 5;
 
 const defaultOrchestrationSettings: OrchestrationSettings = {
   enabled: true,
@@ -986,6 +987,17 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
       model?: string;
     }): Promise<{ sessionID: string; outputText: string }>;
   } {
+    const sessionApi = client.session as {
+      messages?: (input: {
+        path: { id: string };
+        query: { directory: string };
+      }) => Promise<{ data: unknown }>;
+      delete?: (input: {
+        path: { id: string };
+        query: { directory: string };
+      }) => Promise<unknown>;
+    };
+
     return {
       async runCommand(input): Promise<{ sessionID: string; outputText: string }> {
         let sessionID: string | null = null;
@@ -1018,25 +1030,62 @@ const OrchestratorPlugin: Plugin = async ({ client, worktree }) => {
             },
           });
 
+          const commandOutput = collectTextParts(commandResponse.data);
+          if (containsCycleMarker(commandOutput)) {
+            return {
+              sessionID,
+              outputText: commandOutput,
+            };
+          }
+
+          if (typeof sessionApi.messages !== "function") {
+            return {
+              sessionID,
+              outputText: commandOutput,
+            };
+          }
+
+          let latestMessageOutput = "";
+          for (let attempt = 1; attempt <= MESSAGE_POLL_ATTEMPTS; attempt += 1) {
+            const messageResponse = await sessionApi.messages({
+              path: { id: sessionID },
+              query: {
+                directory: worktree,
+              },
+            });
+
+            const candidateOutput = collectLatestMessageText(messageResponse.data);
+            if (candidateOutput.length > 0) {
+              latestMessageOutput = candidateOutput;
+              const mergedOutput = [commandOutput, latestMessageOutput].filter((value) => value.length > 0).join("\n").trim();
+              if (containsCycleMarker(mergedOutput)) {
+                return {
+                  sessionID,
+                  outputText: mergedOutput,
+                };
+              }
+            }
+
+            if (attempt < MESSAGE_POLL_ATTEMPTS) {
+              await delay(attempt * 100);
+            }
+          }
+
           return {
             sessionID,
-            outputText: collectTextParts(commandResponse.data),
+            outputText:
+              latestMessageOutput.length > 0
+                ? [commandOutput, latestMessageOutput].filter((value) => value.length > 0).join("\n").trim()
+                : commandOutput,
           };
         } finally {
-          const maybeDelete = (client.session as {
-            delete?: (input: {
-              path: { id: string };
-              query: { directory: string };
-            }) => Promise<unknown>;
-          }).delete;
-
-          if (sessionID && typeof maybeDelete === "function") {
-            await maybeDelete({
-                path: { id: sessionID },
-                query: {
-                  directory: worktree,
-                },
-              })
+          if (sessionID && typeof sessionApi.delete === "function") {
+            await sessionApi.delete({
+              path: { id: sessionID },
+              query: {
+                directory: worktree,
+              },
+            })
               .catch(() => undefined);
           }
         }
@@ -3861,7 +3910,7 @@ class PipelineControlPrehookStopError extends Error {
   code = PIPELINE_PREHOOK_STOP_ERROR_CODE;
 
   constructor() {
-    super("Demonlord halted '/pipeline' command in pre-hook to short-circuit LLM request issuance (strategy=prehook_error).");
+    super("Demonlord halted control command in pre-hook to short-circuit LLM request issuance (strategy=prehook_error).");
     this.name = "PipelineControlPrehookStopError";
   }
 }
@@ -4364,6 +4413,31 @@ function collectTextParts(payload: unknown): string {
   }
 
   return textParts.join("\n").trim();
+}
+
+function collectLatestMessageText(payload: unknown): string {
+  if (!Array.isArray(payload)) {
+    return "";
+  }
+
+  for (let index = payload.length - 1; index >= 0; index -= 1) {
+    const text = collectTextParts(payload[index]);
+    if (text.length > 0) {
+      return text;
+    }
+  }
+
+  return "";
+}
+
+function containsCycleMarker(text: string): boolean {
+  return /<!--\s*CYCLE_[A-Z0-9_]+_RESULT[\s\S]*?-->/i.test(text);
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolvePromise) => {
+    setTimeout(resolvePromise, ms);
+  });
 }
 
 function normalizeStage(value: string | undefined): PipelineStage | null {

@@ -21,3 +21,5 @@ _bmad-output/orchestration-state.json
 _bmad-output/orchestration-events.ndjson
 _bmad-output/orchestration-commands.ndjson
 _bmad-output/pipelinectl-shell.env.sh
+_bmad-output/cycle-state/reviews/
+.opencode/_bmad-output/cycle-state/reviews/
