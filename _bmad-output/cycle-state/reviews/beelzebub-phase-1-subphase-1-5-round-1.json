@@ -1,0 +1,21 @@
+{
+  "review_type": "creview",
+  "codename": "beelzebub",
+  "phase": "1",
+  "subphase": "1.5",
+  "target": "1.5",
+  "review_status": null,
+  "marker_name": "CYCLE_CREVIEW_RESULT",
+  "marker_found": false,
+  "marker_error": "CYCLE_CREVIEW_RESULT marker not found.",
+  "command": "creview",
+  "argument_list": [
+    "beelzebub",
+    "1.5"
+  ],
+  "argument_string": "beelzebub 1.5",
+  "output_excerpt": "Good callout. Here’s the short summary of the reviewer output, then what I did next.\n\n- Reviewer verdict for `beelzebub` `1.5` was `fail` with `2 high` + `1 medium` findings.\n- High risks were:\n  - `run_review` could accept the wrong marker family as success.\n  - Artifact round numbering had a concurrency race (possible overwrite).\n- Medium risk was:\n  - `mreview` phase fallback depended on tasklist file mtime (non-deterministic across environments).\n\nI continued and implemented fixes for all three findings:\n\n- Tightened marker validation in `.opencode/tools/run_review.ts:804` so built-in reviews (`creview`/`mreview`/`phreview`) now fail on marker-family mismatch instead of silently accepting fallback markers.\n- Added atomic artifact round persistence in `.opencode/tools/run_review.ts:744` using exclusive create (`wx`) with deterministic retry on `EEXIST`, so concurrent executions get unique rounds.\n- Replaced mtime-based tasklist selection with deterministic content-based selection in `.opencode/tools/run_review.ts:591` by choosing the highest active phase across tasklists (stable tie-break by filename).\n- Documented deterministic `mreview` phase fallback order in `.opencode/commands/run-review.md:59`.\n- Added regression tests in `.opencode/tests/tools/run_review.test.ts:108`, `.opencode/tests/tools/run_review.test.ts:135`, and `.opencode/tests/tools/run_review.test.ts:230` for:\n  - marker mismatch rejection,\n  - concurrent unique round allocation,\n  - deterministic multi-tasklist phase selection.\n\nValidation run after changes:\n\n- `npm run test:tools` ✅\n- `npm run lint` ✅\n- `npm run test:integration` ✅\n\nNote: I left unrelated workspace changes untouched (`agents/beelzebub_Plan.md` and existing untracked `.opencode/_bmad-output/`).  \n\nIf you want, I can now prepare a focused commit with only the three updated files under `.opencode/` (excluding unrelated changes).",
+  "created_at": "2026-03-15T02:51:26.763Z",
+  "session_id": "ses_3109f00bcfferdcOXOIeCC1n5N",
+  "round": 1
+}

@@ -1,6 +1,6 @@
 import { createOpencodeClient } from "@opencode-ai/sdk";
 import { tool } from "@opencode-ai/plugin/tool";
-import { mkdir, readdir, readFile, stat, writeFile } from "fs/promises";
+import { mkdir, readdir, readFile, writeFile } from "fs/promises";
 import { dirname, relative, resolve } from "path";
 
 const DEFAULT_SERVER_URL = process.env.OPENCODE_SERVER_URL ?? "http://127.0.0.1:4096";
@@ -213,9 +213,9 @@ export async function executeRunReview(
   const expectedMarker = resolveExpectedMarker(review);
   const argumentString = buildCommandArgumentString(argumentList);
   const reviewDirectory = resolve(worktreeRoot, ...REVIEW_ARTIFACT_DIRECTORY);
-  const round = await resolveNextRound(reviewDirectory, scope.artifactStem);
-  const artifactPath = resolve(reviewDirectory, `${scope.artifactStem}-round-${round}.json`);
-  const relativeArtifactPath = relative(worktreeRoot, artifactPath).replace(/\\/g, "/");
+  const previewRound = await resolveNextRound(reviewDirectory, scope.artifactStem);
+  const previewArtifactPath = resolve(reviewDirectory, `${scope.artifactStem}-round-${previewRound}.json`);
+  const relativePreviewArtifactPath = relative(worktreeRoot, previewArtifactPath).replace(/\\/g, "/");
   const dryRun = args.dry_run ?? false;
 
   if (dryRun) {
@@ -233,8 +233,8 @@ export async function executeRunReview(
       dry_run: true,
       expected_marker: expectedMarker,
       marker_found: false,
-      artifact_path: relativeArtifactPath,
-      round,
+      artifact_path: relativePreviewArtifactPath,
+      round: previewRound,
     };
   }
 
@@ -266,7 +266,7 @@ export async function executeRunReview(
     };
   }
 
-  const parsedMarker = parseReviewMarker(runResult.outputText, expectedMarker);
+  const parsedMarker = parseReviewMarker(runResult.outputText, expectedMarker, review);
   const reviewStatus = normalizeStatus(parsedMarker.payload?.status) ?? normalizeStatus(parsedMarker.payload?.verdict?.status);
   const artifactPayload = {
     review_type: review,
@@ -285,11 +285,12 @@ export async function executeRunReview(
     output_excerpt: runResult.outputText.slice(0, 4000),
     created_at: new Date().toISOString(),
     session_id: runResult.sessionID,
-    round,
   };
 
+  let persistedArtifact: { path: string; round: number };
+
   try {
-    await persistReviewArtifact(artifactPath, artifactPayload);
+    persistedArtifact = await persistReviewArtifactWithRound(reviewDirectory, scope.artifactStem, artifactPayload);
   } catch (error) {
     return {
       ok: false,
@@ -310,9 +311,10 @@ export async function executeRunReview(
       marker_found: parsedMarker.markerFound,
       marker_error: parsedMarker.error,
       review_status: reviewStatus,
-      round,
     };
   }
+
+  const relativeArtifactPath = relative(worktreeRoot, persistedArtifact.path).replace(/\\/g, "/");
 
   const markerValid = parsedMarker.markerFound && !parsedMarker.error;
 
@@ -336,7 +338,7 @@ export async function executeRunReview(
     artifact_path: relativeArtifactPath,
     output_excerpt: runResult.outputText.slice(0, 1200),
     session_id: runResult.sessionID,
-    round,
+    round: persistedArtifact.round,
     error: markerValid ? undefined : parsedMarker.error,
     code: markerValid ? undefined : "INVALID_INPUT",
   };
@@ -600,38 +602,46 @@ async function resolveActivePhaseFromMostRecentTasklist(worktreeRoot: string): P
     return null;
   }
 
-  const entriesWithMetadata = await Promise.all(
-    tasklists.map(async (name) => {
+  const sortedTasklists = [...tasklists].sort((left, right) => left.localeCompare(right));
+  const entriesWithPhase = await Promise.all(
+    sortedTasklists.map(async (name) => {
       const path = resolve(agentsDirectory, name);
-      const fileStat = await stat(path).catch(() => null);
       const raw = await readFile(path, "utf-8").catch(() => null);
+      if (typeof raw !== "string") {
+        return null;
+      }
+
+      const phase = resolveActivePhaseFromTasklist(raw);
+      if (!phase) {
+        return null;
+      }
+
+      const phaseNumber = Number(phase);
+      if (!Number.isInteger(phaseNumber) || phaseNumber <= 0) {
+        return null;
+      }
+
       return {
         name,
-        path,
-        raw,
-        mtimeMs: fileStat?.mtimeMs ?? 0,
+        phase,
+        phaseNumber,
       };
     }),
   );
 
-  const candidates = entriesWithMetadata.filter((entry) => typeof entry.raw === "string") as Array<{
-    name: string;
-    path: string;
-    raw: string;
-    mtimeMs: number;
-  }>;
+  const candidates = entriesWithPhase.filter((entry): entry is { name: string; phase: string; phaseNumber: number } => entry !== null);
   if (candidates.length === 0) {
     return null;
   }
 
   candidates.sort((left, right) => {
-    if (right.mtimeMs !== left.mtimeMs) {
-      return right.mtimeMs - left.mtimeMs;
+    if (right.phaseNumber !== left.phaseNumber) {
+      return right.phaseNumber - left.phaseNumber;
     }
     return left.name.localeCompare(right.name);
   });
-  const selected = candidates[0];
-  return resolveActivePhaseFromTasklist(selected.raw);
+
+  return candidates[0]?.phase ?? null;
 }
 
 function resolveActivePhaseFromTasklist(tasklistRaw: string): string | null {
@@ -731,6 +741,38 @@ async function resolveNextRound(directory: string, stem: string): Promise<number
   return maxRound + 1;
 }
 
+async function persistReviewArtifactWithRound(
+  directory: string,
+  stem: string,
+  payload: Record<string, unknown>,
+): Promise<{ path: string; round: number }> {
+  await mkdir(directory, { recursive: true });
+  const firstRound = await resolveNextRound(directory, stem);
+  const maxAttempts = 256;
+
+  for (let offset = 0; offset < maxAttempts; offset += 1) {
+    const round = firstRound + offset;
+    const path = resolve(directory, `${stem}-round-${round}.json`);
+    const payloadWithRound = {
+      ...payload,
+      round,
+    };
+
+    try {
+      await persistReviewArtifact(path, payloadWithRound, true);
+      return { path, round };
+    } catch (error) {
+      if (isAlreadyExistsError(error)) {
+        continue;
+      }
+
+      throw error;
+    }
+  }
+
+  throw new Error(`unable to reserve artifact round for stem '${stem}' after ${maxAttempts} attempts`);
+}
+
 function resolveExpectedMarker(review: string): string {
   const normalized = review.toLowerCase();
   if (normalized === "creview") {
@@ -748,7 +790,7 @@ function resolveExpectedMarker(review: string): string {
   return `CYCLE_${normalized.toUpperCase().replace(/-/g, "_")}_RESULT`;
 }
 
-function parseReviewMarker(rawOutput: string, expectedMarker: string): ParsedMarker<MarkerPayload> {
+function parseReviewMarker(rawOutput: string, expectedMarker: string, review: string): ParsedMarker<MarkerPayload> {
   const expected = parseMarkerComment<MarkerPayload>(rawOutput, expectedMarker);
   if (expected.markerFound) {
     return {
@@ -759,6 +801,15 @@ function parseReviewMarker(rawOutput: string, expectedMarker: string): ParsedMar
 
   const fallback = parseAnyCycleMarker(rawOutput);
   if (fallback) {
+    if (isStrictMarkerReview(review) && fallback.markerName && fallback.markerName.toUpperCase() !== expectedMarker.toUpperCase()) {
+      return {
+        markerFound: true,
+        markerName: fallback.markerName,
+        payload: fallback.payload,
+        error: `Expected ${expectedMarker} marker but found ${fallback.markerName}.`,
+      };
+    }
+
     return fallback;
   }
 
@@ -767,6 +818,11 @@ function parseReviewMarker(rawOutput: string, expectedMarker: string): ParsedMar
     markerName: expectedMarker,
     error: expected.error,
   };
+}
+
+function isStrictMarkerReview(review: string): boolean {
+  const normalized = review.toLowerCase();
+  return normalized === "creview" || normalized === "mreview" || normalized === "phreview";
 }
 
 function parseAnyCycleMarker(rawOutput: string): ParsedMarker<MarkerPayload> | null {
@@ -1057,9 +1113,21 @@ function stripCodeFence(raw: string): string {
   return withoutStart.replace(/```\s*$/i, "").trim();
 }
 
-async function persistReviewArtifact(path: string, payload: unknown): Promise<void> {
+async function persistReviewArtifact(path: string, payload: unknown, exclusive = false): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, `${JSON.stringify(payload, null, 2)}\n`, "utf-8");
+  await writeFile(path, `${JSON.stringify(payload, null, 2)}\n`, {
+    encoding: "utf-8",
+    flag: exclusive ? "wx" : "w",
+  });
+}
+
+function isAlreadyExistsError(error: unknown): boolean {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+
+  const candidate = error as { code?: unknown };
+  return candidate.code === "EEXIST";
 }
 
 function normalizeOptionalText(value: string | undefined): string | null {

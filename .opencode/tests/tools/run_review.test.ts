@@ -105,6 +105,73 @@ describe("run_review tool", () => {
     }
   });
 
+  test("fails creview when output marker family does not match expected marker", async () => {
+    const root = await mkdtemp(join(tmpdir(), "run-review-marker-mismatch-"));
+    const runtime = createMockRuntime([
+      marker("CYCLE_MREVIEW_RESULT", { status: "pass", target: "src/module.ts" }),
+    ]);
+
+    try {
+      const result = await executeRunReview(
+        {
+          review: "creview",
+          parameter_1: "alpha",
+          parameter_2: "1.2",
+        },
+        { directory: root, worktree: root },
+        runtime,
+      );
+
+      assert.equal(result.ok, false);
+      assert.equal(result.marker_name, "CYCLE_MREVIEW_RESULT");
+      assert.match(result.marker_error ?? "", /Expected CYCLE_CREVIEW_RESULT marker but found CYCLE_MREVIEW_RESULT\./);
+      assert.equal(result.code, "INVALID_INPUT");
+      assert.equal(typeof result.artifact_path, "string");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("allocates unique artifact rounds under concurrent executions", async () => {
+    const root = await mkdtemp(join(tmpdir(), "run-review-round-concurrency-"));
+    const runtimeA = createMockRuntime([
+      marker("CYCLE_CREVIEW_RESULT", { status: "pass", codename: "alpha", target: "1.2" }),
+    ]);
+    const runtimeB = createMockRuntime([
+      marker("CYCLE_CREVIEW_RESULT", { status: "pass", codename: "alpha", target: "1.2" }),
+    ]);
+
+    try {
+      const [resultA, resultB] = await Promise.all([
+        executeRunReview(
+          {
+            review: "creview",
+            parameter_1: "alpha",
+            parameter_2: "1.2",
+          },
+          { directory: root, worktree: root },
+          runtimeA,
+        ),
+        executeRunReview(
+          {
+            review: "creview",
+            parameter_1: "alpha",
+            parameter_2: "1.2",
+          },
+          { directory: root, worktree: root },
+          runtimeB,
+        ),
+      ]);
+
+      assert.equal(resultA.ok, true);
+      assert.equal(resultB.ok, true);
+      assert.notEqual(resultA.round, resultB.round);
+      assert.notEqual(resultA.artifact_path, resultB.artifact_path);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test("infers active phase for mreview from tasklist when no explicit phase provided", async () => {
     const root = await mkdtemp(join(tmpdir(), "run-review-mreview-phase-"));
     await mkdir(resolve(root, "agents"), { recursive: true });
@@ -155,6 +222,34 @@ describe("run_review tool", () => {
       assert.equal(result.ok, true);
       assert.equal(result.phase, "4");
       assert.match(result.artifact_path ?? "", /module-phase-4-src-module-ts-round-1\.json$/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("selects highest active phase across tasklists deterministically", async () => {
+    const root = await mkdtemp(join(tmpdir(), "run-review-mreview-multi-tasklist-"));
+    await mkdir(resolve(root, "agents"), { recursive: true });
+    await writeFile(resolve(root, "agents", "alpha_Tasklist.md"), buildTasklistFixtureForActivePhase("2"), "utf-8");
+    await writeFile(resolve(root, "agents", "zeta_Tasklist.md"), buildTasklistFixtureForActivePhase("5"), "utf-8");
+
+    const runtime = createMockRuntime([
+      marker("CYCLE_MREVIEW_RESULT", { status: "pass", target: "src/module.ts" }),
+    ]);
+
+    try {
+      const result = await executeRunReview(
+        {
+          review: "mreview",
+          parameter_1: "src/module.ts",
+        },
+        { directory: root, worktree: root },
+        runtime,
+      );
+
+      assert.equal(result.ok, true);
+      assert.equal(result.phase, "5");
+      assert.match(result.artifact_path ?? "", /module-phase-5-src-module-ts-round-1\.json$/);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -225,5 +320,26 @@ function buildTasklistFixture(): string {
     "<!-- PHASE:2 -->",
     "<!-- SUBPHASE:2.1 -->",
     "- [ ] **T-2.1.1** pending",
+  ].join("\n");
+}
+
+function buildTasklistFixtureForActivePhase(activePhase: string): string {
+  return [
+    "# Tasklist",
+    "",
+    "## PHASE-1",
+    "<!-- PHASE:1 -->",
+    "<!-- SUBPHASE:1.1 -->",
+    activePhase === "1" ? "- [ ] **T-1.1.1** pending" : "- [x] **T-1.1.1** done",
+    "",
+    "## PHASE-2",
+    "<!-- PHASE:2 -->",
+    "<!-- SUBPHASE:2.1 -->",
+    activePhase === "2" ? "- [ ] **T-2.1.1** pending" : "- [x] **T-2.1.1** done",
+    "",
+    "## PHASE-5",
+    "<!-- PHASE:5 -->",
+    "<!-- SUBPHASE:5.1 -->",
+    activePhase === "5" ? "- [ ] **T-5.1.1** pending" : "- [x] **T-5.1.1** done",
   ].join("\n");
 }

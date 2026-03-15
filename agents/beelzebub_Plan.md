@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-This round makes Demonlord operationally ready for real client repositories by closing two critical gaps: (1) complete Discord Command Center functionality (real outbound delivery + deterministic inbound control), and (2) production-safe installer/bootstrap hardening with deterministic dry-run, rollback-aware behavior, and repeatable post-install verification.  
+This round makes Demonlord operationally ready for real client repositories by closing three critical gaps: (1) complete Discord Command Center functionality (real outbound delivery + deterministic inbound control), (2) deterministic review artifact persistence with a reusable review runner and phase closeout gate, and (3) production-safe installer/bootstrap hardening with deterministic dry-run, rollback-aware behavior, and repeatable post-install verification.  
 The plan is structured for deterministic execution with one subphase per PR and one commit per subphase, with explicit acceptance gates and no placeholder paths in critical workflows.
 
 ## Recommended Option + Alternatives
@@ -51,10 +51,10 @@ The following decisions are locked for this implementation cycle and are no long
 
 ## PHASE-1: Discord Command Center Completion
 <!-- PHASE:1 -->
-**Goal:** Deliver complete Discord command-center behavior with deterministic outbound notifications, inbound control routing, and robust reliability/safety controls.  
+**Goal:** Deliver complete Discord command-center behavior with deterministic outbound notifications, inbound control routing, robust reliability/safety controls, and deterministic phase-closeout review gates.  
 **Included Issues:** Refs #123  
 **Dependencies:** Existing orchestrator pipeline state model and Party Mode state model are present.  
-**Risks:** Misrouted session targeting, command duplication, noisy retries, hidden send failures, secrets leakage in logs.
+**Risks:** Misrouted session targeting, command duplication, noisy retries, hidden send failures, secrets leakage in logs, and missing review provenance artifacts before closeout.
 
 ### SUBPHASE-1.1: Contract-First Discord/Test Harness
 <!-- SUBPHASE:1.1 -->
@@ -79,6 +79,12 @@ The following decisions are locked for this implementation cycle and are no long
 **Goal:** Add bounded retry/backoff, explicit startup validation, inbound authorization allowlists, safe logging, explicit config schema keys, and operator documentation with verification and failure modes.  
 **Dependencies:** SUBPHASE-1.2, SUBPHASE-1.3  
 **Risks:** Misconfigured environments causing silent degradation if fail-fast is not strict.
+
+### SUBPHASE-1.5: Unified Review Runner + Phase Closeout Gate
+<!-- SUBPHASE:1.5 -->
+**Goal:** Add a deterministic `/run-review` command/tool path that executes review commands, persists marker artifacts with round versioning, and enables `/phreview` phase-closeout decisions with spec alignment evidence.  
+**Dependencies:** SUBPHASE-1.4  
+**Risks:** Review command contract drift, phase-scoping ambiguity for module reviews, and false phase-closeout due to missing persisted artifacts.
 
 ---
 

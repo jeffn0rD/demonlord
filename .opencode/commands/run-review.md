@@ -56,6 +56,7 @@ Parsing rules:
 - Ignore empty positional parameters.
 - Pass `$7` as `hint` exactly as provided when non-empty.
 - Pass `$8` as `phase` only when it is non-empty and not a dry-run token.
+- For `mreview` without an explicit phase override, deterministic fallback order is: highest active phase across available `agents/*_Tasklist.md` files, then highest phase observed in persisted review artifacts.
 
 Examples:
 - `/run-review creview beelzebub 1.4`
