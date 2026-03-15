@@ -13,23 +13,43 @@ export const dummyTestTool = tool({
   schema: z.object({}),
 
   async execute(_args, context) {
-    const client = createOpencodeClient({ serverUrl: DEFAULT_SERVER_URL });
+    const client = createOpencodeClient({ baseUrl: DEFAULT_SERVER_URL });
 
-    const prompt = `Answer the following question in the following format: \`<-- ANSWER "{{your-answer-text}}" -->\` Only respond with the tag. The question is "How are you feeling today?"`;
+    const promptText = `Answer the following question in the following format: \`<-- ANSWER "{{your-answer-text}}" -->\` Only respond with the tag. The question is "How are you feeling today?"`;
 
-    console.log('[dummy_test] Spawning child session with dummy prompt...');
+    console.log('[dummy_test] Creating child session...');
+
+    let sessionID: string | null = null;
 
     try {
-      const childSession = await client.session.spawn({
-        prompt,
-        agent: 'general',
-        timeout: 30000,
+      // Step 1: Create session
+      const created = await client.session.create({
+        body: { title: 'dummy-test-child' },
+      });
+      
+      const createdSession = created.data as { id?: unknown } | undefined;
+      if (!createdSession || typeof createdSession.id !== 'string' || createdSession.id.trim().length === 0) {
+        throw new Error('Failed to create session: no ID returned');
+      }
+      sessionID = createdSession.id;
+      console.log(`[dummy_test] Created session: ${sessionID}`);
+
+      // Step 2: Send prompt
+      console.log('[dummy_test] Sending prompt...');
+      const promptResult = await client.session.prompt({
+        path: { id: sessionID },
+        body: {
+          parts: [{ type: 'text', text: promptText }],
+        },
       });
 
-      console.log('[dummy_test] Child session spawned, waiting for completion...');
-      const childResult = await childSession.waitForCompletion();
-
-      const rawOutput = childResult.output || '';
+      // Step 3: Extract output from parts
+      const parts = promptResult.data?.parts || [];
+      const rawOutput = parts
+        .filter((p: { type: string; text?: string }) => p.type === 'text')
+        .map((p: { type: string; text?: string }) => p.text || '')
+        .join('');
+      
       console.log(`[dummy_test] Raw child output: ${rawOutput}`);
 
       // Parse for marker
@@ -41,6 +61,7 @@ export const dummyTestTool = tool({
         markerFound: match !== null,
         extractedAnswer: match ? match[1] : null,
         rawChildOutput: rawOutput,
+        sessionId: sessionID,
         timestamp: new Date().toISOString(),
       };
 
@@ -63,6 +84,14 @@ export const dummyTestTool = tool({
           timestamp: new Date().toISOString(),
         },
       };
+    } finally {
+      // Step 4: Cleanup
+      if (sessionID) {
+        console.log(`[dummy_test] Cleaning up session: ${sessionID}`);
+        await client.session.delete({ path: { id: sessionID } }).catch((err) => {
+          console.error(`[dummy_test] Failed to delete session: ${err}`);
+        });
+      }
     }
   },
 });
