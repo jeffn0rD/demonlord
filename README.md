@@ -18,12 +18,12 @@ This loop is phase-scoped and bounded. It must work directly before thinner orch
 - configurable agent roles and model tiers
 - cheap validation through a resettable sample-project sandbox
 
-## What Demonlord V1 Defers
+## Deferred Features
 
-- Discord-driven remote approvals and status flows
-- parallel pipeline fleets and long-horizon autonomous execution
-- hidden review interception and mandatory persisted review artifact pipelines
-- broad autonomous-factory behavior beyond one controlled loop
+- Discord integration for remote approvals, notifications, and planning operations
+- Parallel pipeline/worktree execution for long-horizon development loops
+- Shared `/run-review` dispatcher as an optional review abstraction after direct review commands are stable
+- Large-scale autonomous operation beyond one controlled phase loop
 
 ## Quick Start
 
@@ -58,7 +58,14 @@ The installer manages these Demonlord assets in the target repository:
 - `demonlord.config.json`
 - `.env.example`
 
-The source repository may later move to a more explicit payload-oriented layout, but the installed target still receives a normal `.opencode` directory.
+Payload-source contract (V1 reboot):
+
+- Source-of-truth path for OpenCode assets in this repo is `payload/dot-opencode/`.
+- Installer output path in target repositories remains `.opencode/`.
+- First migration scope is intentionally narrow: only source `/.opencode` moves to `payload/dot-opencode/`.
+- `agents/`, `doc/`, and `scripts/` remain in place in this first migration to minimize churn.
+
+This repository is the product install source. The operator's personal `opencode-dev` workspace is a separate environment and is not part of the installed payload.
 
 ### Bootstrap After Install
 
@@ -110,6 +117,17 @@ Demonlord V1 keeps explicit agent roles and configurable model selection. The ba
 
 This allows cheaper models to handle lower-complexity work while reserving stronger models for harder implementation steps. Users should be able to add more agents later through configuration and documented extension points.
 
+Model/tier selection is configured in `.opencode/opencode.jsonc` and `demonlord.config.json`:
+
+- `.opencode/opencode.jsonc`: defines each agent ID, model, and variant.
+- `demonlord.config.json` -> `orchestration.agent_pools`: maps role+tier requests to preferred agent IDs in deterministic fallback order.
+
+Extension rules:
+
+1. Add a new agent entry under `.opencode/opencode.jsonc` with a required `description`.
+2. Add that agent ID to the correct `orchestration.agent_pools` tier list in `demonlord.config.json`.
+3. Keep at least one working fallback agent ID per role/tier list.
+
 ## Bounded Session Design
 
 Each workflow step should be able to run in a fresh bounded session. Near-term validation is manual-first: operators invoke the commands directly and confirm they work with explicit file-based handoff. A thin plugin may later create those fresh sessions automatically, but only after the direct loop is proven stable.
@@ -132,6 +150,8 @@ Run the installer smoke test:
 
 The fixture lives at `fixtures/hello-app/`. The default disposable sandbox lives at `fixtures-sandbox/hello-app/` and can be recreated at any time.
 
+Use this loop as the default proof path after command-contract resets and installer/source-layout changes.
+
 ## Documentation Map
 
 - `doc/engineering_spec.md` - V1 architecture contract
@@ -140,4 +160,5 @@ The fixture lives at `fixtures/hello-app/`. The default disposable sandbox lives
 - `doc/central_operator_workflow.md` - how `opencode-dev` fits with this repo
 - `doc/restructure_plan.md` - current regrouping direction
 - `doc/dev_handoff.md` - starting point when continuing from `opencode-dev`
-- `agents/V1_Reboot_Tasklist.md` - initial reboot work queue for `dev`
+- `doc/thin_session_launcher_follow_on.md` - Phase 5 thin automation design
+- `agents/reboot_Tasklist.md` - active reboot work queue for `dev`

@@ -18,17 +18,18 @@ This repository is the source for an installable Demonlord payload. It is not th
 
 ## OpenCode Rules
 
-- Custom tools belong in `.opencode/tools/` and should be written in TypeScript/JavaScript.
-- Plugins belong in `.opencode/plugins/`.
-- Skills belong in `.opencode/skills/<name>/SKILL.md` with valid frontmatter.
-- Core OpenCode config belongs in `.opencode/opencode.jsonc`.
+- Source custom tools belong in `payload/dot-opencode/tools/` and should be written in TypeScript/JavaScript.
+- Source plugins belong in `payload/dot-opencode/plugins/`.
+- Source skills belong in `payload/dot-opencode/skills/<name>/SKILL.md` with valid frontmatter.
+- Source OpenCode config belongs in `payload/dot-opencode/opencode.jsonc`.
+- Installed target repositories still receive `.opencode/`.
 - Non-OpenCode product settings belong in `demonlord.config.json`.
 
 ## Configuration Guardrails
 
 - OpenCode config uses singular keys: `agent`, `permission`, `command`, `mcp`.
 - Every agent in `opencode.jsonc` must include a `description`.
-- If config edits break startup, restore from `.opencode/opencode.jsonc.known-good`.
+- If config edits break startup, restore from `payload/dot-opencode/opencode.jsonc.known-good`.
 
 ## Code and Validation
 

@@ -135,6 +135,18 @@ require_tool() {
   command -v "$tool_name" >/dev/null 2>&1 || fail_preflight "required tool '$tool_name' not found on PATH"
 }
 
+resolve_source_asset_path() {
+  local source_root="$1"
+  local asset="$2"
+
+  if [[ "$asset" == ".opencode" ]]; then
+    printf '%s\n' "$source_root/payload/dot-opencode"
+    return 0
+  fi
+
+  printf '%s\n' "$source_root/$asset"
+}
+
 validate_target_path_safety() {
   local target="$1"
 
@@ -171,7 +183,9 @@ validate_source_assets() {
   [[ -d "$source_root" ]] || fail_source "path does not exist: $source_root"
 
   for asset in "${ASSET_DIRS[@]}" "${ASSET_FILES[@]}"; do
-    if [[ ! -e "$source_root/$asset" ]]; then
+    local source_asset
+    source_asset="$(resolve_source_asset_path "$source_root" "$asset")"
+    if [[ ! -e "$source_asset" ]]; then
       missing+=("$asset")
     fi
   done
@@ -214,7 +228,7 @@ resolve_local_source() {
   local candidate
   candidate="$(cd "$script_dir/.." && pwd)"
 
-  if [[ -d "$candidate/.opencode" && -f "$candidate/scripts/bootstrap.sh" ]]; then
+  if [[ -d "$candidate/payload/dot-opencode" && -f "$candidate/scripts/bootstrap.sh" ]]; then
     printf '%s\n' "$candidate"
     return 0
   fi
@@ -505,19 +519,23 @@ else
   log "Managed asset policy: preserve unmanaged paths, backup existing managed paths, replace managed assets from source"
 
   asset=""
+  source_asset=""
   for asset in "${ASSET_DIRS[@]}"; do
+    source_asset="$(resolve_source_asset_path "$SOURCE_ARG" "$asset")"
+
     if [[ "$asset" == ".opencode" ]]; then
-      if ! copy_filtered_directory "$SOURCE_ARG/$asset" "$TARGET_DIR/$asset" "$asset"; then
+      if ! copy_filtered_directory "$source_asset" "$TARGET_DIR/$asset" "$asset"; then
         handle_apply_failure "$asset"
       fi
     else
-      if ! copy_asset "$SOURCE_ARG/$asset" "$TARGET_DIR/$asset" "$asset"; then
+      if ! copy_asset "$source_asset" "$TARGET_DIR/$asset" "$asset"; then
         handle_apply_failure "$asset"
       fi
     fi
   done
   for asset in "${ASSET_FILES[@]}"; do
-    if ! copy_asset "$SOURCE_ARG/$asset" "$TARGET_DIR/$asset" "$asset"; then
+    source_asset="$(resolve_source_asset_path "$SOURCE_ARG" "$asset")"
+    if ! copy_asset "$source_asset" "$TARGET_DIR/$asset" "$asset"; then
       handle_apply_failure "$asset"
     fi
   done

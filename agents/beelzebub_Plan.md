@@ -1,5 +1,7 @@
 # Demonlord (Beelzebub) - Implementation Plan
 
+> Legacy context note: this plan predates the V1 reboot contract in `agents/reboot_Plan.md` and `agents/reboot_Tasklist.md`. Mentions of `/cycle`, `/run-review`, and shared review-runner flows are historical and not the active V1 path.
+
 ## Executive Summary
 
 This round makes Demonlord operationally ready for real client repositories by closing three critical gaps: (1) complete Discord Command Center functionality (real outbound delivery + deterministic inbound control), (2) deterministic review artifact persistence with a reusable review runner and phase closeout gate, and (3) production-safe installer/bootstrap hardening with deterministic dry-run, rollback-aware behavior, and repeatable post-install verification.  

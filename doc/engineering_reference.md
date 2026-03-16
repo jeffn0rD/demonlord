@@ -9,7 +9,7 @@ Core Technology Stack The platform is built on a high-performance stack utilizin
 The Directory Strategy Efficiency in a parallelized environment depends on a strict directory convention. OpenCode utilizes specific hidden directories and Git primitives to separate concerns:
 
 * demonlord.config.json: Centralized configuration file for Discord personas, worktree locations, and orchestration controls (enabled/mode/approval/abort policy/event verbosity).
-* .opencode/: Houses project-level configurations, agent definitions (in opencode.jsonc or as markdown files in agents/), plugins, skills, and custom tools.
+* payload/dot-opencode/ (source): Houses project-level OpenCode configurations, plugins, skills, and custom tools that are installed into target `.opencode/`.
 * Git Worktrees: Rather than standard branching, the system utilizes spawn_worktree.sh to generate isolated sibling directories.
 
 Strategic Impact: This structure prevents branch collisions and file-locking, allowing multiple "minion" agents to work on tasks simultaneously in a headless state while sharing a single local repository history.
@@ -27,8 +27,8 @@ The Event-Driven Pipeline The software factory operates through event-driven orc
    - Spec-handoff continuity: once handoff validates, orchestrator resumes using the pre-resolved execution target (`taskRef`, `role`, `tier`, `agentID`, `skill`) for implementation spawn.
 3. Deterministic Gates (The "Black Box"): This is a critical quality intercept. Agents are stripped of native git commands and must call a TypeScript custom tool, submit_implementation(). This tool programmatically runs lints and tests; if they fail, the function intercepts the stack trace and feeds it back to the agent for auto-correction.
 4. Review: Upon `session.idle` event, a plugin triggers the Reviewer Agent to analyze the output before posting a Discord notification for human-in-the-loop approval via slash commands (`/approve`, `/party`, `/continue`, `/halt`, `/focus`, `/add-agent`, `/export`) with fail-closed user/role/channel allowlist authorization.
-   - Deterministic review runner contract: `/run-review` is intercepted in orchestrator `command.execute.before`, executes `*review` commands (`creview`, `mreview`, `phreview`, future review commands) through the shared review executor, parses cycle markers, and persists round-versioned artifacts to `_bmad-output/cycle-state/reviews/` for auditability and phase-closeout gates.
-   - Compatibility contract: direct `/creview`, `/mreview`, and `/phreview` command contracts remain callable and are not blocked by `/run-review` interception.
+   - V1 direct review contract: `/creview`, `/mreview`, and `/phreview` are direct commands with deterministic `CYCLE_*_RESULT` markers and bounded-session inputs/outputs.
+   - Evidence policy: phase closeout prioritizes direct repo state and review outputs first, with persisted artifacts treated as optional supporting evidence when present.
 
 V1 role/tier families and compatibility:
 
@@ -115,7 +115,7 @@ Context Awareness Every tool receives a context object, ensuring environmental i
 * context.directory: Identifies the session’s current working directory.
 * context.worktree: Provides the root of the active git worktree.
 
-Review tooling convention: review commands should emit deterministic `CYCLE_*_RESULT` markers, and automation should route through `run_review.ts` so marker payloads are persisted as JSON artifacts before downstream orchestration decisions.
+Review tooling convention: review commands should emit deterministic `CYCLE_*_RESULT` markers. Any future automation layer must remain thin and explicit over these direct command contracts.
 
 Cross-Language Execution Patterns While definitions are TypeScript, the logic can be in any language. The Bun.$ utility facilitates this by invoking external scripts (e.g., Python) and handling the asynchronous output.
 
@@ -132,7 +132,7 @@ Plugin Structure & Loading Order To enforce enterprise-level governance, the sys
 1. Global Config (~/.config/opencode/opencode.json)
 2. Project Config (opencode.jsonc)
 3. Global Plugin Directory (~/.config/opencode/plugins/)
-4. Project Plugin Directory (.opencode/plugins/)
+4. Project Plugin Directory (`payload/dot-opencode/plugins/` source, installed as `.opencode/plugins/`)
 
 Event Subscription Reference Plugins can subscribe to various lifecycle events:
 
@@ -142,7 +142,7 @@ Event Subscription Reference Plugins can subscribe to various lifecycle events:
 
 Strategic Significance of Compaction: The experimental.session.compacting event is fired before the LLM generates a continuation summary. This allows developers to inject "knowledge anchors"—domain-specific context or state—ensuring that critical information is not lost during context window reduction.
 
-Dependency Management By placing a package.json in the .opencode/ directory, OpenCode automatically triggers bun install at startup, managing all local plugin and custom tool dependencies.
+Dependency Management By placing a `package.json` in the source payload (`payload/dot-opencode/package.json`, installed as `.opencode/package.json`), OpenCode manages local plugin and custom tool dependencies at startup.
 
 
 --------------------------------------------------------------------------------
@@ -161,7 +161,7 @@ url	N/A	Required (HTTP/SSE endpoint)
 headers	Optional	Optional
 
 The Dual-Mode Matchmaker Tool
-To avoid heavy Python/ML dependencies natively, semantic knowledge base and agent routing are handled by a custom .opencode/tools/matchmaker.ts tool.
+To avoid heavy Python/ML dependencies natively, semantic knowledge base and agent routing are handled by a custom tool at `payload/dot-opencode/tools/matchmaker.ts` (installed as `.opencode/tools/matchmaker.ts`).
 * Mode 1 (LLM Routing): Uses a fast, inexpensive LLM via the OpenCode SDK to read the SKILL.md keys and dynamically match them to task requirements.
 * Mode 2 (Local Embeddings): For fully offline semantic search, utilizing lightweight Node-based vector engines (e.g., voy-search) to embed and query available skills.
 * Heuristic weighting: `## Routing Hints` sections are weighted above general skill body text to improve deterministic routing.

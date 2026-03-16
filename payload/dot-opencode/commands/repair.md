@@ -1,0 +1,33 @@
+---
+description: Apply review fixes [codename] [subphase] [review_artifact?]
+agent: implementer-standard
+---
+
+Execute targeted repair work for codename `$1` and subphase/target `$2`.
+
+Optional input:
+- `$3` explicit review evidence path or note (for example: review report file path, copied finding IDs, or reviewer notes).
+
+Instructions:
+1. Read `/agents/$1_Tasklist.md` and `/agents/$1_Plan.md`.
+2. Use the `matchmaker` tool in `heuristic` mode for the repair scope and load the best skill with the `skill` tool before editing.
+3. Read explicit review findings from `$3` when provided; otherwise use the latest direct review evidence for `$2` (`/creview` or `/mreview` output).
+4. Apply only fixes needed to resolve in-scope review findings for `$2`.
+5. Do not expand scope into unrelated subphases.
+6. Run relevant tests/checks for modified areas.
+7. Create one local commit for this repair pass. Do not push.
+8. Output normal summary plus required machine-readable marker.
+9. The marker is mandatory even when blocked/failed and must be the last non-whitespace output.
+
+Machine-readable result marker (required at the end):
+
+<!-- CYCLE_REPAIR_RESULT
+{"status":"ok|blocked|failed","codename":"$1","target":"$2","addressed_ids":["CR-$2-1"],"tests_ran":["<cmd>"],"commit":"<hash-or-unknown>","notes":["..."]}
+-->
+
+Rules:
+- `status=ok` only if fixes were applied and committed.
+- `status=blocked` when required evidence/input is missing.
+- `status=failed` when repair/test/commit did not complete.
+- Emit exactly one `CYCLE_REPAIR_RESULT` marker with valid JSON.
+- Do not print additional text after the marker.

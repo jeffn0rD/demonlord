@@ -1,5 +1,7 @@
 # Agentic Execution Tasklist: Demonlord (Beelzebub)
 
+> Legacy context note: this tasklist predates the V1 reboot contract in `agents/reboot_Plan.md` and `agents/reboot_Tasklist.md`. Any references here to `/cycle`, `/run-review`, or `cycle_runner` are historical and not part of the active V1 loop.
+
 ## How to execute
 
 Run `/implement beelzebub` to start this tasklist.  

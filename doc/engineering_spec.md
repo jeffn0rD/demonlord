@@ -37,12 +37,12 @@ Supporting review command:
 
 The following are intentionally deferred until the bounded-session loop is stable:
 
-* Discord-driven remote approvals, planning, and status operations
+* Discord integration for remote approvals, notifications, and planning operations
+* Parallel pipeline/worktree execution for long-horizon development loops
+* Shared `/run-review` dispatcher as an optional review abstraction after direct review commands are stable
+* Large-scale autonomous operation beyond one controlled phase loop
 * required persisted review artifact pipelines as a hard dependency for normal operation
-* large-scale automatic long-horizon execution
-* parallel multi-pipeline execution in worktree fleets
 * hidden plugin interception layers that alter core review behavior behind the operator's back
-* broad autonomous factory claims that exceed the direct loop above
 
 4. Workflow Contract
 
@@ -82,6 +82,30 @@ This means:
 
 V1 does not require automatic step spawning yet. Manual command invocation is acceptable and preferred for proving the contracts. Automatic session launch may be added later through a thin plugin only after the direct commands are proven reliable.
 
+Bounded-session command handoff contract:
+
+* `/plan`
+  - reads: requirements input, existing `agents/<codename>_Plan.md`, existing `agents/<codename>_Tasklist.md`
+  - emits: updated planning/tasklist artifacts + `CYCLE_PLAN_RESULT` marker
+* `/implement`
+  - reads: `agents/<codename>_Plan.md`, `agents/<codename>_Tasklist.md`, selected subphase tasks/criteria
+  - emits: code/doc changes for one subphase, updated task checkboxes, local commit, `CYCLE_IMPLEMENT_RESULT` marker
+* `/creview`
+  - reads: plan/tasklist/spec plus git diff/commits and relevant verification evidence
+  - emits: structured findings/backlog + `CYCLE_CREVIEW_RESULT` marker
+* `/repair`
+  - reads: explicit review findings (`/creview` or `/mreview` output and optional evidence path), plan/tasklist
+  - emits: bounded fixes, updated verifications, local commit, `CYCLE_REPAIR_RESULT` marker
+* `/phreview`
+  - reads: plan/tasklist, in-phase review outputs, git history, optional persisted artifacts
+  - emits: phase gate verdict, optional closeout line update, `CYCLE_PHREVIEW_RESULT` marker
+
+Handoff invariants:
+
+* each command can run in a fresh session using only repo state and explicit inputs
+* markers and tasklist state are the canonical cross-step handoff channel
+* plugin automation must remain a thin launcher over these same read/emit contracts (never a hidden replacement)
+
 6. Agent Roles and Model Tiers
 
 V1 keeps explicit agent roles because they are central to Demonlord's usability and cost control.
@@ -101,6 +125,12 @@ Requirements:
 * lower-cost implementers must be available for low-complexity tasks
 * stronger implementers may be selected for heavier tasks
 * users must be able to add agents later through configuration and documented extension points
+
+Configuration contract:
+
+* `.opencode/opencode.jsonc` defines agent IDs, descriptions, model IDs, and variants
+* `demonlord.config.json` maps role/tier requests to ordered agent pools under `orchestration.agent_pools`
+* role/tier resolution should follow deterministic first-available fallback in pool order
 
 V1 should prefer explicit tier selection or simple task metadata over complex inferred routing.
 
@@ -143,7 +173,11 @@ Near-term expectations:
 * target repositories receive a materialized `.opencode` directory and related Demonlord files from the installer
 * the operator's personal `opencode-dev` environment remains separate from this product repository
 
-The repository may later move from a literal source-tree `/.opencode` layout to a payload-oriented source layout, but that physical move is secondary to stabilizing the command contracts first.
+First migration lock:
+
+* move source `/.opencode` to `payload/dot-opencode/`
+* keep install target output as `.opencode/`
+* keep `agents/`, `doc/`, and `scripts/` at repo root for the first migration wave
 
 10. Validation Strategy
 

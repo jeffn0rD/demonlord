@@ -1,0 +1,73 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "agent": {
+    "planner": {
+      "description": "Analyzes GitHub issues, identifies target files using glob/grep, and generates atomic plan files in /agents/plans/",
+      "mode": "primary",
+      "model": "openrouter/openai/gpt-5.3-codex",
+      "variant": "high"
+    },
+    "orchestrator": {
+      "description": "Routes tasks to specialized agents via the Matchmaker tool and spawns isolated worktree sessions",
+      "mode": "primary",
+      "model": "openrouter/xiaomi/mimo-v2-flash",
+      "variant": "high"
+    },
+    "reviewer": {
+      "description": "Performs automated PR analysis and triggers notifications for human-in-the-loop approval",
+      "mode": "subagent",
+      "model": "openrouter/openai/gpt-5.3-codex",
+      "variant": "high"
+    },
+    "implementer-lite": {
+      "description": "Low-cost implementation agent for straightforward bounded subphase work",
+      "mode": "subagent",
+      "model": "openrouter/xiaomi/mimo-v2-flash",
+      "variant": "high"
+    },
+    "implementer-standard": {
+      "description": "Default implementation agent for most bounded subphase execution",
+      "mode": "subagent",
+      "model": "openrouter/openai/gpt-5.3-codex",
+      "variant": "high"
+    },
+    "implementer-pro": {
+      "description": "Highest-capability implementation agent for complex bounded subphase execution",
+      "mode": "subagent",
+      "model": "openrouter/openai/gpt-5.3-codex",
+      "variant": "high"
+    },
+    "minion": {
+      "description": "Legacy compatibility alias for implementation sessions; prefer implementer-standard in V1",
+      "mode": "subagent",
+      "model": "openrouter/openai/gpt-5.3-codex",
+      "variant": "high"
+    }
+  },
+  "provider": {
+    "openrouter": {
+      "models": {
+        "openai/gpt-5.3-codex": {
+          "options": {
+            "reasoningEffort": "high"
+          }
+        }
+      }
+    }
+  },
+  "mcp": {
+    "github": {
+      "type": "local",
+      "command": ["npx", "-y", "@modelcontextprotocol/server-github"],
+      "environment": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "{env:GITHUB_PAT}"
+      }
+    }
+  },
+  "permission": {
+    "bash": {
+      "git push": "deny",
+      "git push *": "deny"
+    }
+  }
+}
